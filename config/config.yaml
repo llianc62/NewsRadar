@@ -176,3 +176,7 @@ platforms:
     name: "知乎"
   - id: "juejin"
     name: "掘金"
+  - id: "gelonghui"
+    name: "格隆汇"
+  - id: "36kr-quick"
+    name: "36氪 快讯"
