@@ -17,6 +17,22 @@ from ..utils.errors import DataNotFoundError
 class DataService:
     """数据访问服务类"""
 
+    # 中文停用词列表（用于 auto_extract 模式）
+    STOPWORDS = {
+        '的', '了', '在', '是', '我', '有', '和', '就', '不', '人', '都', '一',
+        '一个', '上', '也', '很', '到', '说', '要', '去', '你', '会', '着', '没有',
+        '看', '好', '自己', '这', '那', '来', '被', '与', '为', '对', '将', '从',
+        '以', '及', '等', '但', '或', '而', '于', '中', '由', '可', '可以', '已',
+        '已经', '还', '更', '最', '再', '因为', '所以', '如果', '虽然', '然而',
+        '什么', '怎么', '如何', '哪', '哪些', '多少', '几', '这个', '那个',
+        '他', '她', '它', '他们', '她们', '我们', '你们', '大家', '自己',
+        '这样', '那样', '怎样', '这么', '那么', '多么', '非常', '特别',
+        '应该', '可能', '能够', '需要', '必须', '一定', '肯定', '确实',
+        '正在', '已经', '曾经', '将要', '即将', '刚刚', '马上', '立刻',
+        '回应', '发布', '表示', '称', '曝', '官方', '最新', '重磅', '突发',
+        '热搜', '刷屏', '引发', '关注', '网友', '评论', '转发', '点赞'
+    }
+
     def __init__(self, project_root: str = None):
         """
         初始化数据服务
@@ -282,29 +298,61 @@ class DataService:
             }
         }
 
+    def _extract_words_from_title(self, title: str, min_length: int = 2) -> List[str]:
+        """
+        从标题中提取有意义的词语（用于 auto_extract 模式）
+
+        Args:
+            title: 新闻标题
+            min_length: 最小词长
+
+        Returns:
+            关键词列表
+        """
+        # 移除URL和特殊字符
+        title = re.sub(r'http[s]?://\S+', '', title)
+        title = re.sub(r'\[.*?\]', '', title)  # 移除方括号内容
+        title = re.sub(r'[【】《》「」『』""''・·•]', '', title)  # 移除中文标点
+
+        # 使用正则表达式分词（中文和英文）
+        # 匹配连续的中文字符或英文单词
+        words = re.findall(r'[\u4e00-\u9fff]{2,}|[a-zA-Z]{2,}[a-zA-Z0-9]*', title)
+
+        # 过滤停用词和短词
+        keywords = [
+            word for word in words
+            if word and len(word) >= min_length and word.lower() not in self.STOPWORDS
+            and word not in self.STOPWORDS
+        ]
+
+        return keywords
+
     def get_trending_topics(
         self,
         top_n: int = 10,
-        mode: str = "current"
+        mode: str = "current",
+        extract_mode: str = "keywords"
     ) -> Dict:
         """
-        获取个人关注词的新闻出现频率统计
-
-        注意:本工具基于 config/frequency_words.txt 中的个人关注词列表进行统计,
-        而不是自动从新闻中提取热点话题。用户可以自定义这个关注词列表。
+        获取热点话题统计
 
         Args:
-            top_n: 返回TOP N关注词
-            mode: 模式 - daily(当日累计), current(最新一批)
+            top_n: 返回TOP N话题
+            mode: 时间模式
+                - "daily": 当日累计数据统计
+                - "current": 最新一批数据统计（默认）
+            extract_mode: 提取模式
+                - "keywords": 统计预设关注词（基于 config/frequency_words.txt）
+                - "auto_extract": 自动从新闻标题提取高频词
 
         Returns:
-            关注词频率统计字典
+            话题频率统计字典
 
         Raises:
             DataNotFoundError: 数据不存在
         """
         # 尝试从缓存获取
-        cache_key = f"trending_topics:{top_n}:{mode}"
+        cache_key = f"trending_topics:{top_n}:{mode}:{extract_mode}"
         cached = self.cache.get(cache_key, ttl=1800)  # 30分钟缓存
         if cached:
             return cached
@@ -318,38 +366,13 @@ class DataService:
                 suggestion="请确保爬虫已经运行并生成了数据"
             )
 
-        # 加载关键词配置
-        word_groups = self.parser.parse_frequency_words()
-
-        # 根据mode选择要处理的标题数据
-        titles_to_process = {}
-
+        # 根据 mode 选择要处理的标题数据
         if mode == "daily":
-            # daily模式:处理当天所有累计数据
             titles_to_process = all_titles
-
         elif mode == "current":
-            # current模式:只处理最新一批数据(最新时间戳的文件)
-            if timestamps:
-                # 找出最新的时间戳
-                latest_timestamp = max(timestamps.values())
-
-                # 重新读取,只获取最新时间的数据
-                # 这里我们通过timestamps字典反查找最新文件对应的平台
-                latest_titles, _, _ = self.parser.read_all_titles_for_date()
-
-                # 由于read_all_titles_for_date返回所有文件的合并数据,
-                # 我们需要通过timestamps来过滤出最新批次
-                # 简化实现:使用当前所有数据作为最新批次
-                # (更精确的实现需要解析服务支持按时间过滤)
-                titles_to_process = latest_titles
-            else:
-                titles_to_process = all_titles
-
+            titles_to_process = all_titles  # 简化实现
         else:
-            raise ValueError(
-                f"不支持的模式: {mode}。支持的模式: daily, current"
-            )
+            raise ValueError(f"不支持的模式: {mode}。支持的模式: daily, current")
 
         # 统计词频
         word_frequency = Counter()
@@ -358,17 +381,26 @@ class DataService:
         # 遍历要处理的标题
         for platform_id, titles in titles_to_process.items():
             for title in titles.keys():
-                # 对每个关键词组进行匹配
-                for group in word_groups:
-                    all_words = group.get("required", []) + group.get("normal", [])
+                if extract_mode == "keywords":
+                    # 基于预设关键词统计
+                    word_groups = self.parser.parse_frequency_words()
+                    for group in word_groups:
+                        all_words = group.get("required", []) + group.get("normal", [])
+                        for word in all_words:
+                            if word and word in title:
+                                word_frequency[word] += 1
+                                if word not in keyword_to_news:
+                                    keyword_to_news[word] = []
+                                keyword_to_news[word].append(title)
 
-                    for word in all_words:
-                        if word and word in title:
-                            word_frequency[word] += 1
-
-                            if word not in keyword_to_news:
-                                keyword_to_news[word] = []
-                            keyword_to_news[word].append(title)
+                elif extract_mode == "auto_extract":
+                    # 自动提取关键词
+                    extracted_words = self._extract_words_from_title(title)
+                    for word in extracted_words:
+                        word_frequency[word] += 1
+                        if word not in keyword_to_news:
+                            keyword_to_news[word] = []
+                        keyword_to_news[word].append(title)
 
         # 获取TOP N关键词
         top_keywords = word_frequency.most_common(top_n)
@@ -382,8 +414,8 @@ class DataService:
                 "keyword": keyword,
                 "frequency": frequency,
                 "matched_news": len(set(matched_news)),  # 去重后的新闻数量
-                "trend": "stable",  # TODO: 需要历史数据来计算趋势
-                "weight_score": 0.0  # TODO: 需要实现权重计算
+                "trend": "stable",
+                "weight_score": 0.0
             })
 
         # 构建结果
@@ -391,8 +423,9 @@ class DataService:
             "topics": topics,
             "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "mode": mode,
+            "extract_mode": extract_mode,
             "total_keywords": len(word_frequency),
-            "description": self._get_mode_description(mode)
+            "description": self._get_mode_description(mode, extract_mode)
         }
 
         # 缓存结果
@@ -400,13 +433,19 @@ class DataService:
 
         return result
 
-    def _get_mode_description(self, mode: str) -> str:
+    def _get_mode_description(self, mode: str, extract_mode: str = "keywords") -> str:
         """获取模式描述"""
-        descriptions = {
+        mode_desc = {
             "daily": "当日累计统计",
             "current": "最新一批统计"
-        }
-        return descriptions.get(mode, "未知模式")
+        }.get(mode, "未知时间模式")
+
+        extract_desc = {
+            "keywords": "基于预设关注词",
+            "auto_extract": "自动提取高频词"
+        }.get(extract_mode, "未知提取模式")
+
+        return f"{mode_desc} - {extract_desc}"
 
     def get_current_config(self, section: str = "all") -> Dict:
         """
@@ -432,30 +471,35 @@ class DataService:
         word_groups = self.parser.parse_frequency_words()
 
         # 根据section返回对应配置
+        advanced = config_data.get("advanced", {})
+        advanced_crawler = advanced.get("crawler", {})
+
         if section == "all" or section == "crawler":
             crawler_config = {
-                "enable_crawler": config_data.get("crawler", {}).get("enable_crawler", True),
-                "use_proxy": config_data.get("crawler", {}).get("use_proxy", False),
-                "request_interval": config_data.get("crawler", {}).get("request_interval", 1),
+                "enable_crawler": advanced_crawler.get("enabled", True),
+                "use_proxy": advanced_crawler.get("use_proxy", False),
+                "request_interval": advanced_crawler.get("request_interval", 1),
                 "retry_times": 3,
                 "platforms": [p["id"] for p in config_data.get("platforms", [])]
             }
 
         if section == "all" or section == "push":
+            notification = config_data.get("notification", {})
+            batch_size = advanced.get("batch_size", {})
             push_config = {
-                "enable_notification": config_data.get("notification", {}).get("enable_notification", True),
+                "enable_notification": notification.get("enabled", True),
                 "enabled_channels": [],
-                "message_batch_size": config_data.get("notification", {}).get("message_batch_size", 20),
-                "push_window": config_data.get("notification", {}).get("push_window", {})
+                "message_batch_size": batch_size.get("default", 4000),
+                "push_window": notification.get("push_window", {})
             }
 
             # 检测已配置的通知渠道
-            webhooks = config_data.get("notification", {}).get("webhooks", {})
-            if webhooks.get("feishu_url"):
+            channels = notification.get("channels", {})
+            if channels.get("feishu", {}).get("webhook_url"):
                 push_config["enabled_channels"].append("feishu")
-            if webhooks.get("dingtalk_url"):
+            if channels.get("dingtalk", {}).get("webhook_url"):
                 push_config["enabled_channels"].append("dingtalk")
-            if webhooks.get("wework_url"):
+            if channels.get("wework", {}).get("webhook_url"):
                 push_config["enabled_channels"].append("wework")
 
         if section == "all" or section == "keywords":
@@ -465,10 +509,11 @@ class DataService:
             }
 
         if section == "all" or section == "weights":
+            weight = advanced.get("weight", {})
             weights_config = {
-                "rank_weight": config_data.get("weight", {}).get("rank_weight", 0.6),
-                "frequency_weight": config_data.get("weight", {}).get("frequency_weight", 0.3),
-                "hotness_weight": config_data.get("weight", {}).get("hotness_weight", 0.1)
+                "rank_weight": weight.get("rank", 0.6),
+                "frequency_weight": weight.get("frequency", 0.3),
+                "hotness_weight": weight.get("hotness", 0.1)
             }
 
         # 组装结果
@@ -621,3 +666,197 @@ class DataService:
             "cache": self.cache.get_stats(),
             "health": "healthy"
         }
+
+    # ========================================
+    # RSS 数据查询方法
+    # ========================================
+
+    def get_latest_rss(
+        self,
+        feeds: Optional[List[str]] = None,
+        limit: int = 50,
+        include_summary: bool = False
+    ) -> List[Dict]:
+        """
+        获取最新的 RSS 数据
+
+        Args:
+            feeds: RSS 源 ID 列表，None 表示所有源
+            limit: 返回条数限制
+            include_summary: 是否包含摘要，默认 False（节省 token）
+
+        Returns:
+            RSS 条目列表
+
+        Raises:
+            DataNotFoundError: 数据不存在
+        """
+        cache_key = f"latest_rss:{','.join(feeds or [])}:{limit}:{include_summary}"
+        cached = self.cache.get(cache_key, ttl=900)
+        if cached:
+            return cached
+
+        # 读取今天的 RSS 数据
+        all_items, id_to_name, timestamps = self.parser.read_all_titles_for_date(
+            date=None,
+            platform_ids=feeds,
+            db_type="rss"
+        )
+
+        # 获取最新的抓取时间
+        if timestamps:
+            latest_timestamp = max(timestamps.values())
+            fetch_time = datetime.fromtimestamp(latest_timestamp)
+        else:
+            fetch_time = datetime.now()
+
+        # 转换为列表
+        rss_list = []
+        for feed_id, items in all_items.items():
+            feed_name = id_to_name.get(feed_id, feed_id)
+
+            for title, info in items.items():
+                rss_item = {
+                    "title": title,
+                    "feed_id": feed_id,
+                    "feed_name": feed_name,
+                    "url": info.get("url", ""),
+                    "published_at": info.get("published_at", ""),
+                    "author": info.get("author", ""),
+                    "fetch_time": fetch_time.strftime("%Y-%m-%d %H:%M:%S")
+                }
+
+                if include_summary:
+                    rss_item["summary"] = info.get("summary", "")
+
+                rss_list.append(rss_item)
+
+        # 按发布时间排序（最新的在前）
+        rss_list.sort(key=lambda x: x.get("published_at", ""), reverse=True)
+
+        # 限制返回数量
+        result = rss_list[:limit]
+
+        # 缓存结果
+        self.cache.set(cache_key, result)
+
+        return result
+
+    def search_rss(
+        self,
+        keyword: str,
+        feeds: Optional[List[str]] = None,
+        days: int = 7,
+        limit: int = 50,
+        include_summary: bool = False
+    ) -> List[Dict]:
+        """
+        搜索 RSS 数据
+
+        Args:
+            keyword: 搜索关键词
+            feeds: RSS 源 ID 列表，None 表示所有源
+            days: 搜索最近 N 天的数据
+            limit: 返回条数限制
+            include_summary: 是否包含摘要
+
+        Returns:
+            匹配的 RSS 条目列表
+        """
+        cache_key = f"search_rss:{keyword}:{','.join(feeds or [])}:{days}:{limit}:{include_summary}"
+        cached = self.cache.get(cache_key, ttl=900)
+        if cached:
+            return cached
+
+        results = []
+        today = datetime.now()
+
+        for i in range(days):
+            target_date = today - timedelta(days=i)
+
+            try:
+                all_items, id_to_name, _ = self.parser.read_all_titles_for_date(
+                    date=target_date,
+                    platform_ids=feeds,
+                    db_type="rss"
+                )
+
+                for feed_id, items in all_items.items():
+                    feed_name = id_to_name.get(feed_id, feed_id)
+
+                    for title, info in items.items():
+                        # 关键词匹配（标题或摘要）
+                        summary = info.get("summary", "")
+                        if keyword.lower() in title.lower() or keyword.lower() in summary.lower():
+                            rss_item = {
+                                "title": title,
+                                "feed_id": feed_id,
+                                "feed_name": feed_name,
+                                "url": info.get("url", ""),
+                                "published_at": info.get("published_at", ""),
+                                "author": info.get("author", ""),
+                                "date": target_date.strftime("%Y-%m-%d")
+                            }
+
+                            if include_summary:
+                                rss_item["summary"] = summary
+
+                            results.append(rss_item)
+
+            except DataNotFoundError:
+                continue
+
+        # 按发布时间排序
+        results.sort(key=lambda x: x.get("published_at", ""), reverse=True)
+
+        # 限制返回数量
+        result = results[:limit]
+
+        # 缓存结果
+        self.cache.set(cache_key, result)
+
+        return result
+
+    def get_rss_feeds_status(self) -> Dict:
+        """
+        获取 RSS 源状态
+
+        Returns:
+            RSS 源状态信息
+        """
+        cache_key = "rss_feeds_status"
+        cached = self.cache.get(cache_key, ttl=300)
+        if cached:
+            return cached
+
+        # 获取可用的 RSS 日期
+        available_dates = self.parser.get_available_dates(db_type="rss")
+
+        # 获取今天的 RSS 数据统计
+        today_stats = {}
+        try:
+            all_items, id_to_name, _ = self.parser.read_all_titles_for_date(
+                date=None,
+                platform_ids=None,
+                db_type="rss"
+            )
+
+            for feed_id, items in all_items.items():
+                today_stats[feed_id] = {
+                    "name": id_to_name.get(feed_id, feed_id),
+                    "item_count": len(items)
+                }
+
+        except DataNotFoundError:
+            pass
+
+        result = {
+            "available_dates": available_dates[:10],  # 最近 10 天
+            "total_dates": len(available_dates),
+            "today_feeds": today_stats,
+            "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        }
+
+        self.cache.set(cache_key, result)
+
+        return result

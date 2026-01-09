@@ -100,6 +100,26 @@ class AppContext:
         """获取平台ID列表"""
         return [p["id"] for p in self.platforms]
 
+    @property
+    def rss_config(self) -> Dict:
+        """获取 RSS 配置"""
+        return self.config.get("RSS", {})
+
+    @property
+    def rss_enabled(self) -> bool:
+        """RSS 是否启用"""
+        return self.rss_config.get("ENABLED", False)
+
+    @property
+    def rss_feeds(self) -> List[Dict]:
+        """获取 RSS 源列表"""
+        return self.rss_config.get("FEEDS", [])
+
+    @property
+    def display_mode(self) -> str:
+        """获取显示模式 (keyword | platform)"""
+        return self.config.get("DISPLAY_MODE", "keyword")
+
     # === 时间操作 ===
 
     def get_time(self) -> datetime:
@@ -167,20 +187,20 @@ class AppContext:
         return save_titles_to_file(results, id_to_name, failed_ids, output_path, clean_title)
 
     def read_today_titles(
-        self, platform_ids: Optional[List[str]] = None
+        self, platform_ids: Optional[List[str]] = None, quiet: bool = False
     ) -> Tuple[Dict, Dict, Dict]:
         """读取当天所有标题"""
-        return read_all_today_titles(self.get_storage_manager(), platform_ids)
+        return read_all_today_titles(self.get_storage_manager(), platform_ids, quiet=quiet)
 
     def detect_new_titles(
-        self, platform_ids: Optional[List[str]] = None
+        self, platform_ids: Optional[List[str]] = None, quiet: bool = False
     ) -> Dict:
         """检测最新批次的新增标题"""
-        return detect_latest_new_titles(self.get_storage_manager(), platform_ids)
+        return detect_latest_new_titles(self.get_storage_manager(), platform_ids, quiet=quiet)
 
     def is_first_crawl(self) -> bool:
         """检测是否是当天第一次爬取"""
-        return is_first_crawl_today("output", self.format_date())
+        return self.get_storage_manager().is_first_crawl_today()
 
     # === 频率词处理 ===
 
@@ -212,6 +232,7 @@ class AppContext:
         new_titles: Optional[Dict] = None,
         mode: str = "daily",
         global_filters: Optional[List[str]] = None,
+        quiet: bool = False,
     ) -> Tuple[List[Dict], int]:
         """统计词频"""
         return count_word_frequency(
@@ -229,6 +250,7 @@ class AppContext:
             sort_by_position_first=self.config.get("SORT_BY_POSITION_FIRST", False),
             is_first_crawl_func=self.is_first_crawl,
             convert_time_func=self.convert_time_display,
+            quiet=quiet,
         )
 
     # === 报告生成 ===
@@ -263,6 +285,8 @@ class AppContext:
         mode: str = "daily",
         is_daily_summary: bool = False,
         update_info: Optional[Dict] = None,
+        rss_items: Optional[List[Dict]] = None,
+        rss_new_items: Optional[List[Dict]] = None,
     ) -> str:
         """生成HTML报告"""
         return generate_html_report(
@@ -278,7 +302,7 @@ class AppContext:
             output_dir="output",
             date_folder=self.format_date(),
             time_filename=self.format_time(),
-            render_html_func=lambda *args, **kwargs: self.render_html(*args, **kwargs),
+            render_html_func=lambda *args, **kwargs: self.render_html(*args, rss_items=rss_items, rss_new_items=rss_new_items, **kwargs),
             matches_word_groups_func=self.matches_word_groups,
             load_frequency_words_func=self.load_frequency_words,
             enable_index_copy=True,
@@ -291,6 +315,8 @@ class AppContext:
         is_daily_summary: bool = False,
         mode: str = "daily",
         update_info: Optional[Dict] = None,
+        rss_items: Optional[List[Dict]] = None,
+        rss_new_items: Optional[List[Dict]] = None,
     ) -> str:
         """渲染HTML内容"""
         return render_html_content(
@@ -301,6 +327,9 @@ class AppContext:
             update_info=update_info,
             reverse_content_order=self.config.get("REVERSE_CONTENT_ORDER", False),
             get_time_func=self.get_time,
+            rss_items=rss_items,
+            rss_new_items=rss_new_items,
+            display_mode=self.display_mode,
         )
 
     # === 通知内容渲染 ===
@@ -343,8 +372,23 @@ class AppContext:
         update_info: Optional[Dict] = None,
         max_bytes: Optional[int] = None,
         mode: str = "daily",
+        rss_items: Optional[list] = None,
+        rss_new_items: Optional[list] = None,
     ) -> List[str]:
-        """分批处理消息内容"""
+        """分批处理消息内容（支持热榜+RSS合并）
+
+        Args:
+            report_data: 报告数据
+            format_type: 格式类型
+            update_info: 更新信息
+            max_bytes: 最大字节数
+            mode: 报告模式
+            rss_items: RSS 统计条目列表
+            rss_new_items: RSS 新增条目列表
+
+        Returns:
+            分批后的消息内容列表
+        """
         return split_content_into_batches(
             report_data=report_data,
             format_type=format_type,
@@ -359,6 +403,10 @@ class AppContext:
             feishu_separator=self.config.get("FEISHU_MESSAGE_SEPARATOR", "---"),
             reverse_content_order=self.config.get("REVERSE_CONTENT_ORDER", False),
             get_time_func=self.get_time,
+            rss_items=rss_items,
+            rss_new_items=rss_new_items,
+            timezone=self.config.get("TIMEZONE", "Asia/Shanghai"),
+            display_mode=self.display_mode,
         )
 
     # === 通知发送 ===
