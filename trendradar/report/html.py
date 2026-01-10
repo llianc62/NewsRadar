@@ -497,7 +497,7 @@ def render_html_content(
             .rss-section-title {
                 font-size: 18px;
                 font-weight: 600;
-                color: #059669;
+                color: #F54927;
             }
 
             .rss-section-count {
@@ -519,13 +519,13 @@ def render_html_content(
                 justify-content: space-between;
                 margin-bottom: 12px;
                 padding-bottom: 8px;
-                border-bottom: 2px solid #10b981;
+                border-bottom: 2px solid #e5e7eb;
             }
 
             .feed-name {
                 font-size: 15px;
                 font-weight: 600;
-                color: #059669;
+                color: #000000;
             }
 
             .feed-count {
@@ -537,9 +537,8 @@ def render_html_content(
             .rss-item {
                 margin-bottom: 12px;
                 padding: 14px;
-                background: #f0fdf4;
+                background: #FAF1E3;
                 border-radius: 8px;
-                border-left: 3px solid #10b981;
             }
 
             .rss-item:last-child {
@@ -560,7 +559,7 @@ def render_html_content(
             }
 
             .rss-author {
-                color: #059669;
+                color: #F54927;
                 font-size: 12px;
                 font-weight: 500;
             }
@@ -572,7 +571,7 @@ def render_html_content(
             }
 
             .rss-link {
-                color: #1f2937;
+                color: #2563eb;
                 text-decoration: none;
                 font-weight: 500;
             }

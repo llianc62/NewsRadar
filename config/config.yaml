@@ -36,8 +36,10 @@ platforms:
     name: "知乎"
   - id: "juejin"
     name: "掘金"
-  - id: "36kr-quick"
-    name: "36氪 快讯"
+  - id: "36kr-renqi"
+    name: "36氪"
+  - id: "jin10"
+    name: "金十数据"
 
 
 # ===============================================================
@@ -72,20 +74,47 @@ rss:
   # - 正整数：覆盖全局设置，只推送此天数内的文章
   # - 0：禁用此频道的新鲜度过滤，推送所有文章
   feeds:
-    - id: "hacker-news"
-      name: "Hacker News"
-      url: "https://hnrss.org/frontpage"
-      # max_age_days: 1               # 示例：只推送1天内的文章
-
-    - id: "ruanyifeng"
-      name: "阮一峰的网络日志"
-      url: "http://www.ruanyifeng.com/blog/atom.xml"
-      # max_age_days: 7               # 示例：推送7天内的文章（更新较慢的博客）
-
     - id: "yahoo-finance"
       name: "雅虎财经"
       url: "https://finance.yahoo.com/news/rssindex"
-      enabled: false                  # 禁用
+      enabled: false
+      max_age_days: 3
+
+    - id: "sina-finance"
+      name: "新浪财经"
+      url: "https://rss.sina.com.cn/news/allnews/finance.xml"
+      enabled: false
+      max_age_days: 3
+
+    - id: "stcn"
+      name: "证券时报网"
+      url: "https://rsshub.pseudoyu.com/stcn/article/rank/yw"
+      enabled: true
+      max_age_days: 3
+
+    - id: "10jqka"
+      name: "同花顺财经"
+      url: "https://rsshub.pseudoyu.com/10jqka/realtimenews"
+      enabled: true
+      max_age_days: 1
+
+    - id: "eastmoney"
+      name: "东方财富"
+      url: "https://rsshub.pseudoyu.com/eastmoney/report/stock"
+      enabled: true
+      max_age_days: 3
+
+    - id: "eastmoney-spaceflight"
+      name: "东财-商业航天"
+      url: "https://rsshub.pseudoyu.com/eastmoney/search/商业航天"
+      enabled: true
+      max_age_days: 3
+
+    - id: "21jingji"
+      name: "21财经"
+      url: "https://rsshub.pseudoyu.com/21caijing/channel/热点"
+      enabled: true
+      max_age_days: 3
 
     # 自定义源示例
     # - id: "custom-feed"
@@ -114,7 +143,7 @@ rss:
 #    • 适用场景：避免重复信息干扰
 # ===============================================================
 report:
-  mode: "incremental"                 # 可选: daily | current | incremental
+  mode: "daily"                       # 可选: daily | current | incremental
   display_mode: "keyword"             # 可选: keyword | platform
                                       # keyword: 按关键词分组显示（默认）
                                       # platform: 按平台/来源分组显示
