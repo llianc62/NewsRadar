@@ -1,6 +1,8 @@
 # coding=utf-8
 """
-时间工具模块 - 统一时间处理函数
+时间工具模块
+
+本模块提供统一的时间处理函数，所有时区相关操作都应使用 DEFAULT_TIMEZONE 常量。
 """
 
 from datetime import datetime
@@ -8,7 +10,7 @@ from typing import Optional
 
 import pytz
 
-# 默认时区
+# 默认时区常量 - 仅作为 fallback，正常运行时使用 config.yaml 中的 app.timezone
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 
 
@@ -235,3 +237,51 @@ def is_within_days(
     except Exception:
         # 出错时保留文章
         return True
+
+
+def calculate_days_old(iso_time: str, timezone: str = DEFAULT_TIMEZONE) -> Optional[float]:
+    """
+    计算 ISO 格式时间距今多少天
+
+    Args:
+        iso_time: ISO 格式时间字符串
+        timezone: 时区名称
+
+    Returns:
+        距今天数（浮点数），如果无法解析返回 None
+    """
+    if not iso_time:
+        return None
+
+    try:
+        dt = None
+
+        # 尝试解析带时区的格式
+        if "+" in iso_time or iso_time.endswith("Z"):
+            iso_time_normalized = iso_time.replace("Z", "+00:00")
+            try:
+                dt = datetime.fromisoformat(iso_time_normalized)
+            except ValueError:
+                pass
+
+        # 尝试解析不带时区的格式（假设为 UTC）
+        if dt is None:
+            try:
+                if "T" in iso_time:
+                    dt = datetime.fromisoformat(iso_time.replace("T", " ").split(".")[0])
+                else:
+                    dt = datetime.fromisoformat(iso_time.split(".")[0])
+                dt = pytz.UTC.localize(dt)
+            except ValueError:
+                pass
+
+        if dt is None:
+            return None
+
+        now = get_configured_time(timezone)
+        diff = now - dt
+        return diff.total_seconds() / (24 * 60 * 60)
+
+    except Exception:
+        return None
+

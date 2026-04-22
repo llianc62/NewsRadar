@@ -148,9 +148,17 @@ def _parse_string_to_bool(value: str) -> bool:
         return bool(value)
 
 
+# 平台列表 mtime 缓存（避免每次 MCP 调用都重新读取 config.yaml）
+_platforms_cache: Optional[List[str]] = None
+_platforms_config_mtime: float = 0.0
+_platforms_config_path: Optional[str] = None
+
+
 def get_supported_platforms() -> List[str]:
     """
-    从 config.yaml 动态获取支持的平台列表
+    从 config.yaml 动态获取支持的平台列表（带 mtime 缓存）
+
+    仅当 config.yaml 被修改时才重新读取，避免每次 MCP 调用的重复 IO。
 
     Returns:
         平台ID列表
@@ -159,19 +167,29 @@ def get_supported_platforms() -> List[str]:
         - 读取失败时返回空列表，允许所有平台通过（降级策略）
         - 平台列表来自 config/config.yaml 中的 platforms 配置
     """
-    try:
-        # 获取 config.yaml 路径（相对于当前文件）
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        config_path = os.path.join(current_dir, "..", "..", "config", "config.yaml")
-        config_path = os.path.normpath(config_path)
+    global _platforms_cache, _platforms_config_mtime, _platforms_config_path
 
-        with open(config_path, 'r', encoding='utf-8') as f:
+    try:
+        if _platforms_config_path is None:
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            _platforms_config_path = os.path.normpath(
+                os.path.join(current_dir, "..", "..", "config", "config.yaml")
+            )
+
+        current_mtime = os.path.getmtime(_platforms_config_path)
+
+        if _platforms_cache is not None and current_mtime == _platforms_config_mtime:
+            return _platforms_cache
+
+        with open(_platforms_config_path, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
-            platforms = config.get('platforms', [])
-            return [p['id'] for p in platforms if 'id' in p]
+            platforms_config = config.get('platforms', {})
+            sources = platforms_config.get('sources', [])
+            _platforms_cache = [p['id'] for p in sources if 'id' in p]
+            _platforms_config_mtime = current_mtime
+            return _platforms_cache
     except Exception as e:
-        # 降级方案：返回空列表，允许所有平台
-        print(f"警告：无法加载平台配置 ({config_path}): {e}")
+        print(f"警告：无法加载平台配置: {e}")
         return []
 
 
@@ -347,7 +365,11 @@ def validate_date_range(date_range: Optional[Union[dict, str]]) -> Optional[tupl
     验证日期范围
 
     Args:
-        date_range: 日期范围字典或JSON字符串 {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}
+        date_range: 日期范围，支持多种格式：
+            - dict: {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}
+            - JSON 字符串: '{"start": "2025-01-01", "end": "2025-01-07"}'
+            - 单日字符串: "2025-01-01"（自动转为同一天的范围）
+            - 自然语言: "今天", "昨天", "本周", "最近7天" 等
 
     Returns:
         (start_date, end_date) 元组，或 None
@@ -358,20 +380,55 @@ def validate_date_range(date_range: Optional[Union[dict, str]]) -> Optional[tupl
     if date_range is None:
         return None
 
-    # 支持字符串形式的JSON输入（某些MCP客户端会将JSON对象序列化为字符串）
+    # 支持字符串形式的输入
     if isinstance(date_range, str):
-        try:
-            date_range = json.loads(date_range)
-        except json.JSONDecodeError as e:
-            raise InvalidParameterError(
-                f"date_range JSON 解析失败: {e}",
-                suggestion='请使用正确的JSON格式: {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}'
-            )
+        stripped = date_range.strip()
+
+        # 1. 检查是否是 JSON 对象格式
+        if stripped.startswith('{') and stripped.endswith('}'):
+            try:
+                date_range = json.loads(stripped)
+            except json.JSONDecodeError as e:
+                raise InvalidParameterError(
+                    f"date_range JSON 解析失败: {e}",
+                    suggestion='请使用正确的JSON格式: {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"}'
+                )
+        # 2. 检查是否是单日字符串格式 YYYY-MM-DD
+        elif len(stripped) == 10 and stripped[4] == '-' and stripped[7] == '-':
+            try:
+                single_date = datetime.strptime(stripped, "%Y-%m-%d")
+                return (single_date, single_date)
+            except ValueError:
+                raise InvalidParameterError(
+                    f"日期格式错误: {stripped}",
+                    suggestion="请使用 YYYY-MM-DD 格式，例如: 2025-10-11"
+                )
+        # 3. 尝试自然语言解析
+        else:
+            try:
+                result = DateParser.resolve_date_range_expression(stripped)
+                if result.get("success"):
+                    dr = result["date_range"]
+                    start_date = datetime.strptime(dr["start"], "%Y-%m-%d")
+                    end_date = datetime.strptime(dr["end"], "%Y-%m-%d")
+                    return (start_date, end_date)
+                else:
+                    raise InvalidParameterError(
+                        f"无法识别的日期表达式: {stripped}",
+                        suggestion="支持格式: YYYY-MM-DD, {\"start\": \"...\", \"end\": \"...\"}, 或自然语言（今天、本周、最近7天等）"
+                    )
+            except InvalidParameterError:
+                raise
+            except Exception:
+                raise InvalidParameterError(
+                    f"日期解析失败: {stripped}",
+                    suggestion="支持格式: YYYY-MM-DD, {\"start\": \"...\", \"end\": \"...\"}, 或自然语言（今天、本周、最近7天等）"
+                )
 
     if not isinstance(date_range, dict):
         raise InvalidParameterError(
-            "date_range 必须是字典类型或有效的JSON字符串",
-            suggestion='例如: {"start": "2025-10-01", "end": "2025-10-11"}'
+            "date_range 必须是字典类型、日期字符串或有效的JSON字符串",
+            suggestion='例如: {"start": "2025-10-01", "end": "2025-10-11"} 或 "2025-10-01"'
         )
 
     start_str = date_range.get("start")

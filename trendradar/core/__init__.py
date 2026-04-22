@@ -11,13 +11,12 @@ from trendradar.core.config import (
 )
 from trendradar.core.loader import load_config
 from trendradar.core.frequency import load_frequency_words, matches_word_groups
+from trendradar.core.scheduler import Scheduler, ResolvedSchedule
 from trendradar.core.data import (
-    save_titles_to_file,
     read_all_today_titles_from_storage,
     read_all_today_titles,
     detect_latest_new_titles_from_storage,
     detect_latest_new_titles,
-    is_first_crawl_today,
 )
 from trendradar.core.analyzer import (
     calculate_news_weight,
@@ -35,15 +34,16 @@ __all__ = [
     "load_frequency_words",
     "matches_word_groups",
     # 数据处理
-    "save_titles_to_file",
     "read_all_today_titles_from_storage",
     "read_all_today_titles",
     "detect_latest_new_titles_from_storage",
     "detect_latest_new_titles",
-    "is_first_crawl_today",
     # 统计分析
     "calculate_news_weight",
     "format_time_display",
     "count_word_frequency",
     "count_rss_frequency",
+    # 调度器
+    "Scheduler",
+    "ResolvedSchedule",
 ]

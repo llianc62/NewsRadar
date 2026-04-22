@@ -9,7 +9,8 @@
 - 全局过滤词（[GLOBAL_FILTER] 区域）
 - 最大显示数量（@前缀）
 - 正则表达式（/pattern/ 语法）
-- 显示名称（=> 备注 语法）
+- 显示名称（=> 别名 语法）
+- 组别名（[组别名] 语法，作为词组第一行）
 """
 
 import os
@@ -22,47 +23,51 @@ def _parse_word(word: str) -> Dict:
     """
     解析单个词，识别是否为正则表达式，支持显示名称
 
-    语法：
-    - 普通词：word
-    - 正则表达式：/pattern/ 或 /pattern/i（flags 会被忽略，默认已启用忽略大小写）
-    - 带显示名称：word => 显示名称 或 word=>显示名称（=>两边空格可选）
-    - 正则带显示名称：/pattern/ => 显示名称
-
     Args:
-        word: 原始词
+        word: 原始配置行 (e.g. "/京东|刘强东/ => 京东")
 
     Returns:
-        {"word": str, "is_regex": bool, "pattern": Optional[re.Pattern], "display_name": Optional[str]}
+        Dict: 包含 word, is_regex, pattern, display_name
     """
     display_name = None
 
-    # 解析 => 显示名称 语法（支持 => 两边有或没有空格）
-    # 使用正则匹配：空格可选的 =>
-    display_match = re.search(r'\s*=>\s*', word)
-    if display_match:
+    # 1. 优先处理显示名称 (=>)
+    # 先切分出 "配置内容" 和 "显示名称"
+    if '=>' in word:
         parts = re.split(r'\s*=>\s*', word, 1)
-        word = parts[0].strip()
-        display_name = parts[1].strip() if len(parts) > 1 and parts[1].strip() else None
+        word_config = parts[0].strip()
+        # 只有当 => 右边有内容时才作为 display_name
+        if len(parts) > 1 and parts[1].strip():
+            display_name = parts[1].strip()
+    else:
+        word_config = word.strip()
 
-    # 解析正则表达式：支持 /pattern/ 或 /pattern/flags（如 /pattern/i）
-    # flags 会被忽略，因为默认已启用 IGNORECASE
-    regex_match = re.match(r'^/(.+)/([gimsux]*)$', word)
+    # 2. 解析正则表达式
+    # 规则：以 / 开头，以 / 结尾(可能跟 flags)，中间内容贪婪提取
+    # [a-z]*$ 表示允许末尾有 flags (如 i, g)，但在下面代码中会被忽略
+    regex_match = re.match(r'^/(.+)/[a-z]*$', word_config)
+
     if regex_match:
         pattern_str = regex_match.group(1)
-        # flags 参数被忽略，统一使用 IGNORECASE
         try:
             pattern = re.compile(pattern_str, re.IGNORECASE)
+            
             return {
                 "word": pattern_str,
                 "is_regex": True,
                 "pattern": pattern,
                 "display_name": display_name,
             }
-        except re.error:
-            # 正则表达式无效，当作普通词处理
+        except re.error as e:
+            print(f"Warning: Invalid regex pattern '/{pattern_str}/': {e}")
             pass
 
-    return {"word": word, "is_regex": False, "pattern": None, "display_name": display_name}
+    return {
+        "word": word_config, 
+        "is_regex": False, 
+        "pattern": None, 
+        "display_name": display_name
+    }
 
 
 def _word_matches(word_config: Union[str, Dict], title_lower: str) -> bool:
@@ -106,7 +111,7 @@ def load_frequency_words(
     - @数字：该词组最多显示的条数
 
     Args:
-        frequency_file: 频率词配置文件路径，默认从环境变量 FREQUENCY_WORDS_PATH 获取或使用 config/frequency_words.txt
+        frequency_file: 频率词配置文件路径，默认从环境变量 FREQUENCY_WORDS_PATH 获取或使用 config/frequency_words.txt，短文件名从 config/custom/keyword/ 查找
 
     Returns:
         (词组列表, 词组内过滤词, 全局过滤词)
@@ -121,7 +126,12 @@ def load_frequency_words(
 
     frequency_path = Path(frequency_file)
     if not frequency_path.exists():
-        raise FileNotFoundError(f"频率词文件 {frequency_file} 不存在")
+        # 尝试作为短文件名，拼接 config/custom/keyword/ 前缀
+        custom_path = Path("config/custom/keyword") / frequency_file
+        if custom_path.exists():
+            frequency_path = custom_path
+        else:
+            raise FileNotFoundError(f"频率词文件 {frequency_file} 不存在")
 
     with open(frequency_path, "r", encoding="utf-8") as f:
         content = f.read()
@@ -136,7 +146,8 @@ def load_frequency_words(
     current_section = "WORD_GROUPS"
 
     for group in word_groups:
-        lines = [line.strip() for line in group.split("\n") if line.strip()]
+        # 过滤空行和注释行（# 开头）
+        lines = [line.strip() for line in group.split("\n") if line.strip() and not line.strip().startswith("#")]
 
         if not lines:
             continue
@@ -161,10 +172,18 @@ def load_frequency_words(
 
         # 处理词组区域
         words = lines
+        group_alias = None  # 组别名（[别名] 语法）
+
+        # 检查第一行是否为组别名（非区域标记）
+        if words and words[0].startswith("[") and words[0].endswith("]"):
+            potential_alias = words[0][1:-1].strip()
+            # 排除区域标记（GLOBAL_FILTER, WORD_GROUPS）
+            if potential_alias.upper() not in ("GLOBAL_FILTER", "WORD_GROUPS"):
+                group_alias = potential_alias
+                words = words[1:]  # 移除组别名行
 
         group_required_words = []
         group_normal_words = []
-        group_filter_words = []
         group_max_count = 0  # 默认不限制
 
         for word in words:
@@ -181,7 +200,6 @@ def load_frequency_words(
                 filter_word = word[1:]
                 parsed = _parse_word(filter_word)
                 filter_words.append(parsed)
-                group_filter_words.append(parsed)
             elif word.startswith("+"):
                 # 必须词（支持正则语法）
                 req_word = word[1:]
@@ -196,12 +214,21 @@ def load_frequency_words(
             else:
                 group_key = " ".join(w["word"] for w in group_required_words)
 
-            # 提取显示名称：优先使用第一个有 display_name 的词
-            display_name = None
-            for w in group_normal_words + group_required_words:
-                if w.get("display_name"):
-                    display_name = w["display_name"]
-                    break
+            # 生成显示名称
+            # 优先级：组别名 > 行别名拼接 > 关键词拼接
+            if group_alias:
+                # 有组别名，直接使用
+                display_name = group_alias
+            else:
+                # 没有组别名，拼接每行的显示名（行别名或关键词本身）
+                all_words = group_normal_words + group_required_words
+                display_parts = []
+                for w in all_words:
+                    # 优先使用行别名，否则使用关键词本身
+                    part = w.get("display_name") or w["word"]
+                    display_parts.append(part)
+                # 用 " / " 拼接多个词
+                display_name = " / ".join(display_parts) if display_parts else None
 
             processed_groups.append(
                 {

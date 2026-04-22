@@ -35,6 +35,10 @@ class ParserService:
 
         self.cache = get_cache()
 
+        # frequency_words.txt mtime 缓存
+        self._freq_words_cache: Optional[List[Dict]] = None
+        self._freq_words_mtime: float = 0.0
+
     @staticmethod
     def clean_title(title: str) -> str:
         """清理标题文本"""
@@ -325,7 +329,7 @@ class ParserService:
         cache_key = f"read_all:{db_type}:{date_str}:{platform_key}"
 
         is_today = (date is None) or (date.date() == datetime.now().date())
-        ttl = 900 if is_today else 3600
+        ttl = 900 if is_today else 900
 
         cached = self.cache.get(cache_key, ttl=ttl)
         if cached:
@@ -371,14 +375,20 @@ class ParserService:
 
     def parse_frequency_words(self, words_file: str = None) -> List[Dict]:
         """
-        解析关键词配置文件
+        解析关键词配置文件（带 mtime 缓存）
+
+        仅当 frequency_words.txt 被修改时才重新解析，避免循环内重复 IO。
 
         复用 trendradar.core.frequency 的解析逻辑，支持：
+        - # 开头的注释行
         - 空行分隔词组
+        - [组别名] 作为词组第一行，给整组指定别名
         - +前缀必须词、!前缀过滤词、@数量限制
         - /pattern/ 正则表达式语法
-        - => 备注 显示名称语法
+        - => 别名 显示名称语法
         - [GLOBAL_FILTER] 全局过滤区域
+
+        显示名称优先级：组别名 > 行别名拼接 > 关键词拼接
 
         Args:
             words_file: 关键词文件路径，默认为 config/frequency_words.txt
@@ -389,6 +399,7 @@ class ParserService:
         Raises:
             FileParseError: 文件解析错误
         """
+        import os
         from trendradar.core.frequency import load_frequency_words
 
         if words_file is None:
@@ -397,7 +408,14 @@ class ParserService:
             words_file = str(words_file)
 
         try:
+            current_mtime = os.path.getmtime(words_file)
+
+            if self._freq_words_cache is not None and current_mtime == self._freq_words_mtime:
+                return self._freq_words_cache
+
             word_groups, filter_words, global_filters = load_frequency_words(words_file)
+            self._freq_words_cache = word_groups
+            self._freq_words_mtime = current_mtime
             return word_groups
         except FileNotFoundError:
             return []

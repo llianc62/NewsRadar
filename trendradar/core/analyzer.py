@@ -11,6 +11,7 @@
 from typing import Dict, List, Tuple, Optional, Callable
 
 from trendradar.core.frequency import matches_word_groups, _word_matches
+from trendradar.utils.time import DEFAULT_TIMEZONE
 
 
 def calculate_news_weight(
@@ -35,20 +36,22 @@ def calculate_news_weight(
 
     count = title_data.get("count", len(ranks))
 
-    # 排名权重：Σ(11 - min(rank, 10)) / 出现次数
-    rank_scores = []
+    # 单次遍历计算排名分数总和与高排名次数
+    rank_score_sum = 0
+    high_rank_count = 0
     for rank in ranks:
-        score = 11 - min(rank, 10)
-        rank_scores.append(score)
+        rank_score_sum += 11 - min(rank, 10)
+        if rank <= rank_threshold:
+            high_rank_count += 1
 
-    rank_weight = sum(rank_scores) / len(ranks) if ranks else 0
+    # 归一化到 0~100（与 frequency_weight、hotness_weight 量纲对齐）
+    rank_weight = (rank_score_sum / len(ranks)) * 10
 
     # 频次权重：min(出现次数, 10) × 10
     frequency_weight = min(count, 10) * 10
 
     # 热度加成：高排名次数 / 总出现次数 × 100
-    high_rank_count = sum(1 for rank in ranks if rank <= rank_threshold)
-    hotness_ratio = high_rank_count / len(ranks) if ranks else 0
+    hotness_ratio = high_rank_count / len(ranks)
     hotness_weight = hotness_ratio * 100
 
     total_weight = (
@@ -130,9 +133,9 @@ def count_word_frequency(
     # 默认权重配置
     if weight_config is None:
         weight_config = {
-            "RANK_WEIGHT": 0.4,
+            "RANK_WEIGHT": 0.6,
             "FREQUENCY_WEIGHT": 0.3,
-            "HOTNESS_WEIGHT": 0.3,
+            "HOTNESS_WEIGHT": 0.1,
         }
 
     # 默认时间转换函数
@@ -290,6 +293,7 @@ def count_word_frequency(
                 ranks = source_ranks if source_ranks else []
                 url = source_url
                 mobile_url = source_mobile_url
+                rank_timeline = []
 
                 # 对于 current 模式，从历史统计信息中获取完整数据
                 if (
@@ -306,6 +310,7 @@ def count_word_frequency(
                         ranks = info["ranks"]
                     url = info.get("url", source_url)
                     mobile_url = info.get("mobileUrl", source_mobile_url)
+                    rank_timeline = info.get("rank_timeline", [])
                 elif (
                     title_info
                     and source_id in title_info
@@ -319,6 +324,7 @@ def count_word_frequency(
                         ranks = info["ranks"]
                     url = info.get("url", source_url)
                     mobile_url = info.get("mobileUrl", source_mobile_url)
+                    rank_timeline = info.get("rank_timeline", [])
 
                 if not ranks:
                     ranks = [99]
@@ -350,6 +356,7 @@ def count_word_frequency(
                         "url": url,
                         "mobileUrl": mobile_url,
                         "is_new": is_new,
+                        "rank_timeline": rank_timeline,
                     }
                 )
 
@@ -492,7 +499,7 @@ def count_rss_frequency(
     new_items: Optional[List[Dict]] = None,
     max_news_per_keyword: int = 0,
     sort_by_position_first: bool = False,
-    timezone: str = "Asia/Shanghai",
+    timezone: str = DEFAULT_TIMEZONE,
     rank_threshold: int = 5,
     quiet: bool = False,
 ) -> Tuple[List[Dict], int]:

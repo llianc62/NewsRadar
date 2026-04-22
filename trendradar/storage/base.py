@@ -7,7 +7,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set
 
 
 @dataclass
@@ -27,6 +27,9 @@ class NewsItem:
     first_time: str = ""                # 首次出现时间
     last_time: str = ""                 # 最后出现时间
     count: int = 1                      # 出现次数
+    rank_timeline: List[Dict[str, Any]] = field(default_factory=list)  # 完整排名时间线
+                                        # 格式: [{"time": "09:30", "rank": 1}, {"time": "10:00", "rank": 2}, ...]
+                                        # None 表示脱榜: [{"time": "11:00", "rank": None}]
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -42,6 +45,7 @@ class NewsItem:
             "first_time": self.first_time,
             "last_time": self.last_time,
             "count": self.count,
+            "rank_timeline": self.rank_timeline,
         }
 
     @classmethod
@@ -59,6 +63,7 @@ class NewsItem:
             first_time=data.get("first_time", ""),
             last_time=data.get("last_time", ""),
             count=data.get("count", 1),
+            rank_timeline=data.get("rank_timeline", []),
         )
 
 
@@ -367,14 +372,13 @@ class StorageBackend(ABC):
         pass
 
     @abstractmethod
-    def save_html_report(self, html_content: str, filename: str, is_summary: bool = False) -> Optional[str]:
+    def save_html_report(self, html_content: str, filename: str) -> Optional[str]:
         """
         保存 HTML 报告
 
         Args:
             html_content: HTML 内容
             filename: 文件名
-            is_summary: 是否为汇总报告
 
         Returns:
             保存的文件路径
@@ -430,34 +434,96 @@ class StorageBackend(ABC):
         """
         pass
 
-    # === 推送记录相关方法 ===
+    # === 时间段执行记录（调度系统）===
 
-    @abstractmethod
-    def has_pushed_today(self, date: Optional[str] = None) -> bool:
+    def has_period_executed(self, date_str: str, period_key: str, action: str) -> bool:
         """
-        检查指定日期是否已推送过
+        检查指定时间段的某个 action 是否已执行
 
         Args:
-            date: 日期字符串（YYYY-MM-DD），默认为今天
+            date_str: 日期字符串 YYYY-MM-DD
+            period_key: 时间段 key
+            action: 动作类型 (analyze / push)
 
         Returns:
-            是否已推送
+            是否已执行
         """
-        pass
+        return False
 
-    @abstractmethod
-    def record_push(self, report_type: str, date: Optional[str] = None) -> bool:
+    def record_period_execution(self, date_str: str, period_key: str, action: str) -> bool:
         """
-        记录推送
+        记录时间段的 action 执行
 
         Args:
-            report_type: 报告类型
-            date: 日期字符串（YYYY-MM-DD），默认为今天
+            date_str: 日期字符串 YYYY-MM-DD
+            period_key: 时间段 key
+            action: 动作类型 (analyze / push)
 
         Returns:
             是否记录成功
         """
+        return False
+
+    # === AI 智能筛选（默认实现，子类通过 mixin 覆盖） ===
+
+    def begin_batch(self) -> None:
+        """开启批量模式（远程后端延迟上传，本地后端无操作）"""
         pass
+
+    def end_batch(self) -> None:
+        """结束批量模式"""
+        pass
+
+    def get_active_ai_filter_tags(self, date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> List[Dict]:
+        return []
+
+    def get_latest_prompt_hash(self, date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> Optional[str]:
+        return None
+
+    def get_latest_ai_filter_tag_version(self, date: Optional[str] = None) -> int:
+        return 0
+
+    def deprecate_all_ai_filter_tags(self, date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> int:
+        return 0
+
+    def save_ai_filter_tags(self, tags: List[Dict], version: int, prompt_hash: str, date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> int:
+        return 0
+
+    def save_ai_filter_results(self, results: List[Dict], date: Optional[str] = None) -> int:
+        return 0
+
+    def get_active_ai_filter_results(self, date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> List[Dict]:
+        return []
+
+    def deprecate_specific_ai_filter_tags(self, tag_ids: List[int], date: Optional[str] = None) -> int:
+        return 0
+
+    def update_ai_filter_tags_hash(self, interests_file: str, new_hash: str, date: Optional[str] = None) -> int:
+        return 0
+
+    def update_ai_filter_tag_descriptions(self, tag_updates: List[Dict], date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> int:
+        return 0
+
+    def update_ai_filter_tag_priorities(self, tag_priorities: List[Dict], date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> int:
+        return 0
+
+    def save_analyzed_news(self, news_ids: List[str], source_type: str, interests_file: str, prompt_hash: str, matched_ids: Set[str], date: Optional[str] = None) -> int:
+        return 0
+
+    def get_analyzed_news_ids(self, source_type: str = "hotlist", date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> Set[str]:
+        return set()
+
+    def clear_analyzed_news(self, date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> int:
+        return 0
+
+    def clear_unmatched_analyzed_news(self, date: Optional[str] = None, interests_file: str = "ai_interests.txt") -> int:
+        return 0
+
+    def get_all_news_ids(self, date: Optional[str] = None) -> List[Dict]:
+        return []
+
+    def get_all_rss_ids(self, date: Optional[str] = None) -> List[Dict]:
+        return []
 
 
 def convert_crawl_results_to_news_data(
@@ -487,15 +553,9 @@ def convert_crawl_results_to_news_data(
         news_list = []
 
         for title, data in titles_data.items():
-            if isinstance(data, dict):
-                ranks = data.get("ranks", [])
-                url = data.get("url", "")
-                mobile_url = data.get("mobileUrl", "")
-            else:
-                # 兼容旧格式
-                ranks = data if isinstance(data, list) else []
-                url = ""
-                mobile_url = ""
+            ranks = data.get("ranks", [])
+            url = data.get("url", "")
+            mobile_url = data.get("mobileUrl", "")
 
             rank = ranks[0] if ranks else 99
 
@@ -523,39 +583,3 @@ def convert_crawl_results_to_news_data(
         id_to_name=id_to_name,
         failed_ids=failed_ids,
     )
-
-
-def convert_news_data_to_results(data: NewsData) -> tuple:
-    """
-    将 NewsData 转换回原有的 results 格式（用于兼容现有代码）
-
-    Args:
-        data: NewsData 对象
-
-    Returns:
-        (results, id_to_name, title_info) 元组
-    """
-    results = {}
-    title_info = {}
-
-    for source_id, news_list in data.items.items():
-        results[source_id] = {}
-        title_info[source_id] = {}
-
-        for item in news_list:
-            results[source_id][item.title] = {
-                "ranks": item.ranks,
-                "url": item.url,
-                "mobileUrl": item.mobile_url,
-            }
-
-            title_info[source_id][item.title] = {
-                "first_time": item.first_time,
-                "last_time": item.last_time,
-                "count": item.count,
-                "ranks": item.ranks,
-                "url": item.url,
-                "mobileUrl": item.mobile_url,
-            }
-
-    return results, data.id_to_name, title_info
