@@ -18,7 +18,7 @@ app:
   #   - Europe/London (伦敦时间 UTC+0/+1)
   # 完整时区列表: https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
   timezone: "Asia/Shanghai"
-  show_version_update: false           # 显示版本更新提示
+  show_version_update: true           # 显示版本更新提示
 
 
 # ===============================================================
@@ -40,7 +40,7 @@ app:
 # 详细时间线图请查看 config/timeline.yaml
 # ===============================================================
 schedule:
-  enabled: true                         # 是否启用调度系统
+  enabled: false                         # 是否启用调度系统
   preset: "morning_evening"             # 预设模板名称（见上方说明）
 
 
@@ -295,7 +295,7 @@ display:
   #   - AI 分析：由 ai_analysis.include_standalone 开关控制，将完整数据送入 AI 做深度分析
   # 两者共享此处的平台/RSS 配置，但开关互相独立（可只开 AI 分析、不推送展示）
   standalone:
-    platforms: ["zhihu", "wallstreetcn-hot"]     # 热榜平台 ID 列表（如 ["zhihu", "weibo"]）
+    platforms: ["cls-hot", "wallstreetcn-hot"]     # 热榜平台 ID 列表（如 ["zhihu", "weibo"]）
     rss_feeds: []                     # RSS 源 ID 列表（如 ["hacker-news"]）
     max_items: 20                     # 每个源最多展示条数（0=不限制）
 
@@ -587,7 +587,7 @@ advanced:
   # RSS 设置
   rss:
     request_interval: 1000            # 请求间隔（毫秒）
-    timeout: 15                       # 请求超时（秒）
+    timeout: 20                       # 请求超时（秒）
     use_proxy: false                  # 是否使用代理
     proxy_url: ""                     # RSS 专属代理（留空则使用 crawler.default_proxy）
 
