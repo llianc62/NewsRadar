@@ -1,0 +1,16 @@
+[project]
+name = "newsnow-crawler"
+version = "1.0.0"
+description = "Standalone news crawler — fetches hot-list + RSS, stores to SQLite, notifies via email"
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.33",
+    "boto3>=1.42",
+    "PyYAML>=6.0",
+    "pytz>=2026.1",
+    "feedparser>=6.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
