@@ -1,0 +1,45 @@
+<!-- Right: Paginated News List -->
+<div style="flex: 1; background: hsl(var(--card)); border-radius: var(--radius); border: 1px solid hsl(var(--border)); display: flex; flex-direction: column;">
+
+  <!-- Header -->
+  <div style="padding: 12px 16px; border-bottom: 1px solid hsl(var(--muted)); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;">
+    <span style="font-size: 13px; font-weight: 600; color: hsl(var(--foreground)); display: flex; align-items: center; gap: 6px;">
+      {% raw icon_svg('newspaper') %}
+      其他新闻
+    </span>
+    <span class="font-mono" style="font-size: 11px; color: hsl(var(--muted-foreground));">共 {{ total_count }} 条</span>
+  </div>
+
+  <!-- List Items -->
+  <div>
+    {% for item in list_items %}
+    <div style="padding: 9px 16px; display: flex; gap: 8px; align-items: flex-start; border-bottom: 1px solid hsl(var(--muted)); font-size: 12px;">
+      <span class="font-mono" style="min-width: 28px; color: hsl(var(--muted-foreground)); font-size: 11px; padding-top: 1px;">{{ item['seq'] }}</span>
+      <span style="flex: 1; font-weight: 500; color: hsl(var(--foreground)); line-height: 1.4;">{{ item['title'] }}</span>
+      <span style="min-width: 52px; font-size: 10px; color: hsl(var(--muted-foreground)); text-align: right; white-space: nowrap;">{{ item['source'] }}</span>
+    </div>
+    {% end %}
+  </div>
+
+  <!-- Pagination -->
+  <div style="border-top: 1px solid hsl(var(--muted)); padding: 10px 16px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; background: hsl(var(--background)); margin-top: auto;">
+    <span class="font-mono" style="font-size: 11px; color: hsl(var(--muted-foreground));">
+      第 {{ page_start }}-{{ page_end }} 条
+    </span>
+    <div style="display: flex; align-items: center; gap: 4px;">
+      <span style="width: 28px; height: 28px; border-radius: var(--radius-sm); border: 1px solid hsl(var(--border)); background: hsl(var(--card)); display: flex; align-items: center; justify-content: center; opacity: 0.4; font-size: 12px; color: hsl(var(--muted-foreground)); cursor: default;">‹</span>
+
+      {% for p in page_numbers %}
+        {% if p == '...' %}
+        <span style="font-size: 11px; color: hsl(var(--muted-foreground)); padding: 0 2px;">…</span>
+        {% elif p == current_page %}
+        <span style="width: 28px; height: 28px; border-radius: var(--radius-sm); border: none; background: hsl(var(--primary)); color: white; font-weight: 600; font-size: 11px; font-family: var(--font-mono); display: flex; align-items: center; justify-content: center; cursor: default;">{{ p }}</span>
+        {% else %}
+        <span style="width: 28px; height: 28px; border-radius: var(--radius-sm); border: 1px solid hsl(var(--border)); background: hsl(var(--card)); font-size: 11px; font-family: var(--font-mono); color: hsl(var(--muted-foreground)); display: flex; align-items: center; justify-content: center; cursor: default;">{{ p }}</span>
+        {% end %}
+      {% end %}
+
+      <span style="width: 28px; height: 28px; border-radius: var(--radius-sm); border: 1px solid hsl(var(--border)); background: hsl(var(--card)); display: flex; align-items: center; justify-content: center; font-size: 12px; color: hsl(var(--muted-foreground)); cursor: default;">›</span>
+    </div>
+  </div>
+</div>
