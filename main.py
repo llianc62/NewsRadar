@@ -16,7 +16,6 @@ from models import (
     convert_rss_items_to_news_data,
 )
 from utils import (
-    get_configured_time,
     format_date_folder,
     format_time_display,
     DEFAULT_TIMEZONE,
@@ -50,30 +49,26 @@ def build_source_tiers(config: dict) -> dict:
 
 
 def cmd_crawl(config: dict):
-    """Run the crawler: fetch + store + upload."""
-    timezone = config.get("app", {}).get("timezone", DEFAULT_TIMEZONE)
-    now = get_configured_time(timezone)
+    """Run the crawler: fetch + store to PostgreSQL."""
+    from database import init_db, save_news_data, close_db
+
+    timezone = config["app"]["timezone"]
     date = format_date_folder(timezone)
     time_str = format_time_display(timezone)
 
     print(f"=== Crawler === {date} {time_str}")
 
-    # Init storage
-    storage_config = config.get("storage", {})
-    storage = Storage(
-        data_dir=storage_config.get("local", {}).get("data_dir", "output"),
-        timezone=timezone,
-        s3_config=storage_config.get("remote") or None,
-    )
+    # Init PostgreSQL
+    init_db(config["postgresql"])
     source_tiers = build_source_tiers(config)
 
-    # ── Fetch hot-list ─────────────────────────────────
-    platforms_config = config.get("platforms", {})
-    if platforms_config.get("enabled", True):
-        crawler_config = config.get("crawler", {})
-        request_interval = crawler_config.get("request_interval", 2000)
+    total_new = 0
+    total_updated = 0
 
-        sources = platforms_config.get("sources", [])
+    # ── Fetch hot-list ─────────────────────────────────
+    if config["platforms"]["enabled"]:
+        request_interval = config["crawler"]["request_interval"]
+        sources = config["platforms"]["sources"]
         ids_list = [(s["id"], s["name"]) for s in sources]
 
         print(f"\n[Hot-list] Fetching {len(ids_list)} platforms...")
@@ -86,24 +81,25 @@ def cmd_crawl(config: dict):
             news_data = convert_crawl_results_to_news_data(
                 results, id_to_name, failed_ids, time_str, date
             )
-            storage.save_news_data(news_data, source_tiers)
+            counts = save_news_data(news_data, source_tiers, sync_status="local")
+            total_new += counts["new"]
 
     # ── Fetch RSS ──────────────────────────────────────
-    rss_config = config.get("rss", {})
-    if rss_config.get("enabled", False):
-        print(f"\n[RSS] Fetching feeds...")
-        rss_fetcher = RSSFetcher.from_config(rss_config)
+    rss_cfg = config["rss"]
+    if rss_cfg["enabled"]:
+        print("\n[RSS] Fetching feeds...")
+        rss_fetcher = RSSFetcher.from_config(rss_cfg)
         rss_results, rss_id_to_name, rss_failed_ids = rss_fetcher.fetch_all()
 
         if rss_results:
             rss_news_data = convert_rss_items_to_news_data(
                 rss_results, rss_id_to_name, rss_failed_ids, time_str, date
             )
-            storage.save_news_data(rss_news_data, source_tiers)
+            counts = save_news_data(rss_news_data, source_tiers, sync_status="local")
+            total_new += counts["new"]
 
-    storage.cleanup()
-    total = sum(len(v) for v in news_data.items.values()) if results else 0
-    print(f"=== Done: {len(results) if results else 0} platforms, {total} items ===")
+    close_db()
+    print(f"=== Done ===")
 
 
 def cmd_notify(config: dict):
@@ -173,16 +169,20 @@ def cmd_notify(config: dict):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python main.py [crawl|notify]")
+        print("Usage: python main.py [crawl|notify|sync|init-db]")
         sys.exit(1)
 
     cmd = sys.argv[1]
-    config = load_config()
+    cfg = load_config("config.yaml")
 
     if cmd == "crawl":
-        cmd_crawl(config)
+        cmd_crawl(cfg)
     elif cmd == "notify":
-        cmd_notify(config)
+        cmd_notify(cfg)
+    elif cmd == "sync":
+        cmd_sync(cfg)
+    elif cmd == "init-db":
+        cmd_init_db(cfg)
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)
