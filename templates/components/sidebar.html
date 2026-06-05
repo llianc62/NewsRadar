@@ -1,0 +1,42 @@
+<aside class="app-sidebar">
+  <!-- Logo -->
+  <div style="padding: 18px; border-bottom: 1px solid hsl(var(--border)); display: flex; align-items: center; gap: 10px;">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="hsl(var(--primary))" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M6 20V8"/><path d="M10 20V4"/><path d="M14 20V12"/><path d="M18 20V16"/>
+    </svg>
+    <span style="font-weight: 700; font-size: 14px; color: hsl(var(--foreground));">NewsRadar</span>
+  </div>
+
+  <!-- Navigation -->
+  <nav style="flex: 1; padding: 12px 10px; display: flex; flex-direction: column; gap: 1px;">
+    {% set nav_items = [
+      ('home', '/', 'chart-column', 'Home'),
+      ('hot-news', '/hot-news', 'flame', '热点新闻'),
+      ('positions', '/positions', 'briefcase-business', '持仓分析'),
+      ('stocks', '/stocks', 'trending-up', '个股分析'),
+      ('reports', '/reports', 'file-text', '行业报告'),
+      ('trading', '/trading', 'clock', '交易决策'),
+      ('settings', '/settings', 'sliders-horizontal', '系统配置'),
+    ] %}
+    {% for id, url, icon, label in nav_items %}
+    <a href="{{ url }}"
+       class="nav-item{% if active_page == id %} active{% end %}"
+       style="display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500;">
+      {% raw icon_svg(icon) %}
+      {{ label }}
+    </a>
+    {% end %}
+  </nav>
+</aside>
+
+<style>
+.nav-item {
+  color: hsl(var(--muted-foreground));
+  transition: color 0.15s;
+}
+.nav-item:hover { color: hsl(var(--foreground)); }
+.nav-item.active {
+  color: hsl(var(--primary));
+  font-weight: 600;
+}
+</style>
