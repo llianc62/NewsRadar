@@ -1,198 +1,127 @@
 # coding=utf-8
-"""HTML report generation and email notification.
+"""HTML report generation and email notification."""
 
-The HTML layout and styles are defined in ``report_template.html``.
-This module renders the template with actual news data.
-"""
-
-import os
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr, formatdate
 from typing import Dict, List, Optional
 
-TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "report_template.html")
-
-# Tier display config
+# Tier display labels (used by web frontend)
 TIER_LABELS = {1: "T1·官媒", 2: "T2·主流", 3: "T3·垂直", 4: "T4·资讯"}
-TIER_COLORS = {1: "#059669", 2: "#2563eb", 3: "#d97706", 4: "#6b7280"}
-TIER_BG = {1: "#ecfdf5", 2: "#eff6ff", 3: "#fffbeb", 4: "#f3f4f6"}
-
-
-def _render_news_item(item: Dict, index: int) -> str:
-    """Render a single news item as an HTML snippet.
-
-    Args:
-        item: News item dict with fields: title, source_name, source_type,
-              url, rank, tier.
-        index: 1-based item number within the group.
-
-    Returns:
-        HTML string for the news item div.
-    """
-    title = item.get("title", "")
-    source = item.get("source_name", "")
-    source_type = item.get("source_type", "hotlist")
-    url = item.get("url", "")
-    rank = item.get("rank", "")
-    tier = item.get("tier", 4)
-
-    tier_color = TIER_COLORS.get(tier, "#6b7280")
-    tier_bg_color = TIER_BG.get(tier, "#f3f4f6")
-    tier_label = TIER_LABELS.get(tier, "T4")
-
-    # Rank / type badge
-    if source_type == "rss":
-        type_badge = '<span class="rank-num" style="background:#059669;">RSS</span>'
-    elif rank:
-        rank_int = rank if isinstance(rank, int) else (int(rank) if str(rank).isdigit() else 0)
-        if rank_int <= 3:
-            rank_class = "top"
-        elif rank_int <= 10:
-            rank_class = "high"
-        else:
-            rank_class = ""
-        type_badge = f'<span class="rank-num {rank_class}">#{rank}</span>'
-    else:
-        type_badge = ""
-
-    # HTML-escape title and source
-    escaped_title = (
-        title.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
-    escaped_source = (
-        source.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-    )
-
-    title_link = (
-        f'<a href="{url}" target="_blank" class="news-link">{escaped_title}</a>'
-        if url
-        else escaped_title
-    )
-
-    return f"""<div class="news-item">
-    <div class="news-number">{index}</div>
-    <div class="news-content">
-        <div class="news-header">
-            {type_badge}
-            <span class="tier-badge" style="background:{tier_bg_color};color:{tier_color};">{tier_label}</span>
-            <span class="source-name">{escaped_source}</span>
-        </div>
-        <div class="news-title">{title_link}</div>
-    </div>
-</div>"""
-
-
-def _render_content(grouped_items: Dict[str, List[Dict]]) -> str:
-    """Render all grouped news items into the {{CONTENT}} HTML block.
-
-    Args:
-        grouped_items: {group_name: [item_dict, ...]} from match_and_group().
-
-    Returns:
-        HTML string for the content area.
-    """
-    parts = []
-    total_groups = len(grouped_items)
-    group_index = 0
-
-    for group_name, items in grouped_items.items():
-        if not items:
-            continue
-        label = group_name
-        count = len(items)
-
-        items_html = "\n".join(
-            _render_news_item(item, j) for j, item in enumerate(items, 1)
-        )
-
-        parts.append(f"""<div class="word-group">
-    <div class="word-header">
-        <div class="word-info">
-            <div class="word-name">{label}</div>
-            <div class="word-count">{count} 条</div>
-        </div>
-        <div class="word-index">{group_index + 1}/{total_groups}</div>
-    </div>
-    {items_html}
-</div>""")
-        group_index += 1
-
-    return "\n".join(parts)
-
-
-def load_template(path: str = TEMPLATE_PATH) -> str:
-    """Load the HTML report template from disk."""
-    with open(path, encoding="utf-8") as f:
-        return f.read()
-
+TIER_COLORS = {
+    1: "hsl(var(--danger))",
+    2: "hsl(var(--warning))",
+    3: "hsl(var(--success))",
+    4: "hsl(var(--info))",
+}
+TIER_BG = {
+    1: "hsl(var(--danger) / 0.1)",
+    2: "hsl(var(--warning) / 0.1)",
+    3: "hsl(var(--success) / 0.1)",
+    4: "hsl(var(--info) / 0.1)",
+}
 
 def build_html_report(
     grouped_items: Dict[str, List[Dict]],
     date: str,
     time_str: str,
     total_count: int,
-    *,
-    template_path: str = TEMPLATE_PATH,
 ) -> str:
-    """Render the HTML report by filling the template with live data.
+    """Generate a simple, clean HTML report.
 
     Args:
-        grouped_items: {group_name: [item_dict, ...]} from match_and_group().
-        date: YYYY-MM-DD.
-        time_str: HH:MM.
-        total_count: Total items in the report.
-        template_path: Path to the HTML template file (defaults to
-            ``report_template.html`` next to this module).
+        grouped_items: {group_name: [item_dict, ...]} from match_and_group()
+        date: YYYY-MM-DD
+        time_str: HH:MM
+        total_count: Total items in report
 
     Returns:
-        Complete HTML string ready for email or file output.
+        HTML string
     """
-    template = load_template(template_path)
-    content_html = _render_content(grouped_items)
+    rows_html = ""
+    tier_labels = {1: "T1", 2: "T2", 3: "T3", 4: "T4"}
+    tier_colors = {1: "#22c55e", 2: "#3b82f6", 3: "#f59e0b", 4: "#94a3b8"}
 
-    return (
-        template.replace("{{DATE}}", date)
-        .replace("{{TIME}}", time_str)
-        .replace("{{TOTAL_COUNT}}", str(total_count))
-        .replace("{{GROUP_COUNT}}", str(len(grouped_items)))
-        .replace("{{CONTENT}}", content_html)
-    )
+    for group_name, items in grouped_items.items():
+        if not items:
+            continue
+        label = group_name if group_name != "__unmatched__" else "其他新闻"
+        rows_html += (
+            f'<h3 style="color:#3b82f6;margin-top:24px;border-bottom:1px solid #1e293b;padding-bottom:8px;">'
+            f'{label} <span style="font-size:14px;color:#64748b;">({len(items)})</span></h3>\n'
+        )
+        rows_html += (
+            '<table style="width:100%;border-collapse:collapse;font-size:14px;">\n'
+        )
 
+        for item in items:
+            title = item.get("title", "")
+            source = item.get("source_name", "")
+            source_type = item.get("source_type", "hotlist")
+            url = item.get("url", "")
+            rank = item.get("rank", "")
+            summary = item.get("summary", "")
+            tier = item.get("tier", 4)
+            tier_color = tier_colors.get(tier, "#94a3b8")
+            tier_label = tier_labels.get(tier, "T4")
 
-def save_html_report(
-    html_content: str,
-    date: str,
-    time_str: str,
-    *,
-    data_dir: str = "output",
-) -> str:
-    """Save the HTML report to a local file before sending.
+            if source_type == "rss":
+                type_label = "[RSS]"
+            elif rank:
+                type_label = f"[#{rank}]"
+            else:
+                type_label = ""
 
-    Args:
-        html_content: The complete HTML report string.
-        date: YYYY-MM-DD.
-        time_str: HH:MM (colon replaced with dash in filename).
-        data_dir: Base directory for output files.
+            title_html = (
+                f'<a href="{url}" style="color:#e2e8f0;text-decoration:none;">{title}</a>'
+                if url
+                else title
+            )
 
-    Returns:
-        Absolute path to the saved report file.
-    """
-    os.makedirs(data_dir, exist_ok=True)
-    safe_time = time_str.replace(":", "-")
-    filename = f"report_{date}_{safe_time}.html"
-    filepath = os.path.join(data_dir, filename)
-    with open(filepath, "w", encoding="utf-8") as f:
-        f.write(html_content)
-    print(f"[Report] Saved to {filepath}")
-    return os.path.abspath(filepath)
+            rows_html += (
+                f'<tr style="border-bottom:1px solid #1e293b;">'
+                f'<td style="padding:8px;color:#64748b;white-space:nowrap;width:60px;">{type_label}</td>'
+                f'<td style="padding:8px;">'
+                f'<span style="color:{tier_color};font-size:11px;margin-right:6px;">[{tier_label}]</span>'
+                f'{title_html}</td>'
+                f'<td style="padding:8px;color:#64748b;white-space:nowrap;width:100px;">{source}</td>'
+                f'</tr>\n'
+            )
+            if summary:
+                rows_html += (
+                    f'<tr style="border-bottom:1px solid #1e293b;">'
+                    f'<td></td>'
+                    f'<td colspan="2" style="padding:4px 8px 8px;color:#94a3b8;font-size:13px;">'
+                    f'{summary[:200]}</td>'
+                    f'</tr>\n'
+                )
+
+        rows_html += "</table>\n"
+
+    html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>News Report — {date} {time_str}</title>
+<style>
+  body {{ background:#0f172a; color:#e2e8f0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+         max-width:800px; margin:0 auto; padding:20px; }}
+  h1 {{ font-size:22px; }}
+  h2 {{ font-size:16px; color:#94a3b8; font-weight:400; }}
+  h3 {{ font-size:15px; }}
+  a:hover {{ text-decoration:underline; }}
+</style>
+</head>
+<body>
+<h1>\U0001f4f0 新闻速报</h1>
+<h2>{date} {time_str} · {total_count} 条新闻 · {len(grouped_items)} 个分组</h2>
+{rows_html}
+<p style="margin-top:32px;color:#475569;font-size:12px;">Generated by NewsNow Crawler</p>
+</body>
+</html>"""
+    return html
 
 
 def send_email(

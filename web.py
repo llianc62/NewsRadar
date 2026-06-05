@@ -2,14 +2,20 @@
 
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from config import load_config
+from database import init_db, close_db, get_recent_news, get_news_count, get_stats, get_news_by_id
+
 BASE_DIR = Path(__file__).parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
+
+# Load config for DB connection
+_config = load_config(str(BASE_DIR / "config.yaml"))
 
 # Jinja2 environment
 env = Environment(
@@ -44,29 +50,40 @@ app = FastAPI(title="NewsRadar", version="1.0.0")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
+@app.on_event("startup")
+async def startup():
+    """Initialize database on app start."""
+    init_db(_config["postgresql"])
+    print("[Web] Database initialized")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    """Close database on app shutdown."""
+    close_db()
+
+
 # ===== Routes =====
 
 @app.get("/", response_class=HTMLResponse)
 async def market_overview(request: Request):
-    """Market overview page."""
+    """Market overview page with real stats."""
+    stats = get_stats()
+
     index_cards = [
-        {"name": "上证指数", "value": "3,258.16", "change": 1.23},
-        {"name": "深证成指", "value": "11,432.07", "change": 0.87},
-        {"name": "创业板指", "value": "2,358.42", "change": -0.45},
-        {"name": "恒生科技", "value": "4,521.33", "change": 2.15},
-        {"name": "纳斯达克", "value": "19,856.27", "change": 0.62},
-        {"name": "标普500", "value": "5,934.11", "change": 0.38},
+        {"name": "T1·官媒", "value": str(stats["t1_count"]), "change": None},
+        {"name": "T2·主流", "value": str(stats["t2_count"]), "change": None},
+        {"name": "T3·垂直", "value": str(stats["t3_count"]), "change": None},
+        {"name": "T4·资讯", "value": str(stats["t4_count"]), "change": None},
+        {"name": "总计新闻", "value": str(stats["total_count"]), "change": None},
+        {"name": "今日新增", "value": str(stats["today_count"]), "change": None},
     ]
+
     hot_stocks = [
-        {"name": "贵州茅台", "change": 2.34},
-        {"name": "宁德时代", "change": 4.12},
-        {"name": "腾讯控股", "change": 3.15},
-        {"name": "比亚迪", "change": -1.87},
-        {"name": "中芯国际", "change": 5.63},
-        {"name": "招商银行", "change": 1.05},
-        {"name": "阿里巴巴", "change": 2.78},
-        {"name": "药明康德", "change": -0.92},
+        {"name": s["source_name"], "change": s["cnt"]}
+        for s in stats["by_source"][:8]
     ]
+
     html = render_template(
         "pages/market_overview.html",
         active_page="home",
@@ -77,130 +94,79 @@ async def market_overview(request: Request):
 
 
 @app.get("/hot-news", response_class=HTMLResponse)
-async def hot_news(request: Request):
-    """Hot news page."""
+async def hot_news(
+    request: Request,
+    page: int = Query(1, ge=1),
+    tier: int = Query(None, ge=0, le=4),
+):
+    """Hot news page with real data from PostgreSQL."""
     from notifier import TIER_LABELS, TIER_COLORS, TIER_BG
 
+    per_page = 10
+    offset = (page - 1) * per_page
+
+    # Fetch from DB
+    articles = get_recent_news(
+        limit=per_page,
+        offset=offset,
+        tier=tier if tier and tier > 0 else None,
+    )
+    total = get_news_count(tier=tier if tier and tier > 0 else None)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+
+    # Stats
+    stats_data = get_stats()
+
     stats = [
-        {"label": "今日热点", "value": "86", "icon": "flame",
+        {"label": "今日新增", "value": str(stats_data["today_count"]), "icon": "flame",
          "bg": "hsl(var(--primary) / 0.1)", "color": "hsl(var(--foreground))"},
-        {"label": "新闻来源", "value": "7", "icon": "newspaper",
+        {"label": "新闻来源", "value": str(len(stats_data["by_source"])), "icon": "newspaper",
          "bg": "hsl(var(--info) / 0.1)", "color": "hsl(var(--foreground))"},
-        {"label": "热点新闻", "value": "8", "icon": "star",
+        {"label": "总计", "value": str(stats_data["total_count"]), "icon": "star",
          "bg": "hsl(var(--warning) / 0.1)", "color": "hsl(var(--foreground))"},
-        {"label": "利好指数", "value": "62%", "icon": "trending-up-lg",
+        {"label": "T1·官媒", "value": str(stats_data["t1_count"]), "icon": "trending-up-lg",
          "bg": "hsl(var(--danger) / 0.1)", "color": "hsl(var(--danger))"},
     ]
+
     tier_labels = [
         {"label": f"T{t}·{TIER_LABELS[t].split('·')[1]}", "color": c, "bg": TIER_BG[t]}
         for t, c in TIER_COLORS.items()
     ]
+
     keywords = ["央行", "AI", "港股", "外资", "芯片", "新能源"]
 
-    tier1_cards = [
-        {
-            "sentiment": "利好", "sentiment_bg": "hsl(var(--danger) / 0.1)",
-            "sentiment_color": "hsl(var(--danger))",
-            "source": "华尔街见闻", "time": "2h前", "heat": "98",
-            "title": "央行降准释放万亿流动性，A股三大指数集体高开",
-            "summary": "中国人民银行宣布下调金融机构存款准备金率0.5个百分点，预计释放长期资金约1.2万亿元。分析人士认为此举将有效降低企业融资成本，支持实体经济持续恢复。",
-            "points": ["银行板块全线飘红，招商银行涨超3%", "券商板块联动上涨，中信证券涨逾2%"],
-            "keywords": [
-                {"text": "央行", "primary": True}, {"text": "降准", "primary": False},
-                {"text": "流动性", "primary": False}, {"text": "A股", "primary": False},
-            ],
-        },
-        {
-            "sentiment": "利空", "sentiment_bg": "hsl(var(--success) / 0.1)",
-            "sentiment_color": "hsl(var(--success))",
-            "source": "证券时报", "time": "1h前", "heat": "95",
-            "title": "美联储暗示6月暂停加息，全球风险资产应声大涨",
-            "summary": "美联储主席鲍威尔在国会听证中释放明确鸽派信号，市场对6月加息概率预期从70%骤降至15%。纳指、标普500盘中双双创下历史新高。",
-            "keywords": [
-                {"text": "美联储", "primary": True}, {"text": "利率", "primary": False},
-                {"text": "美股", "primary": False}, {"text": "鲍威尔", "primary": False},
-            ],
-        },
-        {
-            "sentiment": "利好", "sentiment_bg": "hsl(var(--danger) / 0.1)",
-            "sentiment_color": "hsl(var(--danger))",
-            "source": "36氪", "time": "3h前", "heat": "91",
-            "title": "OpenAI 发布新一代推理模型，AI 芯片需求预期上调",
-            "summary": "新模型在多项基准测试中大幅领先，推理效率提升3倍。多家中外券商同步上调英伟达、台积电目标价，AI算力产业链全面走强。",
-            "keywords": [
-                {"text": "AI", "primary": True}, {"text": "芯片", "primary": False},
-                {"text": "英伟达", "primary": False},
-            ],
-        },
-        {
-            "sentiment": "利好", "sentiment_bg": "hsl(var(--danger) / 0.1)",
-            "sentiment_color": "hsl(var(--danger))",
-            "source": "财联社", "time": "30min前", "heat": "93",
-            "title": "北向资金今日净买入超120亿，连续5日净流入创年内纪录",
-            "summary": "沪股通净买入58亿，深股通净买入62亿，外资加速回流中国资产。大金融、白酒板块获集中加仓，贵州茅台、招商银行位列净买入榜首。",
-            "points": ["连续5日净流入累计超400亿元", "单日净买入额创年内新高"],
-            "keywords": [
-                {"text": "北向资金", "primary": True}, {"text": "外资", "primary": False},
-                {"text": "茅台", "primary": False},
-            ],
-        },
-        {
-            "sentiment": "利好", "sentiment_bg": "hsl(var(--danger) / 0.1)",
-            "sentiment_color": "hsl(var(--danger))",
-            "source": "澎湃新闻", "time": "4h前", "heat": "88",
-            "title": "新能源汽车渗透率突破45%，行业拐点已至",
-            "summary": "工信部最新数据显示，5月新能源乘用车零售渗透率达45.2%，充电桩、动力电池板块集体爆发，宁德时代盘中涨逾4%。",
-            "keywords": [
-                {"text": "新能源汽车", "primary": True}, {"text": "宁德时代", "primary": False},
-                {"text": "充电桩", "primary": False},
-            ],
-        },
-        {
-            "sentiment": "中性", "sentiment_bg": "hsl(var(--warning) / 0.1)",
-            "sentiment_color": "hsl(var(--warning))",
-            "source": "财联社", "time": "5h前", "heat": "76",
-            "title": "比亚迪新车发布，新能源SUV市场格局生变",
-            "summary": "比亚迪全新SUV起售价14.98万元，远低于市场预期的16-18万元区间。竞品股价普遍承压，理想、蔚来港股跌幅超过4%。",
-            "keywords": [
-                {"text": "比亚迪", "primary": True}, {"text": "SUV", "primary": False},
-            ],
-        },
-        {
-            "sentiment": "利好", "sentiment_bg": "hsl(var(--danger) / 0.1)",
-            "sentiment_color": "hsl(var(--danger))",
-            "source": "今日头条", "time": "2h前", "heat": "85",
-            "title": "恒生科技指数涨超3%，腾讯阿里双双走强",
-            "summary": "港股科技股集体爆发，恒生科技指数创近三个月新高。腾讯控股涨超4%，阿里巴巴涨逾3%，南向资金连续第8个交易日净流入。",
-            "keywords": [
-                {"text": "港股", "primary": True}, {"text": "腾讯", "primary": False},
-                {"text": "阿里", "primary": False},
-            ],
-        },
-        {
-            "sentiment": "利好", "sentiment_bg": "hsl(var(--danger) / 0.1)",
-            "sentiment_color": "hsl(var(--danger))",
-            "source": "澎湃新闻", "time": "6h前", "heat": "72",
-            "title": "国务院印发数字经济发展规划，数据要素市场迎重磅利好",
-            "summary": "规划明确提出到2027年数字经济核心产业增加值占GDP比重达到12%，数据要素、信创、国产软件等板块迎来政策催化。",
-            "keywords": [
-                {"text": "数字经济", "primary": True}, {"text": "数据要素", "primary": False},
-                {"text": "信创", "primary": False},
-            ],
-        },
-    ]
+    # Convert articles to template format
+    def _to_card(article: dict) -> dict:
+        score = article.get("sentiment_score")
+        if score is not None and score >= 67:
+            sentiment, s_bg, s_color = "利好", "hsl(var(--danger) / 0.1)", "hsl(var(--danger))"
+        elif score is not None and score <= 33:
+            sentiment, s_bg, s_color = "利空", "hsl(var(--success) / 0.1)", "hsl(var(--success))"
+        else:
+            sentiment, s_bg, s_color = "中性", "hsl(var(--warning) / 0.1)", "hsl(var(--warning))"
 
-    list_items = [
-        {"seq": 1, "title": "北向资金今日净买入超120亿，连续5日净流入", "source": "华尔街见闻"},
-        {"seq": 2, "title": "恒生科技指数涨超3%，腾讯阿里双双走强", "source": "财联社"},
-        {"seq": 3, "title": "比特币重返6.5万美元，加密概念股集体上涨", "source": "今日头条"},
-        {"seq": 4, "title": "国务院印发数字经济发展规划，数据要素市场迎利好", "source": "澎湃新闻"},
-        {"seq": 5, "title": "贵州茅台宣布特别分红，股息率创历史新高", "source": "证券时报"},
-        {"seq": 6, "title": "多地放松楼市限购，房地产板块触底反弹", "source": "36氪"},
-        {"seq": 7, "title": "中芯国际14nm良率突破，国产替代加速推进", "source": "财联社"},
-        {"seq": 8, "title": "光伏组件价格触底，龙头厂商宣布联合限产", "source": "澎湃新闻"},
-        {"seq": 9, "title": "瑞银上调中国GDP增速预期至5.3%", "source": "证券时报"},
-        {"seq": 10, "title": "科创50ETF份额突破千亿，资金持续涌入", "source": "今日头条"},
-    ]
+        return {
+            "sentiment": sentiment,
+            "sentiment_bg": s_bg,
+            "sentiment_color": s_color,
+            "source": article.get("source_name", ""),
+            "time": _relative_time(article.get("published_at")),
+            "heat": str(article.get("heat_score") or 0),
+            "title": article.get("title", ""),
+            "summary": article.get("summary", ""),
+            "keywords": [{"text": t, "primary": i == 0} for i, t in enumerate(article.get("tags") or [])],
+        }
+
+    def _to_list_item(article: dict, seq: int) -> dict:
+        return {
+            "seq": seq,
+            "title": article.get("title", ""),
+            "source": article.get("source_name", ""),
+        }
+
+    tier1_cards = [_to_card(a) for a in articles]
+    list_items = [_to_list_item(a, offset + i + 1) for i, a in enumerate(articles)]
+    page_numbers = _build_page_numbers(page, total_pages)
 
     html = render_template(
         "pages/hot_news.html",
@@ -210,11 +176,63 @@ async def hot_news(request: Request):
         keywords=keywords,
         tier1_cards=tier1_cards,
         list_items=list_items,
-        total_count=78,
-        page_start=1,
-        page_end=10,
-        current_page=1,
-        page_numbers=[1, 2, 3, "...", 8],
+        total_count=total,
+        page_start=offset + 1,
+        page_end=min(offset + per_page, total),
+        current_page=page,
+        page_numbers=page_numbers,
+    )
+    return HTMLResponse(html)
+
+
+def _relative_time(dt) -> str:
+    """Convert datetime to relative time string like '2h前'."""
+    if dt is None:
+        return ""
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    diff = now - dt
+    if diff < timedelta(minutes=1):
+        return "刚刚"
+    elif diff < timedelta(hours=1):
+        return f"{int(diff.total_seconds() // 60)}min前"
+    elif diff < timedelta(days=1):
+        return f"{int(diff.total_seconds() // 3600)}h前"
+    else:
+        return f"{diff.days}d前"
+
+
+def _build_page_numbers(current: int, total: int) -> list:
+    """Build page number list like [1, 2, 3, '...', 8]."""
+    if total <= 7:
+        return list(range(1, total + 1))
+    pages = [1, 2, 3]
+    if current > 4:
+        pages.append("...")
+    for p in range(max(4, current - 1), min(total - 2, current + 2) + 1):
+        if p not in pages:
+            pages.append(p)
+    if current < total - 3:
+        pages.append("...")
+    for p in [total - 2, total - 1, total]:
+        if p not in pages:
+            pages.append(p)
+    return pages
+
+
+@app.get("/news/{article_id}", response_class=HTMLResponse)
+async def news_detail(request: Request, article_id: int):
+    """Single news article detail page."""
+    article = get_news_by_id(article_id)
+    if article is None:
+        return HTMLResponse("<h1>404 Not Found</h1>", status_code=404)
+
+    html = render_template(
+        "pages/news_detail.html",
+        active_page="hot-news",
+        article=article,
     )
     return HTMLResponse(html)
 

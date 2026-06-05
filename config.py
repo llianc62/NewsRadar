@@ -150,6 +150,32 @@ def _load_storage_config(raw: Dict) -> Dict:
     }
 
 
+def _load_postgresql_config(raw: Dict) -> Dict:
+    """加载 PostgreSQL 配置"""
+    pg = raw.get("postgresql", {})
+    return {
+        "host": _get_env_str("PG_HOST") or pg.get("host", "localhost"),
+        "port": _get_env_int("PG_PORT") or pg.get("port", 5432),
+        "database": _get_env_str("PG_DATABASE") or pg.get("database", "newsradar"),
+        "user": _get_env_str("PG_USER") or pg.get("user", "newsradar"),
+        "password": _get_env_str("PG_PASSWORD") or pg.get("password", ""),
+        "min_connections": pg.get("min_connections", 2),
+        "max_connections": pg.get("max_connections", 10),
+    }
+
+
+def _load_minio_config(raw: Dict) -> Dict:
+    """加载 MinIO 配置"""
+    minio = raw.get("minio", {})
+    return {
+        "endpoint_url": _get_env_str("MINIO_ENDPOINT_URL") or minio.get("endpoint_url", ""),
+        "bucket_name": _get_env_str("MINIO_BUCKET_NAME") or minio.get("bucket_name", ""),
+        "access_key_id": _get_env_str("MINIO_ACCESS_KEY_ID") or minio.get("access_key_id", ""),
+        "secret_access_key": _get_env_str("MINIO_SECRET_ACCESS_KEY") or minio.get("secret_access_key", ""),
+        "region": _get_env_str("MINIO_REGION") or minio.get("region", ""),
+    }
+
+
 # =========================================================================
 # 主加载函数
 # =========================================================================
@@ -181,6 +207,8 @@ def load_config(path: str = "config.yaml") -> Dict[str, Any]:
         "rss": _load_rss_config(raw),
         "notification": _load_notification_config(raw),
         "storage": _load_storage_config(raw),
+        "postgresql": _load_postgresql_config(raw),
+        "minio": _load_minio_config(raw),
     }
 
     # 打印配置来源信息
