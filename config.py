@@ -151,7 +151,7 @@ def _load_storage_config(raw: Dict) -> Dict:
 
 
 def _load_postgresql_config(raw: Dict) -> Dict:
-    """Load PostgreSQL config."""
+    """加载 PostgreSQL 配置"""
     pg = raw.get("postgresql", {})
     return {
         "host": _get_env_str("PG_HOST") or pg.get("host", "localhost"),
@@ -165,7 +165,7 @@ def _load_postgresql_config(raw: Dict) -> Dict:
 
 
 def _load_minio_config(raw: Dict) -> Dict:
-    """Load MinIO config."""
+    """加载 MinIO 配置"""
     minio = raw.get("minio", {})
     return {
         "endpoint_url": _get_env_str("MINIO_ENDPOINT_URL") or minio.get("endpoint_url", ""),
