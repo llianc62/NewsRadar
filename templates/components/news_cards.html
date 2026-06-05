@@ -1,0 +1,53 @@
+<!-- Left: Tier 1 Waterfall Cards -->
+<div style="flex: 2; display: flex; flex-direction: column; gap: 10px;">
+  <div style="font-size: 12px; font-weight: 600; color: hsl(var(--muted-foreground)); margin-bottom: 2px; display: flex; align-items: center; gap: 6px;">
+    {% raw icon_svg('star') %}
+    热点新闻
+    <span style="font-weight: 400; font-family: var(--font-mono); font-size: 11px; padding: 2px 8px; border-radius: 10px; background: hsl(var(--primary) / 0.1); color: hsl(var(--primary));">仅 T1 · {{ len(tier1_cards) }} 条</span>
+  </div>
+
+  <!-- CSS Columns Waterfall -->
+  <div style="column-count: 2; column-gap: 14px;">
+    {% for card in tier1_cards %}
+    <div style="break-inside: avoid; margin-bottom: 14px; background: hsl(var(--card)); border-radius: var(--radius-lg); border: 1px solid hsl(var(--border)); padding: 24px; display: flex; flex-direction: column; gap: 16px;">
+      <!-- Top meta: sentiment badge + source/time + heat -->
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 10px; padding: 3px 10px; border-radius: 10px; background: {{ card['sentiment_bg'] }}; color: {{ card['sentiment_color'] }}; font-weight: 600;">{{ card['sentiment'] }}</span>
+          <span style="font-size: 11px; color: hsl(var(--muted-foreground));">{{ card['source'] }} · {{ card['time'] }}</span>
+        </div>
+        <span class="font-mono" style="font-size: 12px; color: hsl(var(--primary)); font-weight: 700;">🔥 {{ card['heat'] }}</span>
+      </div>
+
+      <!-- Title -->
+      <div style="font-weight: 700; font-size: 16px; color: hsl(var(--foreground)); line-height: 1.55;">{{ card['title'] }}</div>
+
+      <!-- Divider -->
+      <div style="height: 1px; background: hsl(var(--muted));"></div>
+
+      <!-- Summary -->
+      <div style="font-size: 13px; color: hsl(var(--muted-foreground)); line-height: 1.8;">{{ card['summary'] }}</div>
+
+      <!-- Analysis points (optional) -->
+      {% if card.get('points') %}
+      <div style="font-size: 13px; color: hsl(var(--muted-foreground)); line-height: 1.8;">
+        {% for p in card['points'] %}
+        · {{ p }}<br>
+        {% end %}
+      </div>
+      {% end %}
+
+      <!-- Keywords -->
+      {% if card.get('keywords') %}
+      <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+        {% for kw in card['keywords'] %}
+        <span style="font-size: 11px; padding: 5px 12px; border-radius: 14px; background: {{ 'hsl(var(--primary) / 0.08)' if kw['primary'] else 'hsl(var(--muted))' }}; color: {{ 'hsl(var(--primary))' if kw['primary'] else 'hsl(var(--muted-foreground))' }}; font-weight: {{ 600 if kw['primary'] else 400 }};">{{ kw['text'] }}</span>
+        {% end %}
+      </div>
+      {% end %}
+    </div>
+    {% end %}
+  </div>
+
+  <div style="text-align: center; padding: 6px; font-size: 11px; color: hsl(var(--muted-foreground));">热点新闻：{{ len(tier1_cards) }}/{{ len(tier1_cards) }} 已全部展示</div>
+</div>
