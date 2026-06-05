@@ -4,12 +4,18 @@ version = "1.0.0"
 description = "Standalone news crawler — fetches hot-list + RSS, stores to SQLite, notifies via email"
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "jinja2>=3.1",
     "requests>=2.33",
     "boto3>=1.42",
     "PyYAML>=6.0",
     "pytz>=2026.1",
     "feedparser>=6.0",
 ]
+
+[tool.hatch.build.targets.wheel]
+packages = ["."]
 
 [build-system]
 requires = ["hatchling"]
