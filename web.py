@@ -75,6 +75,44 @@ async def market_overview(request: Request):
     return HTMLResponse(html)
 
 
+@app.get("/hot-news", response_class=HTMLResponse)
+async def hot_news(request: Request):
+    """Hot news page."""
+    from notifier import TIER_LABELS, TIER_COLORS, TIER_BG
+
+    stats = [
+        {"label": "今日热点", "value": "86", "icon": "flame",
+         "bg": "hsl(var(--primary) / 0.1)", "color": "hsl(var(--foreground))"},
+        {"label": "新闻来源", "value": "7", "icon": "newspaper",
+         "bg": "hsl(var(--info) / 0.1)", "color": "hsl(var(--foreground))"},
+        {"label": "热点新闻", "value": "8", "icon": "star",
+         "bg": "hsl(var(--warning) / 0.1)", "color": "hsl(var(--foreground))"},
+        {"label": "利好指数", "value": "62%", "icon": "trending-up-lg",
+         "bg": "hsl(var(--danger) / 0.1)", "color": "hsl(var(--danger))"},
+    ]
+    tier_labels = [
+        {"label": f"T{t}·{TIER_LABELS[t].split('·')[1]}", "color": c, "bg": TIER_BG[t]}
+        for t, c in TIER_COLORS.items()
+    ]
+    keywords = ["央行", "AI", "港股", "外资", "芯片", "新能源"]
+    # Empty data for now - Task 8 will fill in
+    html = render_template(
+        "pages/hot_news.html",
+        active_page="hot-news",
+        stats=stats,
+        tier_labels=tier_labels,
+        keywords=keywords,
+        tier1_cards=[],
+        list_items=[],
+        total_count=0,
+        page_start=1,
+        page_end=0,
+        current_page=1,
+        page_numbers=[1],
+    )
+    return HTMLResponse(html)
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("web:app", host="0.0.0.0", port=8000, reload=True)
