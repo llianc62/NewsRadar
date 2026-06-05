@@ -167,6 +167,37 @@ def cmd_notify(config: dict):
     print("=== Done ===")
 
 
+def cmd_sync(config: dict):
+    """Sync cloud SQLite data into local PostgreSQL."""
+    from sync import sync_from_cloud
+
+    print("=== Cloud Sync ===")
+
+    pg_config = config["postgresql"]
+    s3_config = config["storage"]["remote"]
+
+    if not s3_config.get("bucket_name") or not s3_config.get("endpoint_url"):
+        print("[Sync] S3 not configured - cannot sync. Set S3_* env vars.")
+        return
+
+    result = sync_from_cloud(
+        pg_config=pg_config,
+        s3_config=s3_config,
+        data_dir=config["storage"]["local"]["data_dir"],
+    )
+    print(f"Result: {result}")
+
+
+def cmd_init_db(config: dict):
+    """Initialize PostgreSQL schema only."""
+    from database import init_db, close_db
+
+    print("=== Init DB ===")
+    init_db(config["postgresql"])
+    print("Schema created successfully.")
+    close_db()
+
+
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python main.py [crawl|notify|sync|init-db]")
