@@ -9,8 +9,7 @@ Usage:
 import os
 import sys
 
-import yaml
-
+from config import load_config
 from models import (
     convert_crawl_results_to_news_data,
     convert_rss_items_to_news_data,
@@ -25,22 +24,15 @@ from fetcher import DataFetcher, RSSFetcher
 from storage import Storage
 
 
-def load_config(path: str = "config.yaml") -> dict:
-    """Load config.yaml, merging environment variable overrides for S3."""
-    with open(path, encoding="utf-8") as f:
-        config = yaml.safe_load(f)
-    return config
-
-
 def build_source_tiers(config: dict) -> dict:
     """Build {source_id: {tier, priority}} mapping from config."""
     tiers = {}
-    for source in config.get("platforms", {}).get("sources", []):
+    for source in config["platforms"]["sources"]:
         tiers[source["id"]] = {
             "tier": source.get("tier", 4),
             "priority": source.get("priority", 0),
         }
-    for feed in config.get("rss", {}).get("feeds", []):
+    for feed in config["rss"]["feeds"]:
         if feed.get("enabled", True):
             tiers[feed["id"]] = {
                 "tier": feed.get("tier", 3),
@@ -51,29 +43,24 @@ def build_source_tiers(config: dict) -> dict:
 
 def cmd_crawl(config: dict):
     """Run the crawler: fetch + store + upload."""
-    timezone = config.get("app", {}).get("timezone", DEFAULT_TIMEZONE)
-    now = get_configured_time(timezone)
+    timezone = config["app"]["timezone"]
     date = format_date_folder(timezone)
     time_str = format_time_display(timezone)
 
     print(f"=== Crawler === {date} {time_str}")
 
     # Init storage
-    storage_config = config.get("storage", {})
     storage = Storage(
-        data_dir=storage_config.get("local", {}).get("data_dir", "output"),
+        data_dir=config["storage"]["local"]["data_dir"],
         timezone=timezone,
-        s3_config=storage_config.get("remote") or None,
+        s3_config=config["storage"]["remote"] or None,
     )
     source_tiers = build_source_tiers(config)
 
     # ── Fetch hot-list ─────────────────────────────────
-    platforms_config = config.get("platforms", {})
-    if platforms_config.get("enabled", True):
-        crawler_config = config.get("crawler", {})
-        request_interval = crawler_config.get("request_interval", 2000)
-
-        sources = platforms_config.get("sources", [])
+    if config["platforms"]["enabled"]:
+        request_interval = config["crawler"]["request_interval"]
+        sources = config["platforms"]["sources"]
         ids_list = [(s["id"], s["name"]) for s in sources]
 
         print(f"\n[Hot-list] Fetching {len(ids_list)} platforms...")
@@ -87,12 +74,14 @@ def cmd_crawl(config: dict):
                 results, id_to_name, failed_ids, time_str, date
             )
             storage.save_news_data(news_data, source_tiers)
+    else:
+        results = {}
 
     # ── Fetch RSS ──────────────────────────────────────
-    rss_config = config.get("rss", {})
-    if rss_config.get("enabled", False):
-        print(f"\n[RSS] Fetching feeds...")
-        rss_fetcher = RSSFetcher.from_config(rss_config)
+    rss_cfg = config["rss"]
+    if rss_cfg["enabled"]:
+        print("\n[RSS] Fetching feeds...")
+        rss_fetcher = RSSFetcher.from_config(rss_cfg)
         rss_results, rss_id_to_name, rss_failed_ids = rss_fetcher.fetch_all()
 
         if rss_results:
@@ -109,20 +98,19 @@ def cmd_crawl(config: dict):
 def cmd_notify(config: dict):
     """Run the notifier: query unnotified -> match keywords -> report -> email."""
     from frequency import load_frequency_words, match_and_group
-    from notifier import build_html_report, send_email
+    from notifier import build_html_report, save_html_report, send_email
 
-    timezone = config.get("app", {}).get("timezone", DEFAULT_TIMEZONE)
+    timezone = config["app"]["timezone"]
     date = format_date_folder(timezone)
     time_str = format_time_display(timezone)
 
     print(f"=== Notifier === {date} {time_str}")
 
     # Init storage
-    storage_config = config.get("storage", {})
     storage = Storage(
-        data_dir=storage_config.get("local", {}).get("data_dir", "output"),
+        data_dir=config["storage"]["local"]["data_dir"],
         timezone=timezone,
-        s3_config=storage_config.get("remote") or None,
+        s3_config=config["storage"]["remote"] or None,
     )
 
     # Get unnotified items
@@ -137,13 +125,14 @@ def cmd_notify(config: dict):
     print(f"Unnotified items: {len(items)}")
 
     # Load keywords and match
-    freq_path = config.get("notification", {}).get(
-        "frequency_words", "frequency_words.txt"
-    )
+    notif_cfg = config["notification"]
+    freq_path = notif_cfg["frequency_words"]
     if os.path.exists(freq_path):
         word_groups, filter_words, global_filters = load_frequency_words(freq_path)
-        max_per = config.get("notification", {}).get("max_news_per_keyword", 0)
+        max_per = notif_cfg["max_news_per_keyword"]
         grouped = match_and_group(items, word_groups, global_filters, max_per)
+        # Only keep keyword-matched groups in the report
+        grouped.pop("__unmatched__", None)
         print(f"Matched groups: {list(grouped.keys())}")
     else:
         grouped = {"全部新闻": items}
@@ -151,13 +140,17 @@ def cmd_notify(config: dict):
     # Build HTML report
     html = build_html_report(grouped, date, time_str, len(items))
 
+    # Save report locally
+    data_dir = config["storage"]["local"]["data_dir"]
+    save_html_report(html, date, time_str, data_dir=data_dir)
+
     # Send email
-    email_config = config.get("notification", {}).get("email", {})
-    smtp_server = email_config.get("smtp_server", "smtp.qq.com")
-    smtp_port = email_config.get("smtp_port", 587)
-    from_addr = email_config.get("from_addr", "")
-    to_addr = email_config.get("to_addr", "")
-    password = email_config.get("password") or os.environ.get("EMAIL_PASSWORD", "")
+    email_cfg = notif_cfg["email"]
+    smtp_server = email_cfg["smtp_server"]
+    smtp_port = email_cfg["smtp_port"]
+    from_addr = email_cfg["from_addr"]
+    to_addr = email_cfg["to_addr"]
+    password = email_cfg["password"]
 
     if not all([from_addr, to_addr, password]):
         print("[Email] Missing config — skipping send")
@@ -177,12 +170,12 @@ if __name__ == "__main__":
         sys.exit(1)
 
     cmd = sys.argv[1]
-    config = load_config()
+    cfg = load_config("config.yaml")
 
     if cmd == "crawl":
-        cmd_crawl(config)
+        cmd_crawl(cfg)
     elif cmd == "notify":
-        cmd_notify(config)
+        cmd_notify(cfg)
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)

@@ -5,3 +5,10 @@ __pycache__/
 .env
 *.egg-info/
 dist/
+
+.claude/
+.superpowers/
+
+.env
+
+output/

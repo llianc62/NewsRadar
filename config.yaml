@@ -34,7 +34,7 @@ platforms:
       priority: 20
 
 rss:
-  enabled: false
+  enabled: true
   request_interval: 1000
   timeout: 20
   feeds:

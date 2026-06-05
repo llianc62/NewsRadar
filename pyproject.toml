@@ -12,6 +12,7 @@ dependencies = [
     "PyYAML>=6.0",
     "pytz>=2026.1",
     "feedparser>=6.0",
+    "httpx>=0.28.1",
 ]
 
 [tool.hatch.build.targets.wheel]

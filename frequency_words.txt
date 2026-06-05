@@ -174,8 +174,6 @@
 
 /三体|流浪地球|刘慈欣|郭帆/ => 三体/流浪地球
 
-申奥
-
 
 /字节|张一鸣|梁汝波|抖音|\bByteDance\b|\bTikTok\b|\bDouyin\b|\bLark\b|\bCapCut\b/ => 字节跳动
 
