@@ -7,6 +7,20 @@ from email.mime.text import MIMEText
 from email.utils import formataddr, formatdate
 from typing import Dict, List, Optional
 
+# Tier display labels (used by web frontend)
+TIER_LABELS = {1: "T1·官媒", 2: "T2·主流", 3: "T3·垂直", 4: "T4·资讯"}
+TIER_COLORS = {
+    1: "hsl(var(--danger))",
+    2: "hsl(var(--warning))",
+    3: "hsl(var(--success))",
+    4: "hsl(var(--info))",
+}
+TIER_BG = {
+    1: "hsl(var(--danger) / 0.1)",
+    2: "hsl(var(--warning) / 0.1)",
+    3: "hsl(var(--success) / 0.1)",
+    4: "hsl(var(--info) / 0.1)",
+}
 
 def build_html_report(
     grouped_items: Dict[str, List[Dict]],
