@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}NewsRadar · 市场概览{% end %}
+
+{% block content %}
+
+<!-- Index Cards Row -->
+<div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px;">
+  {% for card in index_cards %}
+  <div style="background: hsl(var(--card)); border-radius: var(--radius); border: 1px solid hsl(var(--border)); padding: 16px 20px;">
+    <div style="font-size: 12px; color: hsl(var(--muted-foreground)); margin-bottom: 8px;">{{ card['name'] }}</div>
+    <div class="font-mono" style="font-size: 19px; font-weight: 700; color: hsl(var(--foreground));">{{ card['value'] }}</div>
+    <div class="font-mono" style="font-size: 12px; margin-top: 4px; color: hsl({{ 'var(--danger)' if card['change'] > 0 else 'var(--success)' }});">
+      {{ '+' if card['change'] > 0 else '' }}{{ card['change'] }}%
+    </div>
+  </div>
+  {% end %}
+</div>
+
+<!-- Bottom: Charts + Hot Stocks -->
+<div style="display: flex; gap: 16px; flex: 1; min-height: 0;">
+  <!-- Charts Area (placeholder) -->
+  <div style="flex: 2; background: hsl(var(--card)); border-radius: var(--radius); border: 1px solid hsl(var(--border)); padding: 24px; display: flex; align-items: center; justify-content: center;">
+    <div style="text-align: center; color: hsl(var(--muted-foreground));">
+      <div style="font-size: 48px; margin-bottom: 8px;">📈</div>
+      <div style="font-size: 14px;">图表区 — 后续集成 ECharts</div>
+    </div>
+  </div>
+
+  <!-- Hot Stocks Sidebar -->
+  <div style="flex: 1; background: hsl(var(--card)); border-radius: var(--radius); border: 1px solid hsl(var(--border)); padding: 16px;">
+    <div style="font-size: 13px; font-weight: 600; margin-bottom: 12px; color: hsl(var(--foreground));">热门股票</div>
+    {% for stock in hot_stocks %}
+    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid hsl(var(--muted)); font-size: 13px;">
+      <span style="color: hsl(var(--foreground));">{{ stock['name'] }}</span>
+      <span class="font-mono" style="color: hsl({{ 'var(--danger)' if stock['change'] > 0 else 'var(--success)' }});">
+        {{ '+' if stock['change'] > 0 else '' }}{{ stock['change'] }}%
+      </span>
+    </div>
+    {% end %}
+  </div>
+</div>
+
+{% end %}
