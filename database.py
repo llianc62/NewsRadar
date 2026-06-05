@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS news_articles (
     title           TEXT NOT NULL,
     summary         TEXT DEFAULT '',
     content         TEXT DEFAULT '',
+    author          TEXT DEFAULT '',
     tags            TEXT[] DEFAULT '{}',
     keywords        JSONB DEFAULT '[]',
     entities        JSONB DEFAULT '{}',
