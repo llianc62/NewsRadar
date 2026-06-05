@@ -4,7 +4,7 @@
   <!-- Header -->
   <div style="padding: 12px 16px; border-bottom: 1px solid hsl(var(--muted)); display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;">
     <span style="font-size: 13px; font-weight: 600; color: hsl(var(--foreground)); display: flex; align-items: center; gap: 6px;">
-      {% raw icon_svg('newspaper') %}
+      {{ icon_svg('newspaper')|safe }}
       其他新闻
     </span>
     <span class="font-mono" style="font-size: 11px; color: hsl(var(--muted-foreground));">共 {{ total_count }} 条</span>
@@ -18,7 +18,7 @@
       <span style="flex: 1; font-weight: 500; color: hsl(var(--foreground)); line-height: 1.4;">{{ item['title'] }}</span>
       <span style="min-width: 52px; font-size: 10px; color: hsl(var(--muted-foreground)); text-align: right; white-space: nowrap;">{{ item['source'] }}</span>
     </div>
-    {% end %}
+    {% endfor %}
   </div>
 
   <!-- Pagination -->
@@ -36,8 +36,8 @@
         <span style="width: 28px; height: 28px; border-radius: var(--radius-sm); border: none; background: hsl(var(--primary)); color: white; font-weight: 600; font-size: 11px; font-family: var(--font-mono); display: flex; align-items: center; justify-content: center; cursor: default;">{{ p }}</span>
         {% else %}
         <span style="width: 28px; height: 28px; border-radius: var(--radius-sm); border: 1px solid hsl(var(--border)); background: hsl(var(--card)); font-size: 11px; font-family: var(--font-mono); color: hsl(var(--muted-foreground)); display: flex; align-items: center; justify-content: center; cursor: default;">{{ p }}</span>
-        {% end %}
-      {% end %}
+        {% endif %}
+      {% endfor %}
 
       <span style="width: 28px; height: 28px; border-radius: var(--radius-sm); border: 1px solid hsl(var(--border)); background: hsl(var(--card)); display: flex; align-items: center; justify-content: center; font-size: 12px; color: hsl(var(--muted-foreground)); cursor: default;">›</span>
     </div>

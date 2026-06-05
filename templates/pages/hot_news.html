@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}NewsRadar · 热点新闻{% end %}
+{% block title %}NewsRadar · 热点新闻{% endblock %}
 
 {% block content %}
 
@@ -13,7 +13,7 @@
     <span style="font-size: 11px; padding: 5px 14px; border-radius: 14px; background: hsl(var(--primary)); color: white; font-weight: 600; white-space: nowrap;">全部</span>
     {% for t in tier_labels %}
     <span style="font-size: 11px; padding: 5px 14px; border-radius: 14px; background: {{ t['bg'] }}; color: {{ t['color'] }}; font-weight: 500; white-space: nowrap;">{{ t['label'] }}</span>
-    {% end %}
+    {% endfor %}
   </div>
 
   <!-- Level 2: Tags -->
@@ -24,7 +24,7 @@
     <span style="font-size: 11px; padding: 5px 14px; border-radius: 14px; background: hsl(var(--success) / 0.08); color: hsl(var(--success)); font-weight: 500; white-space: nowrap;">利空</span>
     {% for kw in keywords %}
     <span style="font-size: 11px; padding: 5px 14px; border-radius: 14px; background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); font-weight: 500; white-space: nowrap;">{{ kw }}</span>
-    {% end %}
+    {% endfor %}
   </div>
 </div>
 
@@ -38,4 +38,4 @@
   {% include "components/news_list.html" %}
 </div>
 
-{% end %}
+{% endblock %}

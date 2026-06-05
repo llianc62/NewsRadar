@@ -2,12 +2,12 @@
   {% for stat in stats %}
   <div style="flex:1; display: flex; align-items: center; gap: 14px; padding: 14px 20px; background: hsl(var(--card)); border-radius: var(--radius); border: 1px solid hsl(var(--border));">
     <div style="width: 42px; height: 42px; border-radius: 10px; background: {{ stat['bg'] }}; display: flex; align-items: center; justify-content: center;">
-      {% raw icon_svg(stat['icon']) %}
+      {{ icon_svg(stat['icon'])|safe }}
     </div>
     <div>
       <div style="font-size: 11px; color: hsl(var(--muted-foreground));">{{ stat['label'] }}</div>
       <div class="font-mono" style="font-size: 24px; font-weight: 700; color: {{ stat['color'] }};">{{ stat['value'] }}</div>
     </div>
   </div>
-  {% end %}
+  {% endfor %}
 </div>

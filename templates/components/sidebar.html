@@ -20,12 +20,12 @@
     ] %}
     {% for id, url, icon, label in nav_items %}
     <a href="{{ url }}"
-       class="nav-item{% if active_page == id %} active{% end %}"
+       class="nav-item{% if active_page == id %} active{% endif %}"
        style="display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500;">
-      {% raw icon_svg(icon) %}
+      {{ icon_svg(icon)|safe }}
       {{ label }}
     </a>
-    {% end %}
+    {% endfor %}
   </nav>
 </aside>
 

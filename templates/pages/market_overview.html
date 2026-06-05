@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}NewsRadar · 市场概览{% end %}
+{% block title %}NewsRadar · 市场概览{% endblock %}
 
 {% block content %}
 
@@ -13,7 +13,7 @@
       {{ '+' if card['change'] > 0 else '' }}{{ card['change'] }}%
     </div>
   </div>
-  {% end %}
+  {% endfor %}
 </div>
 
 <!-- Bottom: Charts + Hot Stocks -->
@@ -36,8 +36,8 @@
         {{ '+' if stock['change'] > 0 else '' }}{{ stock['change'] }}%
       </span>
     </div>
-    {% end %}
+    {% endfor %}
   </div>
 </div>
 
-{% end %}
+{% endblock %}
