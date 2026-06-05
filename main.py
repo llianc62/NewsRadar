@@ -9,7 +9,7 @@ Usage:
 import os
 import sys
 
-import yaml
+from config import load_config
 
 from models import (
     convert_crawl_results_to_news_data,
@@ -23,12 +23,6 @@ from utils import (
 from fetcher import DataFetcher, RSSFetcher
 from storage import Storage
 
-
-def load_config(path: str = "config.yaml") -> dict:
-    """Load config.yaml, merging environment variable overrides for S3."""
-    with open(path, encoding="utf-8") as f:
-        config = yaml.safe_load(f)
-    return config
 
 
 def build_source_tiers(config: dict) -> dict:
@@ -49,56 +43,103 @@ def build_source_tiers(config: dict) -> dict:
 
 
 def cmd_crawl(config: dict):
-    """Run the crawler: fetch + store to PostgreSQL."""
-    from database import init_db, save_news_data, close_db
-
+    """Run the crawler: fetch + store (PostgreSQL or SQLite fallback)."""
     timezone = config["app"]["timezone"]
     date = format_date_folder(timezone)
     time_str = format_time_display(timezone)
 
     print(f"=== Crawler === {date} {time_str}")
 
-    # Init PostgreSQL
-    init_db(config["postgresql"])
+    # Check if PostgreSQL is available
+    pg_config = config.get("postgresql", {})
+    use_pg = bool(pg_config.get("host"))
+
     source_tiers = build_source_tiers(config)
 
-    total_new = 0
-    total_updated = 0
+    if use_pg:
+        # ── PostgreSQL path ────────────────────────────
+        from database import init_db, save_news_data, close_db
 
-    # ── Fetch hot-list ─────────────────────────────────
-    if config["platforms"]["enabled"]:
-        request_interval = config["crawler"]["request_interval"]
-        sources = config["platforms"]["sources"]
-        ids_list = [(s["id"], s["name"]) for s in sources]
+        init_db(config["postgresql"])
 
-        print(f"\n[Hot-list] Fetching {len(ids_list)} platforms...")
-        fetcher = DataFetcher()
-        results, id_to_name, failed_ids = fetcher.crawl_websites(
-            ids_list, request_interval
+        total_new = 0
+        total_updated = 0
+
+        # ── Fetch hot-list ─────────────────────────────────
+        if config["platforms"]["enabled"]:
+            request_interval = config["crawler"]["request_interval"]
+            sources = config["platforms"]["sources"]
+            ids_list = [(s["id"], s["name"]) for s in sources]
+
+            print(f"\n[Hot-list] Fetching {len(ids_list)} platforms...")
+            fetcher = DataFetcher()
+            results, id_to_name, failed_ids = fetcher.crawl_websites(
+                ids_list, request_interval
+            )
+
+            if results:
+                news_data = convert_crawl_results_to_news_data(
+                    results, id_to_name, failed_ids, time_str, date
+                )
+                counts = save_news_data(news_data, source_tiers, sync_status="local")
+                total_new += counts["new"]
+
+        # ── Fetch RSS ──────────────────────────────────────
+        rss_cfg = config["rss"]
+        if rss_cfg["enabled"]:
+            print("\n[RSS] Fetching feeds...")
+            rss_fetcher = RSSFetcher.from_config(rss_cfg)
+            rss_results, rss_id_to_name, rss_failed_ids = rss_fetcher.fetch_all()
+
+            if rss_results:
+                rss_news_data = convert_rss_items_to_news_data(
+                    rss_results, rss_id_to_name, rss_failed_ids, time_str, date
+                )
+                counts = save_news_data(rss_news_data, source_tiers, sync_status="local")
+                total_new += counts["new"]
+
+        close_db()
+    else:
+        # ── SQLite fallback (GitHub Actions / legacy) ───
+        storage = Storage(
+            data_dir=config["storage"]["local"]["data_dir"],
+            timezone=timezone,
+            s3_config=config["storage"]["remote"] or None,
         )
 
-        if results:
-            news_data = convert_crawl_results_to_news_data(
-                results, id_to_name, failed_ids, time_str, date
+        # ── Fetch hot-list ─────────────────────────────────
+        if config["platforms"]["enabled"]:
+            request_interval = config["crawler"]["request_interval"]
+            sources = config["platforms"]["sources"]
+            ids_list = [(s["id"], s["name"]) for s in sources]
+
+            print(f"\n[Hot-list] Fetching {len(ids_list)} platforms...")
+            fetcher = DataFetcher()
+            results, id_to_name, failed_ids = fetcher.crawl_websites(
+                ids_list, request_interval
             )
-            counts = save_news_data(news_data, source_tiers, sync_status="local")
-            total_new += counts["new"]
 
-    # ── Fetch RSS ──────────────────────────────────────
-    rss_cfg = config["rss"]
-    if rss_cfg["enabled"]:
-        print("\n[RSS] Fetching feeds...")
-        rss_fetcher = RSSFetcher.from_config(rss_cfg)
-        rss_results, rss_id_to_name, rss_failed_ids = rss_fetcher.fetch_all()
+            if results:
+                news_data = convert_crawl_results_to_news_data(
+                    results, id_to_name, failed_ids, time_str, date
+                )
+                storage.save_news_data(news_data, source_tiers)
 
-        if rss_results:
-            rss_news_data = convert_rss_items_to_news_data(
-                rss_results, rss_id_to_name, rss_failed_ids, time_str, date
-            )
-            counts = save_news_data(rss_news_data, source_tiers, sync_status="local")
-            total_new += counts["new"]
+        # ── Fetch RSS ──────────────────────────────────────
+        rss_cfg = config["rss"]
+        if rss_cfg["enabled"]:
+            print("\n[RSS] Fetching feeds...")
+            rss_fetcher = RSSFetcher.from_config(rss_cfg)
+            rss_results, rss_id_to_name, rss_failed_ids = rss_fetcher.fetch_all()
 
-    close_db()
+            if rss_results:
+                rss_news_data = convert_rss_items_to_news_data(
+                    rss_results, rss_id_to_name, rss_failed_ids, time_str, date
+                )
+                storage.save_news_data(rss_news_data, source_tiers)
+
+        storage.cleanup()
+
     print(f"=== Done ===")
 
 
