@@ -1,260 +1,300 @@
 # coding=utf-8
-"""NewsNow Crawler — main entry point.
+"""
+NewsRadar Daemon — local server entry point.
 
-Usage:
-    python main.py crawl     # Fetch news, save to SQLite, upload to S3
-    python main.py notify    # Generate HTML report and send email
+Startup sequence:
+    1. Load configuration
+    2. Connect to PostgreSQL, initialise schema (fast, sub-second)
+    3. Start FastAPI web server (immediately, non-blocking)
+    4. Launch background workers + timers (semaphore pattern)
+    5. Manually trigger sync on startup
+
+Usage::
+
+    python main.py
+
+The daemon runs until interrupted (SIGINT / SIGTERM).
 """
 
-import os
 import sys
+import signal
+import asyncio
 
-from config import load_config
+from concurrent.futures import ThreadPoolExecutor
 
-from models import (
-    convert_crawl_results_to_news_data,
-    convert_rss_items_to_news_data,
-)
-from utils import (
-    format_date_folder,
-    format_time_display,
-    DEFAULT_TIMEZONE,
-)
-from fetcher import DataFetcher, RSSFetcher
-from storage import Storage
+from config.loader import load_config
+from storage.postgres import Database
+from web.app import create_app
+from news.crawler import fetch_all, save_to_postgres
+from storage.sync import sync_from_cloud
 
 
-
-def build_source_tiers(config: dict) -> dict:
-    """Build {source_id: {tier, priority}} mapping from config."""
-    tiers = {}
-    for source in config.get("platforms", {}).get("sources", []):
-        tiers[source["id"]] = {
-            "tier": source.get("tier", 4),
-            "priority": source.get("priority", 0),
-        }
-    for feed in config.get("rss", {}).get("feeds", []):
-        if feed.get("enabled", True):
-            tiers[feed["id"]] = {
-                "tier": feed.get("tier", 3),
-                "priority": feed.get("priority", 0),
-            }
-    return tiers
+_SHUTDOWN_TIMEOUT = 10  # seconds to wait for async tasks to finish
 
 
-def cmd_crawl(config: dict):
-    """Run the crawler: fetch + store (PostgreSQL or SQLite fallback)."""
-    timezone = config["app"]["timezone"]
-    date = format_date_folder(timezone)
-    time_str = format_time_display(timezone)
+class NewsRadarDaemon:
+    """Orchestrates the local NewsRadar service.
 
-    print(f"=== Crawler === {date} {time_str}")
+    Uses a private ``ThreadPoolExecutor`` for all blocking I/O so that
+    shutdown can call ``executor.shutdown(wait=False)`` and avoid
+    blocking on long-running threads.
 
-    # Check if PostgreSQL is available
-    pg_config = config.get("postgresql", {})
-    use_pg = bool(pg_config.get("host"))
+    Background tasks use a **semaphore pattern**::
 
-    source_tiers = build_source_tiers(config)
+        Timer ──set()──▶ asyncio.Event ◀──await── Worker ──exec──▶ Job
 
-    if use_pg:
-        # ── PostgreSQL path ────────────────────────────
-        from database import init_db, save_news_data, close_db
+    Each task type gets one ``asyncio.Event`` signal.  A *timer* sets
+    the signal every N minutes; a *worker* waits for the signal then
+    executes the *job*.  At startup the sync signal is set manually so
+    it fires immediately.
+    """
 
-        init_db(config["postgresql"])
+    def __init__(self, config_path: str = "config.yaml"):
+        self.config = load_config(config_path)
+        self.db = Database(self.config["postgresql"])
+        self._shutdown_event = asyncio.Event()
+        self._bg_tasks: list[asyncio.Task] = []
+        self._uvicorn_server = None
+        # Dedicated executor — we control its lifecycle
+        self._executor = ThreadPoolExecutor(max_workers=4)
 
-        total_new = 0
-        total_updated = 0
+        # ── Semaphores (one per task type) ──
+        self._crawl_signal = asyncio.Event()
+        self._sync_signal = asyncio.Event()
 
-        # ── Fetch hot-list ─────────────────────────────────
-        if config["platforms"]["enabled"]:
-            request_interval = config["crawler"]["request_interval"]
-            sources = config["platforms"]["sources"]
-            ids_list = [(s["id"], s["name"]) for s in sources]
+    # ── Helpers ──────────────────────────────────────────────────
 
-            print(f"\n[Hot-list] Fetching {len(ids_list)} platforms...")
-            fetcher = DataFetcher()
-            results, id_to_name, failed_ids = fetcher.crawl_websites(
-                ids_list, request_interval
+    async def _run_in_thread(self, func, *args):
+        """Run a blocking *func* in our managed thread pool."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, func, *args)
+
+    # ── Database init (fast, synchronous) ────────────────────────
+
+    def _init_database(self) -> None:
+        """Connect to PostgreSQL and initialise schema."""
+        print("[Startup] Connecting to PostgreSQL...")
+        self.db.connect()
+        self.db.init_schema()
+        print("[Startup] PostgreSQL connected and schema ready.")
+
+    # ── Timer ────────────────────────────────────────────────────
+
+    async def _timer(self, signal: asyncio.Event, interval_min: int, name: str) -> None:
+        """Set *signal* every *interval_min* minutes."""
+        print(f"[Timer/{name}] every {interval_min} min")
+        while not self._shutdown_event.is_set():
+            await self._sleep_or_shutdown(interval_min * 60)
+            if not self._shutdown_event.is_set():
+                signal.set()
+
+    # ── Worker ───────────────────────────────────────────────────
+
+    async def _worker(self, name: str, signal: asyncio.Event, job) -> None:
+        """Wait for *signal* → execute *job* → clear → loop."""
+        print(f"[Worker/{name}] ready")
+        while not self._shutdown_event.is_set():
+            await self._wait_signal(signal)
+            if self._shutdown_event.is_set():
+                break
+            signal.clear()
+            await self._try_run_job(name, job)
+
+    async def _wait_signal(self, signal: asyncio.Event) -> None:
+        """Wait for *signal* or *shutdown_event* — whichever fires first."""
+        sig_task = asyncio.create_task(signal.wait(), name="sig_wait")
+        shut_task = asyncio.create_task(self._shutdown_event.wait(), name="shut_wait")
+        done, pending = await asyncio.wait(
+            [sig_task, shut_task],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for t in pending:
+            t.cancel()
+
+    async def _try_run_job(self, name: str, job) -> None:
+        """Execute *job*, logging errors as non-fatal."""
+        try:
+            print(f"\n[{name}] Starting...")
+            await job()
+            print(f"[{name}] Complete.")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[{name}] Failed (non-fatal): {e}")
+
+    # ── Jobs (the actual work — no duplication) ──────────────────
+
+    async def _crawl_job(self) -> None:
+        """Fetch news (with content) → save to PostgreSQL."""
+        news_data, source_tiers = await self._run_in_thread(
+            fetch_all, self.config, True  # with_content=True
+        )
+        if not self._shutdown_event.is_set():
+            await self._run_in_thread(
+                save_to_postgres, news_data, source_tiers, self.db
             )
 
-            if results:
-                news_data = convert_crawl_results_to_news_data(
-                    results, id_to_name, failed_ids, time_str, date
-                )
-                counts = save_news_data(news_data, source_tiers, sync_status="local")
-                total_new += counts["new"]
+    async def _sync_job(self) -> None:
+        """Sync cloud SQLite data into PostgreSQL."""
+        s3_config = self.config["storage"]["remote"]
+        if not (s3_config.get("bucket_name") and s3_config.get("endpoint_url")):
+            print("[Sync] S3 not configured — skipping.")
+            return
+        result = await self._run_in_thread(sync_from_cloud, self.db, s3_config)
+        print(f"[Sync] {result}")
 
-        # ── Fetch RSS ──────────────────────────────────────
-        rss_cfg = config["rss"]
-        if rss_cfg["enabled"]:
-            print("\n[RSS] Fetching feeds...")
-            rss_fetcher = RSSFetcher.from_config(rss_cfg)
-            rss_results, rss_id_to_name, rss_failed_ids = rss_fetcher.fetch_all()
+    # ── Run ──────────────────────────────────────────────────────
 
-            if rss_results:
-                rss_news_data = convert_rss_items_to_news_data(
-                    rss_results, rss_id_to_name, rss_failed_ids, time_str, date
-                )
-                counts = save_news_data(rss_news_data, source_tiers, sync_status="local")
-                total_new += counts["new"]
+    async def run(self) -> None:
+        """Main entry point.  Web starts first; data work is background."""
+        print("\n" + "=" * 60)
+        print("  NewsRadar Daemon — starting up")
+        print("=" * 60 + "\n")
 
-        close_db()
-    else:
-        # ── SQLite fallback (GitHub Actions / legacy) ───
-        storage = Storage(
-            data_dir=config["storage"]["local"]["data_dir"],
-            timezone=timezone,
-            s3_config=config["storage"]["remote"] or None,
+        # 1. Database init (fast, synchronous — must finish before web)
+        self._init_database()
+
+        # 2. Install signal handlers (set event, do NOT cancel tasks)
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, self._handle_signal)
+
+        # 3. Start web server first — non-blocking
+        signals = {
+            "crawl": self._crawl_signal,
+            "sync": self._sync_signal,
+        }
+        app = create_app(self.db, signals=signals)
+        web_task = asyncio.create_task(self._serve_web(app), name="web")
+
+        # 4. Launch Workers (wait for signal → execute job → loop)
+        for coro in [
+            lambda: self._worker("Crawl", self._crawl_signal, self._crawl_job),
+            lambda: self._worker("Sync", self._sync_signal, self._sync_job),
+        ]:
+            t = asyncio.create_task(coro(), name=coro.__name__)
+            self._bg_tasks.append(t)
+
+        # 5. Launch Timers (set signal every N minutes)
+        crawl_interval = self.config.get("crawler", {}).get("daemon_interval_minutes", 60)
+        sync_interval = self.config.get("crawler", {}).get("sync_interval_minutes", 360)
+
+        for sig, interval, name in [
+            (self._crawl_signal, crawl_interval, "Crawl"),
+            (self._sync_signal, sync_interval, "Sync"),
+        ]:
+            t = asyncio.create_task(self._timer(sig, interval, name), name=f"timer_{name}")
+            self._bg_tasks.append(t)
+
+        # 6. Manually trigger sync at startup (fire immediately)
+        self._sync_signal.set()
+        self._crawl_signal.set()
+
+        # 7. Create shutdown watcher
+        shutdown_task = asyncio.create_task(
+            self._shutdown_event.wait(), name="shutdown_watcher"
         )
 
-        # ── Fetch hot-list ─────────────────────────────────
-        if config["platforms"]["enabled"]:
-            request_interval = config["crawler"]["request_interval"]
-            sources = config["platforms"]["sources"]
-            ids_list = [(s["id"], s["name"]) for s in sources]
+        print("[Daemon] Web server ready — background tasks running.")
+        print("[Daemon] Press Ctrl+C to stop.\n")
 
-            print(f"\n[Hot-list] Fetching {len(ids_list)} platforms...")
-            fetcher = DataFetcher()
-            results, id_to_name, failed_ids = fetcher.crawl_websites(
-                ids_list, request_interval
+        # 8. Wait for web failure or shutdown signal
+        try:
+            done, pending = await asyncio.wait(
+                [web_task, shutdown_task],
+                return_when=asyncio.FIRST_COMPLETED,
             )
+            if web_task in done and not self._shutdown_event.is_set():
+                exc = web_task.exception()
+                if exc:
+                    print(f"[Daemon] Web server failed: {exc}")
+        except asyncio.CancelledError:
+            pass
 
-            if results:
-                news_data = convert_crawl_results_to_news_data(
-                    results, id_to_name, failed_ids, time_str, date
-                )
-                storage.save_news_data(news_data, source_tiers)
+        # 9. Graceful shutdown
+        await self._shutdown()
 
-        # ── Fetch RSS ──────────────────────────────────────
-        rss_cfg = config["rss"]
-        if rss_cfg["enabled"]:
-            print("\n[RSS] Fetching feeds...")
-            rss_fetcher = RSSFetcher.from_config(rss_cfg)
-            rss_results, rss_id_to_name, rss_failed_ids = rss_fetcher.fetch_all()
+    def _handle_signal(self) -> None:
+        """Signal handler — set the shutdown event."""
+        if not self._shutdown_event.is_set():
+            self._shutdown_event.set()
+            print("\n[Daemon] Shutdown signal received. Stopping...")
 
-            if rss_results:
-                rss_news_data = convert_rss_items_to_news_data(
-                    rss_results, rss_id_to_name, rss_failed_ids, time_str, date
-                )
-                storage.save_news_data(rss_news_data, source_tiers)
+    async def _shutdown(self) -> None:
+        """Graceful shutdown — stops uvicorn, cancels tasks, frees executor."""
+        print("[Daemon] Shutting down...")
 
-        storage.cleanup()
+        # 1. Tell uvicorn to exit gracefully
+        if self._uvicorn_server is not None:
+            self._uvicorn_server.should_exit = True
 
-    print(f"=== Done ===")
+        # 2. Cancel all background async tasks
+        for task in self._bg_tasks:
+            if not task.done():
+                task.cancel()
 
+        # 3. Wait for async tasks (with timeout)
+        all_tasks = self._bg_tasks + [
+            t for t in asyncio.all_tasks()
+            if t is not asyncio.current_task() and t not in self._bg_tasks
+        ]
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*all_tasks, return_exceptions=True),
+                timeout=_SHUTDOWN_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            print("[Daemon] Some async tasks did not stop in time.")
 
-def cmd_notify(config: dict):
-    """Run the notifier: query unnotified -> match keywords -> report -> email."""
-    from frequency import load_frequency_words, match_and_group
-    from notifier import build_html_report, send_email
+        # 4. Shut down the thread pool — cancel pending, don't wait for running
+        self._executor.shutdown(wait=False, cancel_futures=True)
+        print("[Daemon] Thread pool stopped.")
 
-    timezone = config.get("app", {}).get("timezone", DEFAULT_TIMEZONE)
-    date = format_date_folder(timezone)
-    time_str = format_time_display(timezone)
+        # 5. Close database
+        self.db.close()
+        print("[Daemon] Shutdown complete.")
 
-    print(f"=== Notifier === {date} {time_str}")
+    # ── Web server ───────────────────────────────────────────────
 
-    # Init storage
-    storage_config = config.get("storage", {})
-    storage = Storage(
-        data_dir=storage_config.get("local", {}).get("data_dir", "output"),
-        timezone=timezone,
-        s3_config=storage_config.get("remote") or None,
-    )
+    async def _serve_web(self, app) -> None:
+        """Run the FastAPI application via uvicorn."""
+        import uvicorn
 
-    # Get unnotified items
-    rows = storage.get_unnotified(date)
-    if not rows:
-        print("No new items to notify")
-        storage.cleanup()
-        return
+        web_cfg = self.config.get("web", {})
+        host = web_cfg.get("host", "0.0.0.0")
+        port = web_cfg.get("port", 8000)
 
-    # Convert rows to dicts
-    items = [dict(row) for row in rows]
-    print(f"Unnotified items: {len(items)}")
+        config = uvicorn.Config(
+            app, host=host, port=port, log_level="info",
+        )
+        server = uvicorn.Server(config)
+        self._uvicorn_server = server
+        print(f"[Daemon] Web server starting on {host}:{port}")
+        await server.serve()
 
-    # Load keywords and match
-    freq_path = config.get("notification", {}).get(
-        "frequency_words", "frequency_words.txt"
-    )
-    if os.path.exists(freq_path):
-        word_groups, filter_words, global_filters = load_frequency_words(freq_path)
-        max_per = config.get("notification", {}).get("max_news_per_keyword", 0)
-        grouped = match_and_group(items, word_groups, global_filters, max_per)
-        print(f"Matched groups: {list(grouped.keys())}")
-    else:
-        grouped = {"全部新闻": items}
+    # ── Utilities ────────────────────────────────────────────────
 
-    # Build HTML report
-    html = build_html_report(grouped, date, time_str, len(items))
-
-    # Send email
-    email_config = config.get("notification", {}).get("email", {})
-    smtp_server = email_config.get("smtp_server", "smtp.qq.com")
-    smtp_port = email_config.get("smtp_port", 587)
-    from_addr = email_config.get("from_addr", "")
-    to_addr = email_config.get("to_addr", "")
-    password = email_config.get("password") or os.environ.get("EMAIL_PASSWORD", "")
-
-    if not all([from_addr, to_addr, password]):
-        print("[Email] Missing config — skipping send")
-    else:
-        send_email(html, smtp_server, smtp_port, from_addr, to_addr, password)
-
-    # Mark as notified
-    storage.mark_notified(date)
-
-    storage.cleanup()
-    print("=== Done ===")
+    async def _sleep_or_shutdown(self, seconds: float) -> None:
+        """Sleep that wakes early when shutdown is requested."""
+        try:
+            await asyncio.wait_for(
+                self._shutdown_event.wait(), timeout=seconds
+            )
+        except asyncio.TimeoutError:
+            pass
 
 
-def cmd_sync(config: dict):
-    """Sync cloud SQLite data into local PostgreSQL."""
-    from sync import sync_from_cloud
-
-    print("=== Cloud Sync ===")
-
-    pg_config = config["postgresql"]
-    s3_config = config["storage"]["remote"]
-
-    if not s3_config.get("bucket_name") or not s3_config.get("endpoint_url"):
-        print("[Sync] S3 not configured - cannot sync. Set S3_* env vars.")
-        return
-
-    result = sync_from_cloud(
-        pg_config=pg_config,
-        s3_config=s3_config,
-        data_dir=config["storage"]["local"]["data_dir"],
-    )
-    print(f"Result: {result}")
-
-
-def cmd_init_db(config: dict):
-    """Initialize PostgreSQL schema only."""
-    from database import init_db, close_db
-
-    print("=== Init DB ===")
-    init_db(config["postgresql"])
-    print("Schema created successfully.")
-    close_db()
-
+# =========================================================================
+# Entry point
+# =========================================================================
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python main.py [crawl|notify|sync|init-db]")
-        sys.exit(1)
-
-    cmd = sys.argv[1]
-    cfg = load_config("config.yaml")
-
-    if cmd == "crawl":
-        cmd_crawl(cfg)
-    elif cmd == "notify":
-        cmd_notify(cfg)
-    elif cmd == "sync":
-        cmd_sync(cfg)
-    elif cmd == "init-db":
-        cmd_init_db(cfg)
-    else:
-        print(f"Unknown command: {cmd}")
+    try:
+        daemon = NewsRadarDaemon()
+        asyncio.run(daemon.run())
+    except KeyboardInterrupt:
+        print("\n[Daemon] Interrupted. Goodbye.")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n[Daemon] Fatal error: {e}")
         sys.exit(1)

@@ -66,16 +66,7 @@ class ImageStorage:
         object_key: str,
         content_type: Optional[str] = None,
     ) -> str:
-        """Upload an image file and return the public URL.
-
-        Args:
-            local_path: Path to the local image file.
-            object_key: S3 object key (e.g. '2026-06/1/image_01.jpg').
-            content_type: MIME type. Auto-detected from extension if None.
-
-        Returns:
-            Full URL to the uploaded image.
-        """
+        """Upload an image file and return the public URL."""
         if content_type is None:
             content_type = self._guess_content_type(local_path)
 

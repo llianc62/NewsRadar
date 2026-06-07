@@ -1,5 +1,9 @@
 # coding=utf-8
-"""HTML report generation and email notification."""
+"""HTML report generation and email notification.
+
+Imports tier display constants from ``news.constants`` (single source
+of truth shared with the web frontend).
+"""
 
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -7,20 +11,8 @@ from email.mime.text import MIMEText
 from email.utils import formataddr, formatdate
 from typing import Dict, List, Optional
 
-# Tier display labels (used by web frontend)
-TIER_LABELS = {1: "T1·官媒", 2: "T2·主流", 3: "T3·垂直", 4: "T4·资讯"}
-TIER_COLORS = {
-    1: "hsl(var(--danger))",
-    2: "hsl(var(--warning))",
-    3: "hsl(var(--success))",
-    4: "hsl(var(--info))",
-}
-TIER_BG = {
-    1: "hsl(var(--danger) / 0.1)",
-    2: "hsl(var(--warning) / 0.1)",
-    3: "hsl(var(--success) / 0.1)",
-    4: "hsl(var(--info) / 0.1)",
-}
+from news.constants import TIER_LABELS, TIER_COLORS, TIER_BG
+
 
 def build_html_report(
     grouped_items: Dict[str, List[Dict]],
@@ -178,3 +170,85 @@ def send_email(
     except Exception as e:
         print(f"[Email] Failed: {e}")
         return False
+
+
+def run_notifier(config: dict) -> None:
+    """Run the full notification pipeline.
+
+    1. Download daily SQLite DB from S3
+    2. Query unnotified items
+    3. Match keywords and group
+    4. Build HTML report
+    5. Send email
+    6. Mark items as notified and upload back
+
+    This is the entry point used by both ``cli.py notify`` (GitHub
+    Actions) and any future daemon-triggered notification.
+    """
+    import os
+
+    from news.keywords import load_frequency_words, match_and_group
+    from storage.sqlite import Storage
+    from utils import format_date_folder, format_time_display, DEFAULT_TIMEZONE
+
+    timezone = config.get("app", {}).get("timezone", DEFAULT_TIMEZONE)
+    date = format_date_folder(timezone)
+    time_str = format_time_display(timezone)
+
+    print(f"=== Notifier === {date} {time_str}")
+
+    # Init storage
+    storage_config = config.get("storage", {})
+    storage = Storage(
+        data_dir=storage_config.get("local", {}).get("data_dir", "output"),
+        timezone=timezone,
+        s3_config=storage_config.get("remote") or None,
+    )
+
+    # Get unnotified items
+    rows = storage.get_unnotified(date)
+    if not rows:
+        print("No new items to notify")
+        storage.cleanup()
+        return
+
+    # Convert rows to dicts
+    items = [dict(row) for row in rows]
+    print(f"Unnotified items: {len(items)}")
+
+    # Load keywords and match
+    freq_path = config.get("notification", {}).get(
+        "frequency_words", "news/frequency_words.txt"
+    )
+    if not os.path.exists(freq_path):
+        # Fall back to root-level file for backward compatibility
+        freq_path = "frequency_words.txt"
+    if os.path.exists(freq_path):
+        word_groups, filter_words, global_filters = load_frequency_words(freq_path)
+        max_per = config.get("notification", {}).get("max_news_per_keyword", 0)
+        grouped = match_and_group(items, word_groups, global_filters, max_per)
+        print(f"Matched groups: {list(grouped.keys())}")
+    else:
+        grouped = {"全部新闻": items}
+
+    # Build HTML report
+    html = build_html_report(grouped, date, time_str, len(items))
+
+    # Send email
+    email_config = config.get("notification", {}).get("email", {})
+    smtp_server = email_config.get("smtp_server", "smtp.qq.com")
+    smtp_port = email_config.get("smtp_port", 587)
+    from_addr = email_config.get("from_addr", "")
+    to_addr = email_config.get("to_addr", "")
+    password = email_config.get("password") or os.environ.get("EMAIL_PASSWORD", "")
+
+    if not all([from_addr, to_addr, password]):
+        print("[Email] Missing config — skipping send")
+    else:
+        send_email(html, smtp_server, smtp_port, from_addr, to_addr, password)
+
+    # Mark as notified
+    storage.mark_notified(date)
+
+    storage.cleanup()
+    print("=== Done ===")

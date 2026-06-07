@@ -48,9 +48,10 @@ rss:
 
 crawler:
   request_interval: 2000
+  daemon_interval_minutes: 60
 
 notification:
-  frequency_words: "frequency_words.txt"
+  frequency_words: "news/frequency_words.txt"
   max_news_per_keyword: 0
   email:
     smtp_server: "smtp.qq.com"
@@ -74,13 +75,17 @@ postgresql:
   port: 5432
   database: "newsradar"
   user: "newsradar"
-  password: ""           # use env var PG_PASSWORD
+  password: "newsradar"
   min_connections: 2
   max_connections: 10
 
 minio:
   endpoint_url: "http://localhost:9000"
   bucket_name: "newsradar-images"
-  access_key_id: ""      # use env var MINIO_ACCESS_KEY_ID
-  secret_access_key: ""  # use env var MINIO_SECRET_ACCESS_KEY
+  access_key_id: "admin"
+  secret_access_key: "minioadmin"
   region: ""
+
+web:
+  host: "0.0.0.0"
+  port: 8000

@@ -1,7 +1,7 @@
 [project]
 name = "newsnow-crawler"
-version = "1.0.0"
-description = "Standalone news crawler — fetches hot-list + RSS, stores to SQLite, notifies via email"
+version = "2.0.0"
+description = "NewsRadar — news aggregation, notification, and web dashboard"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115",
@@ -13,6 +13,8 @@ dependencies = [
     "pytz>=2026.1",
     "feedparser>=6.0",
     "psycopg2-binary>=2.9",
+    "trafilatura>=2.0",
+    "mistune>=3.2.1",
 ]
 
 [tool.hatch.build.targets.wheel]

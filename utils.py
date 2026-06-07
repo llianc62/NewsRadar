@@ -8,7 +8,6 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 import pytz
 
 DEFAULT_TIMEZONE = "Asia/Shanghai"
-
 # ── Time utilities ──────────────────────────────────────────────
 
 def get_configured_time(timezone: str = DEFAULT_TIMEZONE) -> datetime:

@@ -3,18 +3,19 @@
 Combined news fetcher module.
 
 Provides:
-- DataFetcher: fetches hot-list data from the NewsNow API
+- NewsFetcher: fetches hot-list data from the NewsNow API
 - RSSFeedConfig: RSS feed configuration dataclass
 - ParsedRSSItem: parsed RSS entry dataclass
 - RSSParser: parses RSS 2.0, Atom, and JSON Feed 1.1
 - RSSFetcher: orchestrates fetching and parsing multiple RSS feeds
 """
 
-import html
-import json
-import random
 import re
+import json
 import time
+import html
+import random
+
 from dataclasses import dataclass, field
 from datetime import datetime
 from email.utils import parsedate_to_datetime
@@ -27,7 +28,7 @@ from utils import DEFAULT_TIMEZONE, get_configured_time
 
 
 # ═══════════════════════════════════════════════════════════════════
-# DataFetcher — NewsNow hot-list API
+# NewsFetcher — NewsNow hot-list API
 # ═══════════════════════════════════════════════════════════════════
 
 # Hardcoded NewsNow API endpoint
@@ -47,7 +48,7 @@ _DEFAULT_HEADERS = {
 }
 
 
-class DataFetcher:
+class NewsFetcher:
     """Fetch hot-list data from the NewsNow API.
 
     No proxy support — requests go directly to the API endpoint.
@@ -708,3 +709,292 @@ class RSSFetcher:
             timeout=config.get("timeout", 15),
             timezone=config.get("timezone", DEFAULT_TIMEZONE),
         )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# ArticleParser — article content extraction with MinIO image storage
+# ═══════════════════════════════════════════════════════════════════
+
+
+class ArticleParser:
+    """Fetch article content, convert to Markdown, save images to MinIO.
+
+    Queries PostgreSQL for articles where ``content IS NULL``,
+    downloads the article HTML, extracts the main body with
+    ``trafilatura``, uploads images to MinIO, and updates the
+    ``content`` column.
+
+    Reference: https://github.com/microsoft/markitdown
+    """
+
+    def __init__(
+        self,
+        db,  # storage.postgres.Database
+        image_storage=None,  # storage.minio.ImageStorage (optional)
+        config: Optional[Dict[str, Any]] = None,
+    ):
+        self.db = db
+        self.image_storage = image_storage
+        cfg = config or {}
+        self.timeout = cfg.get("timeout", 30)
+        self.max_content_length = cfg.get("max_content_length", 100000)
+        self.request_interval = cfg.get("request_interval", 2000)
+
+        # Try to import trafilatura (optional dependency)
+        self._has_trafilatura = False
+        try:
+            import trafilatura  # noqa: F401
+            self._has_trafilatura = True
+        except ImportError:
+            pass
+
+        self._session = self._create_session()
+
+    def _create_session(self) -> requests.Session:
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/91.0.4472.124 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        })
+        return session
+
+    # ── Batch processing ──────────────────────────────────────────
+
+    def process_pending(self, limit: int = 10) -> int:
+        """Fetch content for articles that don't have it yet.
+
+        Returns the number of articles successfully processed.
+        """
+        articles = self.db.get_articles_without_content(limit=limit)
+        if not articles:
+            print("[ArticleParser] No articles without content")
+            return 0
+
+        print(f"[ArticleParser] Processing {len(articles)} articles...")
+        success = 0
+
+        for i, article in enumerate(articles):
+            if i > 0:
+                time.sleep(self.request_interval / 1000)
+
+            try:
+                content = self.parse_article(article["url"], article["id"])
+                if content:
+                    self.db.update_article_content(article["id"], content)
+                    success += 1
+                    print(
+                        f"[ArticleParser] OK [{article['id']}]: "
+                        f"{article['title'][:40]}... ({len(content)} chars)"
+                    )
+                else:
+                    print(
+                        f"[ArticleParser] No content extracted: "
+                        f"{article['title'][:40]}..."
+                    )
+            except Exception as e:
+                print(f"[ArticleParser] Failed [{article['id']}]: {e}")
+
+        print(f"[ArticleParser] Done: {success}/{len(articles)} succeeded")
+        return success
+
+    def process_article(self, article_id: int) -> Optional[str]:
+        """Fetch content for a single article by ID.
+
+        Returns the Markdown content string, or None on failure.
+        """
+        article = self.db.get_news_by_id(article_id)
+        if not article:
+            print(f"[ArticleParser] Article {article_id} not found")
+            return None
+
+        url = article.get("url", "")
+        if not url:
+            print(f"[ArticleParser] Article {article_id} has no URL")
+            return None
+
+        content = self.parse_article(url, article_id)
+        if content:
+            self.db.update_article_content(article_id, content)
+        return content
+
+    # ── Core: download → extract → images → Markdown ──────────────
+
+    def parse_article(self, url: str, article_id: int = 0) -> Optional[str]:
+        """Download article HTML, extract content as Markdown, handle images.
+
+        Args:
+            url: Article URL.
+            article_id: Article DB ID (for image association).
+
+        Returns:
+            Markdown content string, or None if extraction failed.
+        """
+        try:
+            response = self._session.get(url, timeout=self.timeout)
+            response.raise_for_status()
+            html_text = response.text
+        except requests.RequestException as e:
+            print(f"[ArticleParser] HTTP error for {url}: {e}")
+            return None
+
+        if self._has_trafilatura:
+            markdown = self._extract_content(html_text, url)
+        else:
+            markdown = self._extract_fallback(html_text)
+
+        if not markdown:
+            return None
+
+        # Handle images: download → MinIO → replace URLs → save to DB
+        if self.image_storage is not None:
+            markdown = self._handle_images(html_text, markdown, article_id)
+
+        return markdown
+
+    def _extract_content(self, html_text: str, url: str) -> Optional[str]:
+        """Use trafilatura for content extraction, fall back to HTML-strip."""
+        markdown = None
+
+        if self._has_trafilatura:
+            import trafilatura
+            result = trafilatura.extract(
+                html_text,
+                url=url,
+                output_format="markdown",
+                with_metadata=True,
+                include_tables=True,
+                include_images=True,
+                include_links=True,
+                include_formatting=True,
+            )
+            if result and len(result.strip()) > 50:
+                markdown = result.strip()
+
+        # Fallback when trafilatura is unavailable or fails to extract
+        if markdown is None:
+            markdown = self._extract_fallback(html_text)
+
+        if markdown and len(markdown) > self.max_content_length:
+            markdown = markdown[:self.max_content_length] + "\n\n... (truncated)"
+
+        return markdown
+
+    def _handle_images(
+        self, html_text: str, markdown: str, article_id: int
+    ) -> str:
+        """Download images from HTML, upload to MinIO, replace URLs in Markdown.
+
+        Returns updated Markdown with MinIO image URLs.
+        """
+        from urllib.parse import urljoin, urlparse
+
+        # Parse <img> tags from HTML
+        img_pattern = re.compile(
+            r'<img[^>]+src=["\']([^"\']+)["\']'
+            r'(?:[^>]+alt=["\']([^"\']*)["\'])?'
+            r'(?:[^>]+width=["\'](\d+)["\'])?'
+            r'(?:[^>]+height=["\'](\d+)["\'])?',
+            re.IGNORECASE,
+        )
+
+        img_index = 0
+        for match in img_pattern.finditer(html_text):
+            src = match.group(1)
+            alt = match.group(2) or ""
+            width = int(match.group(3)) if match.group(3) else None
+            height = int(match.group(4)) if match.group(4) else None
+
+            # Resolve relative URLs
+            img_url = src
+            if not urlparse(src).netloc:
+                # We don't have the base URL context here, skip relative
+                continue
+
+            try:
+                # Download image
+                img_response = self._session.get(img_url, timeout=15)
+                img_response.raise_for_status()
+
+                # Determine content type and extension
+                content_type = img_response.headers.get(
+                    "Content-Type", "image/jpeg"
+                ).split(";")[0].strip()
+                ext_map = {
+                    "image/jpeg": ".jpg",
+                    "image/png": ".png",
+                    "image/gif": ".gif",
+                    "image/webp": ".webp",
+                    "image/svg+xml": ".svg",
+                }
+                ext = ext_map.get(content_type, ".jpg")
+
+                # Upload to MinIO
+                from datetime import datetime
+                from pathlib import Path
+                import tempfile
+
+                date_prefix = datetime.now().strftime("%Y-%m")
+                object_key = f"{date_prefix}/{article_id}/img_{img_index:02d}{ext}"
+
+                with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                    tmp.write(img_response.content)
+                    tmp_path = Path(tmp.name)
+
+                try:
+                    minio_url = self.image_storage.upload_image(
+                        tmp_path, object_key, content_type
+                    )
+                    file_size = len(img_response.content)
+
+                    # Save to news_images table
+                    self.db.save_article_image(
+                        article_id=article_id,
+                        image_url=minio_url,
+                        original_url=img_url,
+                        width=width,
+                        height=height,
+                        file_size=file_size,
+                        sort_order=img_index,
+                    )
+
+                    # Replace URL in Markdown
+                    markdown = markdown.replace(img_url, minio_url)
+
+                finally:
+                    tmp_path.unlink(missing_ok=True)
+
+                img_index += 1
+
+            except Exception as e:
+                print(f"[ArticleParser] Image download failed [{img_url}]: {e}")
+
+        return markdown
+
+    def _extract_fallback(self, html_text: str) -> Optional[str]:
+        """Fallback: strip HTML tags, collapse whitespace."""
+        text = re.sub(
+            r'<(script|style|nav|header|footer|aside)[^>]*>.*?</\1>',
+            '',
+            html_text,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = html.unescape(text)
+        text = re.sub(r'\s+', ' ', text).strip()
+
+        paragraphs = [p.strip() for p in text.split('\n') if len(p.strip()) > 80]
+        if paragraphs:
+            text = '\n\n'.join(paragraphs)
+
+        if len(text) > 100:
+            if len(text) > self.max_content_length:
+                text = text[:self.max_content_length] + "\n\n... (truncated)"
+            return text
+
+        return None

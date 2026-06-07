@@ -1,0 +1,191 @@
+{% extends "base.html" %}
+{% block title %}{{ article.title[:40] }} — NewsRadar{% endblock %}
+
+{% block content %}
+<nav style="margin-bottom: 16px;">
+  <a href="/hot-news" style="font-size: 13px; color: hsl(var(--muted-foreground)); display: flex; align-items: center; gap: 4px; width: fit-content;">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+    返回热点新闻
+  </a>
+</nav>
+
+<article style="max-width: 780px; margin: 0 auto;">
+  <!-- Header -->
+  <header style="margin-bottom: 24px;">
+    <!-- Source + Time meta -->
+    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px; font-size: 13px; color: hsl(var(--muted-foreground));">
+      <span style="font-weight: 600; color: hsl(var(--primary));">{{ article.source_name }}</span>
+      <span>·</span>
+      <span>{{ article.published_at or '' }}</span>
+      {% if article.source_type == 'rss' %}
+      <span style="font-size: 10px; padding: 2px 8px; border-radius: 8px; background: hsl(var(--info) / 0.1); color: hsl(var(--info));">RSS</span>
+      {% endif %}
+    </div>
+
+    <!-- Title -->
+    <h1 style="font-size: 26px; font-weight: 700; line-height: 1.45; color: hsl(var(--foreground)); margin-bottom: 12px;">
+      {{ article.title }}
+    </h1>
+
+    <!-- Tags -->
+    {% if article.tags %}
+    <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+      {% for tag in article.tags %}
+      <span style="font-size: 11px; padding: 4px 10px; border-radius: 12px; background: hsl(var(--muted)); color: hsl(var(--muted-foreground));">{{ tag }}</span>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </header>
+
+  <!-- Divider -->
+  <div style="height: 1px; background: hsl(var(--border)); margin-bottom: 24px;"></div>
+
+  <!-- Content -->
+  <div class="article-body" style="font-size: 15px; line-height: 1.9; color: hsl(var(--foreground));">
+    {% if article.content %}
+      {{ article.content | markdown }}
+    {% elif article.summary %}
+      <p style="margin-bottom: 16px;">{{ article.summary }}</p>
+    {% else %}
+      <div style="text-align: center; padding: 48px; color: hsl(var(--muted-foreground));">
+        <div style="font-size: 36px; margin-bottom: 12px;">📄</div>
+        <p>暂无正文内容</p>
+      </div>
+    {% endif %}
+  </div>
+
+  <!-- Images gallery -->
+  {% if article.images %}
+  <div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid hsl(var(--border));">
+    <h3 style="font-size: 14px; font-weight: 600; color: hsl(var(--muted-foreground)); margin-bottom: 12px;">文章图片</h3>
+    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px;">
+      {% for img in article.images %}
+      <div style="border-radius: var(--radius); overflow: hidden; border: 1px solid hsl(var(--border));">
+        <img src="{{ img.image_url }}" alt="" style="width: 100%; height: auto; display: block;" loading="lazy">
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Original link -->
+  {% if article.url %}
+  <div style="margin-top: 32px; padding-top: 24px; border-top: 1px solid hsl(var(--border));">
+    <a href="{{ article.url }}" target="_blank" rel="noopener" style="font-size: 13px; color: hsl(var(--primary)); display: flex; align-items: center; gap: 6px;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+      查看原文
+    </a>
+  </div>
+  {% endif %}
+</article>
+
+<style>
+/* ── Markdown body styling ── */
+.article-body h1, .article-body h2, .article-body h3,
+.article-body h4, .article-body h5, .article-body h6 {
+  font-weight: 700;
+  color: hsl(var(--foreground));
+  margin: 28px 0 12px;
+  line-height: 1.4;
+}
+.article-body h1 { font-size: 24px; }
+.article-body h2 { font-size: 20px; }
+.article-body h3 { font-size: 17px; }
+.article-body h4 { font-size: 15px; color: hsl(var(--muted-foreground)); }
+.article-body p { margin-bottom: 16px; }
+.article-body strong { font-weight: 700; }
+.article-body em { font-style: italic; }
+.article-body del { text-decoration: line-through; opacity: 0.7; }
+.article-body a { color: hsl(var(--primary)); text-decoration: underline; }
+.article-body a:hover { opacity: 0.8; }
+
+/* Lists */
+.article-body ul, .article-body ol {
+  margin: 12px 0;
+  padding-left: 24px;
+}
+.article-body li { margin-bottom: 6px; }
+.article-body li > ul, .article-body li > ol { margin-top: 6px; }
+
+/* Task lists */
+.article-body ul > li > input[type="checkbox"] {
+  margin-right: 6px;
+  accent-color: hsl(var(--primary));
+}
+
+/* Blockquote */
+.article-body blockquote {
+  border-left: 3px solid hsl(var(--primary));
+  padding-left: 16px;
+  margin: 16px 0;
+  color: hsl(var(--muted-foreground));
+}
+.article-body blockquote p { margin-bottom: 8px; }
+
+/* Code */
+.article-body code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: hsl(var(--muted));
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.article-body pre {
+  background: hsl(var(--muted));
+  padding: 16px;
+  border-radius: var(--radius);
+  overflow-x: auto;
+  margin: 16px 0;
+  font-size: 13px;
+}
+.article-body pre code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+}
+
+/* Tables */
+.article-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 14px;
+}
+.article-body thead { background: hsl(var(--muted)); }
+.article-body th {
+  padding: 8px 12px;
+  text-align: left;
+  font-weight: 600;
+  border: 1px solid hsl(var(--border));
+}
+.article-body td {
+  padding: 8px 12px;
+  border: 1px solid hsl(var(--border));
+}
+.article-body tbody tr:nth-child(even) { background: hsl(var(--muted) / 0.4); }
+
+/* Horizontal rule */
+.article-body hr {
+  border: none;
+  height: 1px;
+  background: hsl(var(--border));
+  margin: 24px 0;
+}
+
+/* Images in content */
+.article-body img {
+  max-width: 100%;
+  border-radius: var(--radius);
+  height: auto;
+}
+.article-body figure {
+  margin: 20px 0;
+  text-align: center;
+}
+.article-body figcaption {
+  font-size: 13px;
+  color: hsl(var(--muted-foreground));
+  margin-top: 8px;
+}
+</style>
+{% endblock %}

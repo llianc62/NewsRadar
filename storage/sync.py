@@ -1,17 +1,22 @@
 # coding=utf-8
-"""Cloud-to-local sync: download SQLite from S3, merge into PostgreSQL."""
+"""Cloud-to-local sync: download SQLite from S3, merge into PostgreSQL.
+
+Uses the public ``S3Client`` (no more private-method calls on
+``Storage._download_from_s3``).
+"""
 
 import os
 import sqlite3
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from database import save_news_data, init_db, close_db
-from models import NewsData, NewsItem
+from news.models import NewsData, NewsItem
+from storage.s3 import S3Client
+from storage.postgres import Database
 
 
 def sync_from_cloud(
-    pg_config: Dict[str, Any],
+    db: Database,
     s3_config: Dict[str, Any],
     dates: Optional[List[str]] = None,
     data_dir: str = "output",
@@ -19,24 +24,23 @@ def sync_from_cloud(
     """Download daily SQLite DBs from S3 and merge into PostgreSQL.
 
     For each date:
-    1. Download news/{date}.db from S3
+    1. Download news/{date}.db from S3 via S3Client
     2. Parse all rows from the SQLite file
-    3. UPSERT into PostgreSQL with sync_status='cloud' (skip_existing=True)
+    3. UPSERT into PostgreSQL with sync_status='cloud', skip_existing=True
     4. Clean up temp files
 
     Args:
-        pg_config: PostgreSQL connection config.
-        s3_config: S3 connection config (same format as Storage).
-        dates: List of YYYY-MM-DD date strings. Defaults to yesterday
-               through 7 days ago if not specified.
+        db: Connected Database instance.
+        s3_config: S3 connection config dict.
+        dates: List of YYYY-MM-DD date strings. Defaults to past 7 days.
         data_dir: Local directory for temp downloads.
 
     Returns:
         {"dates_processed": int, "total_new": int, "total_skipped": int, "errors": [str]}
     """
-    from storage import Storage
-
-    init_db(pg_config)
+    s3 = S3Client.from_config(s3_config)
+    if s3 is None:
+        return {"dates_processed": 0, "total_new": 0, "total_skipped": 0, "errors": ["S3 not configured"]}
 
     # Default: sync the last 7 days
     if dates is None:
@@ -46,25 +50,24 @@ def sync_from_cloud(
         today = datetime.now(tz).date()
         dates = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(1, 8)]
 
-    # We use Storage only for S3 download capability (not for writing)
-    storage = Storage(data_dir=data_dir, s3_config=s3_config)
-
     total_new = 0
     total_skipped = 0
-    errors = []
+    errors: List[str] = []
+    data_dir_path = Path(data_dir)
 
     for date_str in dates:
         print(f"\n[Sync] Processing {date_str}...")
 
-        # Download from S3
-        downloaded = storage._download_from_s3(date_str)
-        if downloaded is None:
+        key = f"news/{date_str}.db"
+        tmp_path = s3.download_to_temp(key)
+
+        if tmp_path is None:
             print(f"[Sync] No S3 object for {date_str}, skipping")
             continue
 
         try:
             # Parse SQLite rows
-            rows = _read_sqlite_db(downloaded)
+            rows = _read_sqlite_db(tmp_path)
             print(f"[Sync] Read {len(rows)} rows from {date_str}.db")
 
             if not rows:
@@ -72,9 +75,9 @@ def sync_from_cloud(
 
             # Convert to NewsData format and save (skip existing = local wins)
             news_data = _rows_to_newsdata(rows, date_str)
-            result = save_news_data(news_data, sync_status="cloud", skip_existing=True)
-            total_new += result["new"]
-            total_skipped += result["skipped"]
+            result = db.save_news_data(news_data, sync_status="cloud", skip_existing=True)
+            total_new += result.get("new", 0)
+            total_skipped += result.get("skipped", 0)
 
         except Exception as e:
             msg = f"Failed to sync {date_str}: {e}"
@@ -83,12 +86,9 @@ def sync_from_cloud(
         finally:
             # Clean up temp file
             try:
-                os.unlink(str(downloaded))
+                os.unlink(str(tmp_path))
             except OSError:
                 pass
-
-    storage.cleanup()
-    close_db()
 
     print(f"\n[Sync] Complete: {total_new} new, {total_skipped} skipped, {len(errors)} errors")
     return {
@@ -111,7 +111,7 @@ def _read_sqlite_db(db_path: Path) -> List[Dict[str, Any]]:
 
 
 def _rows_to_newsdata(rows: List[Dict[str, Any]], date_str: str) -> NewsData:
-    """Convert SQLite rows to a NewsData object for save_news_data()."""
+    """Convert SQLite rows to a NewsData object."""
     items: Dict[str, List[NewsItem]] = {}
 
     for row in rows:

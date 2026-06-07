@@ -10,9 +10,9 @@
   <!-- Level 1: Tier -->
   <div style="display: flex; align-items: center; gap: 10px;">
     <span style="font-size: 11px; font-weight: 600; color: hsl(var(--foreground)); min-width: 56px; white-space: nowrap;">级别</span>
-    <span style="font-size: 11px; padding: 5px 14px; border-radius: 14px; background: hsl(var(--primary)); color: white; font-weight: 600; white-space: nowrap;">全部</span>
+    <a href="?page=1" class="filter-pill" style="font-size: 11px; padding: 5px 14px; border-radius: 14px; background: {{ 'hsl(var(--primary))' if not tier_filter else 'hsl(var(--muted))' }}; color: {{ 'white' if not tier_filter else 'hsl(var(--muted-foreground))' }}; font-weight: {{ 600 if not tier_filter else 500 }}; white-space: nowrap; text-decoration: none;">全部</a>
     {% for t in tier_labels %}
-    <span style="font-size: 11px; padding: 5px 14px; border-radius: 14px; background: {{ t['bg'] }}; color: {{ t['color'] }}; font-weight: 500; white-space: nowrap;">{{ t['label'] }}</span>
+    <a href="?page=1&amp;tier={{ t['tier'] }}" class="filter-pill" style="font-size: 11px; padding: 5px 14px; border-radius: 14px; background: {{ t['bg'] if tier_filter != t['tier'] else t['color'] }}; color: {{ t['color'] if tier_filter != t['tier'] else 'white' }}; font-weight: {{ 600 if tier_filter == t['tier'] else 500 }}; white-space: nowrap; text-decoration: none;">{{ t['label'] }}</a>
     {% endfor %}
   </div>
 
@@ -38,4 +38,10 @@
   {% include "components/news_list.html" %}
 </div>
 
+{% endblock %}
+
+{% block head %}
+<style>
+.filter-pill:hover { opacity: 0.85; }
+</style>
 {% endblock %}

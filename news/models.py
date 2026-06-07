@@ -21,6 +21,7 @@ class NewsItem:
     guid: str = ""
     published_at: str = ""
     summary: str = ""
+    content: str = ""
     author: str = ""
     notified: int = 0
     first_crawl_time: str = ""
