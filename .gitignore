@@ -8,7 +8,12 @@ dist/
 
 .claude/
 .superpowers/
+.codegraph/
+
+.mcp.json
 
 .env
 
 output/
+
+temp.md

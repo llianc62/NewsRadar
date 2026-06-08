@@ -1,54 +1,51 @@
 app:
   timezone: "Asia/Shanghai"
 
-platforms:
-  enabled: true
-  sources:
-    - id: "wallstreetcn-hot"
-      name: "华尔街见闻"
-      tier: 2
-      priority: 85
-    - id: "cls-hot"
-      name: "财联社热门"
-      tier: 2
-      priority: 85
-    - id: "thepaper"
-      name: "澎湃新闻"
-      tier: 2
-      priority: 75
-    - id: "36kr-renqi"
-      name: "36氪"
-      tier: 3
-      priority: 60
-    - id: "toutiao"
-      name: "今日头条"
-      tier: 4
-      priority: 30
-    - id: "zhihu"
-      name: "知乎"
-      tier: 4
-      priority: 20
-    - id: "juejin"
-      name: "掘金"
-      tier: 4
-      priority: 20
-
-rss:
-  enabled: true
-  request_interval: 1000
-  timeout: 20
-  feeds:
-    - id: "stcn"
-      name: "证券时报网"
-      url: "https://rsshub.pseudoyu.com/stcn"
-      tier: 2
-      priority: 80
-      enabled: true
-      max_age_days: 1
-
 crawler:
-  request_interval: 2000
-  daemon_interval_minutes: 60
+  newsnow:
+    enabled: true
+    timeout: 20
+    interval: 2000
+    url: "https://newsnow.busiyi.world/api/s"
+    sources:
+      - id: "wallstreetcn-hot"
+        name: "华尔街见闻"
+        tier: 2
+        priority: 85
+      - id: "cls-hot"
+        name: "财联社热门"
+        tier: 2
+        priority: 85
+      - id: "thepaper"
+        name: "澎湃新闻"
+        tier: 2
+        priority: 75
+      - id: "36kr-renqi"
+        name: "36氪"
+        tier: 3
+        priority: 60
+      - id: "toutiao"
+        name: "今日头条"
+        tier: 4
+        priority: 30
+      - id: "juejin"
+        name: "掘金"
+        tier: 4
+        priority: 20
+
+  rss:
+    enabled: true
+    timeout: 20
+    interval: 1000
+    feeds:
+      - id: "stcn"
+        name: "证券时报网"
+        url: "https://rsshub.pseudoyu.com/stcn"
+        tier: 2
+        priority: 80
+        enabled: true
+        max_age_days: 1
+
 
 notification:
   frequency_words: "news/frequency_words.txt"

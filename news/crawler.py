@@ -8,17 +8,15 @@ The only difference is the storage destination:
 * **Local daemon** (``main.py``):   fetch → PostgreSQL → optional content fetch
 """
 
-import time
 from typing import Any, Dict, List, Optional, Tuple
-
-import requests
 
 from news.models import (
     NewsData,
     convert_crawl_results_to_news_data,
     convert_rss_items_to_news_data,
 )
-from news.fetcher import NewsFetcher, RSSFetcher
+from news.fetcher import NewsnowFetcher, RssFetcher
+from news.grabber import Grabber, OutputStyle
 from utils import format_date_folder, format_time_display
 
 
@@ -29,12 +27,12 @@ def build_source_tiers(config: dict) -> dict:
     metadata to news items before storage.
     """
     tiers = {}
-    for source in config.get("platforms", {}).get("sources", []):
+    for source in config.get("crawler", {}).get("newsnow", {}).get("sources", []):
         tiers[source["id"]] = {
             "tier": source.get("tier", 4),
             "priority": source.get("priority", 0),
         }
-    for feed in config.get("rss", {}).get("feeds", []):
+    for feed in config.get("crawler", {}).get("rss", {}).get("feeds", []):
         if feed.get("enabled", True):
             tiers[feed["id"]] = {
                 "tier": feed.get("tier", 3),
@@ -43,111 +41,25 @@ def build_source_tiers(config: dict) -> dict:
     return tiers
 
 
-def _enrich_with_content(news_data: NewsData, request_interval: int) -> None:
-    """Download article pages and extract Markdown content for each item.
 
-    Modifies *news_data* in place, setting ``item.content`` for items
-    where extraction succeeds.  Items whose URL is empty or whose page
-    cannot be fetched are left with ``content=""``.
-
-    Args:
-        news_data: The combined :class:`NewsData` from all sources.
-        request_interval: Milliseconds to sleep between HTTP requests.
-    """
-    TIMEOUT = 30
-    MAX_CONTENT_LENGTH = 100000
-
-    # Check for trafilatura (optional dependency)
-    has_trafilatura = False
-    try:
-        import trafilatura  # noqa: F401
-        has_trafilatura = True
-    except ImportError:
-        pass
-
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/91.0.4472.124 Safari/537.36"
-        ),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    })
-
-    total_items = sum(len(v) for v in news_data.items.values())
-    processed = 0
-
-    for _source_id, items in news_data.items.items():
-        for item in items:
-            if not item.url:
-                continue
-
-            if processed > 0:
-                time.sleep(request_interval / 1000)
-
-            try:
-                resp = session.get(item.url, timeout=TIMEOUT)
-                resp.raise_for_status()
-                html_text = resp.text
-            except requests.RequestException as e:
-                print(f"[Content] HTTP error for {item.url}: {e}")
-                processed += 1
-                continue
-
-            markdown = None
-            if has_trafilatura:
-                import trafilatura
-                result = trafilatura.extract(
-                    html_text,
-                    url=item.url,
-                    output_format="markdown",
-                    with_metadata=True,
-                    include_tables=True,
-                    include_images=True,
-                    include_links=True,
-                    include_formatting=True,
-                )
-                if result and len(result.strip()) > 50:
-                    markdown = result.strip()
-
-            # Fallback when trafilatura is unavailable or fails to extract
-            if markdown is None:
-                import re
-                from html import unescape
-                text = re.sub(
-                    r'<(script|style|nav|header|footer|aside)[^>]*>.*?</\1>',
-                    '', html_text, flags=re.DOTALL | re.IGNORECASE,
-                )
-                text = re.sub(r'<[^>]+>', ' ', text)
-                text = unescape(text)
-                text = re.sub(r'\s+', ' ', text).strip()
-                paragraphs = [p.strip() for p in text.split('\n') if len(p.strip()) > 80]
-                if paragraphs:
-                    markdown = '\n\n'.join(paragraphs)
-                elif len(text) > 100:
-                    markdown = text
-
-            if markdown:
-                if len(markdown) > MAX_CONTENT_LENGTH:
-                    markdown = markdown[:MAX_CONTENT_LENGTH] + "\n\n... (truncated)"
-                item.content = markdown
-
-            processed += 1
-
-    session.close()
-    print(f"[Content] Enriched {sum(1 for items in news_data.items.values() for it in items if it.content)}/{total_items} items with content")
-
-
-def fetch_all(config: dict, with_content: bool = False) -> Tuple[NewsData, dict]:
+def fetch_all(
+    config: dict,
+    with_content: bool = False,
+    output_style: OutputStyle | None = None,
+) -> Tuple[NewsData, dict]:
     """Fetch from all configured news sources (hot-list + RSS).
 
     This is the single shared fetch path — used identically by the
     local daemon and the cloud CI crawler.
 
+    When *with_content* is True and *output_style* is given, the
+    :class:`~news.grabber.Grabber` downloads article HTML, parses
+    Markdown, and saves content via the specified backend.
+
     Args:
         config: Full application config dict.
+        with_content: Whether to download and parse article content.
+        output_style: Storage target for content (MARKDOWN/HTML/SQLITE/POSTGRESQL).
 
     Returns:
         (news_data, source_tiers) tuple.
@@ -166,16 +78,14 @@ def fetch_all(config: dict, with_content: bool = False) -> Tuple[NewsData, dict]
     all_failed_ids: List[str] = []
 
     # ── Fetch hot-list ─────────────────────────────────────────────
-    if config["platforms"]["enabled"]:
-        request_interval = config["crawler"]["request_interval"]
-        sources = config["platforms"]["sources"]
+    newsnow_cfg = config["crawler"]["newsnow"]
+    if newsnow_cfg["enabled"]:
+        sources = newsnow_cfg["sources"]
         ids_list = [(s["id"], s["name"]) for s in sources]
 
         print(f"\n[Hot-list] Fetching {len(ids_list)} platforms...")
-        fetcher = NewsFetcher()
-        results, id_to_name, failed_ids = fetcher.crawl_websites(
-            ids_list, request_interval
-        )
+        fetcher = NewsnowFetcher(config)
+        results, id_to_name, failed_ids = fetcher.fetch()
 
         if results:
             hotlist_data = convert_crawl_results_to_news_data(
@@ -186,11 +96,11 @@ def fetch_all(config: dict, with_content: bool = False) -> Tuple[NewsData, dict]
             all_failed_ids.extend(failed_ids)
 
     # ── Fetch RSS ──────────────────────────────────────────────────
-    rss_cfg = config["rss"]
+    rss_cfg = config["crawler"]["rss"]
     if rss_cfg["enabled"]:
         print("\n[RSS] Fetching feeds...")
-        rss_fetcher = RSSFetcher.from_config(rss_cfg)
-        rss_results, rss_id_to_name, rss_failed_ids = rss_fetcher.fetch_all()
+        rss_fetcher = RssFetcher(config, timezone)
+        rss_results, rss_id_to_name, rss_failed_ids = rss_fetcher.fetch()
 
         if rss_results:
             rss_data = convert_rss_items_to_news_data(
@@ -208,9 +118,25 @@ def fetch_all(config: dict, with_content: bool = False) -> Tuple[NewsData, dict]
         failed_ids=all_failed_ids,
     )
 
-    if with_content:
-        request_interval = config.get("crawler", {}).get("request_interval", 2000)
-        _enrich_with_content(news_data, request_interval)
+    if with_content and output_style:
+        items_dicts = [
+            item.to_dict()
+            for items in all_items.values()
+            for item in items
+        ]
+        grabber = Grabber(config=config)
+        grabber.run_batch(items_dicts, output_style)
+
+        # Map content back from dicts to original NewsItem objects
+        content_map = {
+            d["url"]: d["content"]
+            for d in items_dicts
+            if d.get("content")
+        }
+        for items in all_items.values():
+            for item in items:
+                if item.url in content_map:
+                    item.content = content_map[item.url]
 
     print(f"=== Fetch complete: {sum(len(v) for v in all_items.values())} items, "
           f"{len(all_failed_ids)} failed sources ===")

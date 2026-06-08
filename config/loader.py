@@ -58,26 +58,29 @@ def _load_app_config(raw: Dict) -> Dict:
 def _load_crawler_config(raw: Dict) -> Dict:
     crawler = raw.get("crawler", {})
     return {
-        "request_interval": _get_env_int("NEWSNOW_REQUEST_INTERVAL")
-        or crawler.get("request_interval", 2000),
         "daemon_interval_minutes": crawler.get("daemon_interval_minutes", 60),
+        "newsnow": _load_newsnow_config(raw),
+        "rss": _load_rss_config(raw),
     }
 
 
-def _load_platforms_config(raw: Dict) -> Dict:
-    platforms = raw.get("platforms", {})
+def _load_newsnow_config(raw: Dict) -> Dict:
+    newsnow = raw.get("crawler", {}).get("newsnow", {})
     return {
-        "enabled": platforms.get("enabled", True),
-        "sources": platforms.get("sources", []),
+        "enabled": newsnow.get("enabled", True),
+        "url": newsnow.get("url", "https://newsnow.busiyi.world/api/s"),
+        "timeout": newsnow.get("timeout", 20),
+        "interval": newsnow.get("interval", 2000),
+        "sources": newsnow.get("sources", []),
     }
 
 
 def _load_rss_config(raw: Dict) -> Dict:
-    rss = raw.get("rss", {})
+    rss = raw.get("crawler", {}).get("rss", {})
     env_enabled = _get_env_bool("NEWSNOW_RSS_ENABLED")
     return {
         "enabled": env_enabled if env_enabled is not None else rss.get("enabled", False),
-        "request_interval": rss.get("request_interval", 1000),
+        "interval": rss.get("interval", 1000),
         "timeout": rss.get("timeout", 20),
         "feeds": rss.get("feeds", []),
     }
@@ -192,8 +195,6 @@ def load_config(path: str = "config.yaml") -> Dict[str, Any]:
     config = {
         "app": _load_app_config(raw),
         "crawler": _load_crawler_config(raw),
-        "platforms": _load_platforms_config(raw),
-        "rss": _load_rss_config(raw),
         "notification": _load_notification_config(raw),
         "storage": _load_storage_config(raw),
         "postgresql": _load_postgresql_config(raw),

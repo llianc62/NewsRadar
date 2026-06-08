@@ -26,6 +26,7 @@ from config.loader import load_config
 from storage.postgres import Database
 from web.app import create_app
 from news.crawler import fetch_all, save_to_postgres
+from news.grabber import OutputStyle
 from storage.sync import sync_from_cloud
 
 
@@ -127,7 +128,7 @@ class NewsRadarDaemon:
     async def _crawl_job(self) -> None:
         """Fetch news (with content) → save to PostgreSQL."""
         news_data, source_tiers = await self._run_in_thread(
-            fetch_all, self.config, True  # with_content=True
+            fetch_all, self.config, True, output_style=OutputStyle.POSTGRESQL
         )
         if not self._shutdown_event.is_set():
             await self._run_in_thread(

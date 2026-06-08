@@ -2,7 +2,7 @@
 """Data models for news items."""
 
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Any, Dict, List
 
 
 @dataclass
@@ -28,6 +28,32 @@ class NewsItem:
     last_crawl_time: str = ""
     crawl_count: int = 1
     ranks: List[int] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转为纯 dict，供 Grabber 等组件使用。"""
+        d = {
+            "title": self.title,
+            "source_id": self.source_id,
+            "source_name": self.source_name,
+            "source_type": self.source_type,
+            "tier": self.tier,
+            "priority": self.priority,
+            "url": self.url,
+            "mobile_url": self.mobile_url,
+            "rank": self.rank,
+            "guid": self.guid,
+            "published_at": self.published_at,
+            "summary": self.summary,
+            "content": self.content,
+            "author": self.author,
+            "notified": self.notified,
+            "first_crawl_time": self.first_crawl_time,
+            "last_crawl_time": self.last_crawl_time,
+            "crawl_count": self.crawl_count,
+        }
+        if self.ranks:
+            d["ranks"] = self.ranks
+        return d
 
 
 @dataclass
@@ -81,6 +107,7 @@ def convert_crawl_results_to_news_data(
                 rank=rank,
                 url=url,
                 mobile_url=mobile_url,
+                published_at=data.get("published_at", ""),
                 first_crawl_time=crawl_time,
                 last_crawl_time=crawl_time,
                 crawl_count=1,
