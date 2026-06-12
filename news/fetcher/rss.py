@@ -22,7 +22,7 @@ import feedparser
 import requests
 
 from news.fetcher.fetcher import Fetcher
-from utils import DEFAULT_TIMEZONE, get_configured_time
+from utils import DEFAULT_TIMEZONE
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -353,7 +353,7 @@ class RssFetcher(Fetcher):
     Usage::
 
         fetcher = RssFetcher(config, timezone="Asia/Shanghai")
-        results, id_to_name, failed_ids = fetcher.fetch()
+        results = fetcher.fetch()
     """
 
     def __init__(self, config: dict, timezone: str = DEFAULT_TIMEZONE):
@@ -418,14 +418,9 @@ class RssFetcher(Fetcher):
 
         Returns:
             (entries, error) tuple:
-            - entries: list of dicts with keys title, url, guid, published_at,
-              summary, author, feed_id, feed_name, crawl_time, crawl_date.
+            - entries: list of standardised item dicts.
             - error: error description string, or None on success.
         """
-        now = get_configured_time(self._timezone)
-        crawl_time = now.strftime("%H:%M")
-        crawl_date = now.strftime("%Y-%m-%d")
-
         try:
             response = self._session.get(feed.url, timeout=self._timeout)
             response.raise_for_status()
@@ -441,15 +436,20 @@ class RssFetcher(Fetcher):
                 entries.append(
                     {
                         "title": parsed.title,
+                        "source_id": feed.id,
+                        "source_name": feed.name,
+                        "source_type": "rss",
                         "url": parsed.url,
+                        "mobile_url": "",
+                        "rank": 0,
                         "guid": parsed.guid or "",
                         "published_at": parsed.published_at or "",
                         "summary": parsed.summary or "",
                         "author": parsed.author or "",
-                        "feed_id": feed.id,
-                        "feed_name": feed.name,
-                        "crawl_time": crawl_time,
-                        "crawl_date": crawl_date,
+                        "content": "",
+                        "category": "",
+                        "tags": [],
+                        "ranks": [],
                     }
                 )
 
@@ -478,22 +478,18 @@ class RssFetcher(Fetcher):
 
     # ── All feeds (the Fetcher interface) ──────────────────────────
 
-    def fetch(
-        self,
-    ) -> Tuple[Dict[str, List], Dict[str, str], List[str]]:
+    def fetch(self) -> List[Dict[str, Any]]:
         """Fetch all enabled feeds with rate limiting and jitter.
 
+        Failed feeds are logged internally and excluded from results.
+
         Returns:
-            (all_items, id_to_name, failed_ids) tuple:
-            - all_items: {feed_id: [entry_dict, ...]}
-            - id_to_name: {feed_id: display_name}
-            - failed_ids: list of feed_ids that failed
+            Flat list of standardised item dicts.
         """
         if not self.enabled:
-            return {}, {}, []
+            return []
 
-        all_items: Dict[str, List] = {}
-        id_to_name: Dict[str, str] = {}
+        all_items: List[Dict[str, Any]] = []
         failed_ids: List[str] = []
 
         print(f"[RSS] Fetching {len(self._active_feeds)} feeds...")
@@ -507,17 +503,14 @@ class RssFetcher(Fetcher):
 
             entries, error = self.fetch_feed(feed)
 
-            id_to_name[feed.id] = feed.name
-
             if error:
                 failed_ids.append(feed.id)
             else:
-                all_items[feed.id] = entries
+                all_items.extend(entries)
 
-        total = sum(len(v) for v in all_items.values())
         print(
-            f"[RSS] Done: {len(all_items)} feeds ok, "
-            f"{len(failed_ids)} failed, {total} items total"
+            f"[RSS] Done: {len(all_items)} items, "
+            f"{len(failed_ids)} feeds failed"
         )
 
-        return all_items, id_to_name, failed_ids
+        return all_items

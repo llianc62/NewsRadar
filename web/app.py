@@ -63,15 +63,18 @@ def render_template(name: str, **context) -> str:
 
 # ── App factory ──────────────────────────────────────────────────
 
-def create_app(db, signals: dict = None):
+def create_app(db, signals: dict = None, s3_config: dict = None):
     """Create and configure the FastAPI application.
 
     Args:
-        db: A connected :class:`storage.postgres.Database` instance.
+        db: A connected :class:`storage.postgres.PostgreSQL` instance.
             It is stored in ``app.state.db`` for route handlers.
         signals: Optional dict of ``asyncio.Event`` signals for manual
             task triggering via ``POST /api/trigger/{name}``.
             Keys: ``"crawl"``, ``"sync"``.
+        s3_config: Optional S3 remote config dict for the ``/media/``
+            image proxy.  Keys: endpoint_url, bucket_name,
+            access_key_id, secret_access_key, region.
 
     Returns:
         Configured FastAPI application.
@@ -92,6 +95,7 @@ def create_app(db, signals: dict = None):
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.state.db = db
     app.state.signals = signals or {}
+    app.state.s3_config = s3_config or {}
 
     # ── Routes ───────────────────────────────────────────────────
 
@@ -210,6 +214,33 @@ def create_app(db, signals: dict = None):
             return HTMLResponse("<h1>404 Not Found</h1>", status_code=404)
         html = render_template("pages/news_detail.html", active_page="hot-news", article=article)
         return HTMLResponse(html)
+
+    # ── Media proxy (S3 presigned redirect) ──────────────────────
+
+    @app.get("/media/{path:path}")
+    async def media_proxy(path: str):
+        """Proxy S3 object access via presigned redirect.
+
+        Takes an S3 object key as *path*, generates a short-lived
+        presigned GET URL (1 hour), and redirects.  This keeps
+        stored content URLs stable while bucket access stays private.
+        """
+        from fastapi.responses import RedirectResponse
+
+        s3_cfg = app.state.s3_config
+        if not s3_cfg:
+            return JSONResponse({"error": "S3 not configured"}, status_code=404)
+
+        from storage.s3 import S3Client
+        client = S3Client.from_config(s3_cfg)
+        if client is None:
+            return JSONResponse({"error": "S3 client init failed"}, status_code=404)
+
+        url = client.presigned_get_url(path, expires_in=3600)
+        if url is None:
+            return JSONResponse({"error": "presigned URL generation failed"}, status_code=404)
+
+        return RedirectResponse(url=url)
 
     # ── Manual trigger API ───────────────────────────────────────
 

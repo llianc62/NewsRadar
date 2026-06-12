@@ -10,7 +10,7 @@ import json
 import random
 import time
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import requests
 
@@ -108,7 +108,7 @@ class NewsFetcher:
         self,
         ids_list: List[Union[str, Tuple[str, str]]],
         interval: int = 2000,
-    ) -> Tuple[Dict, Dict, List]:
+    ) -> Dict:
         """Batch-crawl multiple platforms with rate limiting and jitter.
 
         Args:
@@ -116,23 +116,15 @@ class NewsFetcher:
             interval: Minimum interval between requests in milliseconds.
 
         Returns:
-            (results, id_to_name, failed_ids) tuple:
-            - results: {source_id: {title: {"ranks": [1,2], "url": "...", "mobileUrl": "..."}}}
-            - id_to_name: {source_id: display_name}
-            - failed_ids: list of source_ids that failed
+            {source_id: {title: {"ranks": [1,2], "url": "...", "mobileUrl": "..."}}}
+            Failed sources are logged and excluded from results.
         """
         results: Dict[str, Dict] = {}
-        id_to_name: Dict[str, str] = {}
         failed_ids: List[str] = []
 
         for i, id_info in enumerate(ids_list):
-            if isinstance(id_info, tuple):
-                id_value, name = id_info
-            else:
-                id_value = id_info
-                name = id_value
+            id_value = id_info[0] if isinstance(id_info, tuple) else id_info
 
-            id_to_name[id_value] = name
             response, _, _ = self.fetch_data(id_info)
 
             if response:
@@ -189,7 +181,7 @@ class NewsFetcher:
                 time.sleep(actual_interval / 1000)
 
         print(f"Success: {list(results.keys())}, Failed: {failed_ids}")
-        return results, id_to_name, failed_ids
+        return results
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -206,7 +198,7 @@ class NewsnowFetcher(Fetcher):
     Usage::
 
         fetcher = NewsnowFetcher(config)
-        results, id_to_name, failed_ids = fetcher.fetch()
+        results = fetcher.fetch()
     """
 
     def __init__(self, config: dict):
@@ -224,14 +216,44 @@ class NewsnowFetcher(Fetcher):
         """Whether this fetcher has sources configured."""
         return self._enabled and len(self._sources) > 0
 
-    def fetch(self) -> Tuple[Dict, Dict, List]:
+    def fetch(self) -> List[Dict[str, Any]]:
         """Fetch hot-list data from all configured sources.
 
         Returns:
-            (results, id_to_name, failed_ids)
+            Flat list of standardised item dicts.
         """
         if not self.enabled:
-            return {}, {}, []
+            return []
+
+        # Build source-id -> display-name lookup
+        id_to_name: Dict[str, str] = {
+            s["id"]: s.get("name", s["id"]) for s in self._sources
+        }
 
         ids_list = [(s["id"], s["name"]) for s in self._sources]
-        return self._client.crawl_websites(ids_list, self._interval)
+        results = self._client.crawl_websites(ids_list, self._interval)
+
+        items: List[Dict[str, Any]] = []
+        for source_id, titles_data in results.items():
+            source_name = id_to_name.get(source_id, source_id)
+            for title, info in titles_data.items():
+                ranks = info.get("ranks", [])
+                items.append({
+                    "title": title,
+                    "source_id": source_id,
+                    "source_name": source_name,
+                    "source_type": "hotlist",
+                    "url": info.get("url", ""),
+                    "mobile_url": info.get("mobileUrl", ""),
+                    "rank": ranks[0] if ranks else 99,
+                    "guid": "",
+                    "published_at": info.get("published_at", ""),
+                    "summary": "",
+                    "author": "",
+                    "content": "",
+                    "category": "",
+                    "tags": [],
+                    "ranks": ranks,
+                })
+
+        return items

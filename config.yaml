@@ -24,10 +24,10 @@ crawler:
         name: "36氪"
         tier: 3
         priority: 60
-      - id: "toutiao"
-        name: "今日头条"
-        tier: 4
-        priority: 30
+      # - id: "toutiao"
+      #   name: "今日头条"
+      #   tier: 4
+      #   priority: 30
       - id: "juejin"
         name: "掘金"
         tier: 4
@@ -43,12 +43,19 @@ crawler:
         url: "https://rsshub.pseudoyu.com/stcn"
         tier: 2
         priority: 80
-        enabled: true
+        enabled: false
+        max_age_days: 1
+      - id: "yahoo-finance"
+        name: "雅虎财经"
+        url: "https://finance.yahoo.com/news/rssindex"
+        tier: 2
+        priority: 80
+        enabled: false
         max_age_days: 1
 
 
 notification:
-  frequency_words: "news/frequency_words.txt"
+  frequency_words: "frequency_words.txt"
   max_news_per_keyword: 0
   email:
     smtp_server: "smtp.qq.com"
@@ -58,13 +65,14 @@ notification:
     password: ""
 
 storage:
+  backend: "remote"  # "local" or "remote"
   local:
     data_dir: "output"
   remote:
-    endpoint_url: ""
-    bucket_name: ""
-    access_key_id: ""
-    secret_access_key: ""
+    endpoint_url: "http://localhost:9000"
+    bucket_name: "newsradar"
+    access_key_id: "admin"
+    secret_access_key: "minioadmin"
     region: ""
 
 postgresql:
@@ -75,13 +83,6 @@ postgresql:
   password: "newsradar"
   min_connections: 2
   max_connections: 10
-
-minio:
-  endpoint_url: "http://localhost:9000"
-  bucket_name: "newsradar-images"
-  access_key_id: "admin"
-  secret_access_key: "minioadmin"
-  region: ""
 
 web:
   host: "0.0.0.0"

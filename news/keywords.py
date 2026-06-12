@@ -15,7 +15,7 @@ Usage::
 
     from news.keywords import load_frequency_words, match_and_group
 
-    groups, filters, global_filters = load_frequency_words("news/frequency_words.txt")
+    groups, filters, global_filters = load_frequency_words("frequency_words.txt")
     grouped = match_and_group(items, groups, global_filters, max_per_group=10)
 """
 

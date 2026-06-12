@@ -1,2 +1,6 @@
 # coding=utf-8
-"""Storage package — SQLite, PostgreSQL, S3, MinIO, cloud sync."""
+"""Storage package — file storage, SQLite, PostgreSQL, S3, cloud sync."""
+
+from .files import FileStorage, LocalStorage, S3Storage, create_storage
+
+__all__ = ["FileStorage", "LocalStorage", "S3Storage", "create_storage"]

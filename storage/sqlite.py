@@ -1,34 +1,39 @@
 # coding=utf-8
-"""SQLite storage with optional S3 sync (cloud crawler backend)."""
+"""SQLite database backend — pure CRUD, no cloud sync.
 
-import os
-import shutil
+S3 upload of the resulting ``.db`` files is handled at the CLI /
+orchestration layer, not here.
+"""
+
 import sqlite3
+import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from news.models import NewsData, NewsItem
-from storage.s3 import S3Client
 
 
-class Storage:
-    """SQLite storage with optional S3 sync.
+def _tags_to_json(tags: Optional[List[str]]) -> str:
+    """Convert tags list to JSON string for SQLite storage."""
+    return json.dumps(tags, ensure_ascii=False) if tags else ""
+
+
+class Sqlite:
+    """SQLite database for news items.
 
     Usage::
 
-        s = Storage(data_dir="output", s3_config={...})
-        s.save_news_data(news_data, source_tiers={"weibo": {"tier": 1, "priority": 10}})
-        rows = s.get_unnotified("2026-06-06")
-        s.mark_notified("2026-06-06")
-        s.cleanup()
+        db = Sqlite(data_dir="output")
+        db.save_news_data(news_data, source_tiers={"weibo": {"tier": 1, "priority": 10}})
+        rows = db.get_unnotified("2026-06-06")
+        db.mark_notified("2026-06-06")
+        db.cleanup()
     """
 
     def __init__(
         self,
         data_dir: str = "output",
         timezone: str = "Asia/Shanghai",
-        s3_config: Optional[Dict[str, str]] = None,
-        s3_client: Optional[S3Client] = None,
     ):
         self.data_dir = Path(data_dir)
         self.timezone = timezone
@@ -36,31 +41,13 @@ class Storage:
         # Connection cache: date_str -> sqlite3.Connection
         self._connections: Dict[str, sqlite3.Connection] = {}
 
-        # Temp files tracked for cleanup()
-        self._temp_files: List[Path] = []
-
-        # S3 client (can be injected or built from config)
-        if s3_client is not None:
-            self._s3 = s3_client
-        elif s3_config:
-            self._s3 = S3Client.from_config(s3_config)
-        else:
-            self._s3 = None
-
-        if self._s3:
-            print(f"[Storage] S3 enabled, bucket={self._s3.bucket_name}")
-
     # ── Path helpers ────────────────────────────────────────────────
 
     def _get_db_path(self, date: str) -> Path:
-        """Return ``{data_dir}/news/{date}.db``."""
-        path = self.data_dir / "news" / f"{date}.db"
+        """Return ``{data_dir}/db/{date}.db``."""
+        path = self.data_dir / "db" / f"{date}.db"
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
-
-    def _s3_key(self, date: str) -> str:
-        """Return S3 object key: ``news/{date}.db``."""
-        return f"news/{date}.db"
 
     # ── Connection management ───────────────────────────────────────
 
@@ -79,28 +66,37 @@ class Storage:
         return self._connections[date]
 
     def _init_tables(self, conn: sqlite3.Connection) -> None:
-        """Execute schema.sql to create tables."""
-        # First try storage package schema, then root level (backward compat)
-        schema_path = Path(__file__).parent / "schema.sql"
+        """Execute sqlite.sql to create tables, then apply migrations."""
+        schema_path = Path(__file__).parent / "sqlite.sql"
         if not schema_path.exists():
-            schema_path = Path(__file__).parent.parent / "schema.sql"
-        if not schema_path.exists():
-            raise FileNotFoundError("Schema file not found: schema.sql")
+            raise FileNotFoundError(f"SQLite schema file not found: {schema_path}")
 
         with open(schema_path, "r", encoding="utf-8") as f:
             schema_sql = f.read()
 
         conn.executescript(schema_sql)
+
+        # ── Migrations — add columns that may not exist in older DBs ──
+        migrations = [
+            "ALTER TABLE news_items ADD COLUMN category TEXT DEFAULT ''",
+            "ALTER TABLE news_items ADD COLUMN tags TEXT DEFAULT ''",
+        ]
+        for stmt in migrations:
+            try:
+                conn.execute(stmt)
+            except sqlite3.OperationalError:
+                pass  # column already exists
+
         conn.commit()
 
-    # ── Save news data (with S3 sync) ───────────────────────────────
+    # ── Save news data ────────────────────────────────────────────
 
     def save_news_data(
         self,
         news_data: NewsData,
         source_tiers: Optional[Dict[str, Dict[str, int]]] = None,
     ) -> None:
-        """Save *news_data* to SQLite, syncing with S3.
+        """Save *news_data* to SQLite.
 
         Dedup rules match the partial unique indexes in schema.sql:
 
@@ -113,23 +109,6 @@ class Storage:
         ``notified`` is **never** touched.
         """
         date = news_data.date
-
-        # ── S3 pre-fetch ──────────────────────────────────────────
-        if self._s3:
-            key = self._s3_key(date)
-            tmp_path = self._s3.download_to_temp(key)
-            if tmp_path:
-                local_path = self._get_db_path(date)
-
-                # Close any cached connection so we reopen against
-                # the freshly-copied file
-                if date in self._connections:
-                    self._connections[date].close()
-                    del self._connections[date]
-
-                shutil.copy2(str(tmp_path), str(local_path))
-                self._temp_files.append(tmp_path)
-
         conn = self._get_connection(date)
         cursor = conn.cursor()
 
@@ -178,7 +157,9 @@ class Storage:
                                 last_crawl_time = ?,
                                 crawl_count = crawl_count + 1,
                                 priority = ?,
-                                tier = ?
+                                tier = ?,
+                                category = ?,
+                                tags = ?
                                WHERE id = ?""",
                             (
                                 item.title,
@@ -187,6 +168,8 @@ class Storage:
                                 item.last_crawl_time,
                                 priority,
                                 tier,
+                                item.category,
+                                _tags_to_json(item.tags),
                                 existing[0],
                             ),
                         )
@@ -197,11 +180,12 @@ class Storage:
                                (title, source_id, source_name, source_type,
                                 tier, priority, url, mobile_url, rank,
                                 guid, published_at, summary, author,
+                                category, tags,
                                 notified, first_crawl_time, last_crawl_time,
                                 crawl_count)
                                VALUES (
                                 ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                                ?, ?, ?, ?,
+                                ?, ?, ?, ?, ?, ?,
                                 0, ?, ?, 1
                                )""",
                             (
@@ -218,6 +202,8 @@ class Storage:
                                 item.published_at,
                                 item.summary,
                                 item.author,
+                                item.category,
+                                _tags_to_json(item.tags),
                                 item.first_crawl_time,
                                 item.last_crawl_time,
                             ),
@@ -226,13 +212,13 @@ class Storage:
 
                 except sqlite3.Error as e:
                     print(
-                        f"[Storage] Failed to save item "
+                        f"[Sqlite] Failed to save item "
                         f"[{item.title[:30]}...]: {e}"
                     )
 
             if source_new > 0 or source_updated > 0:
                 print(
-                    f"[Storage] {source_id}: "
+                    f"[Sqlite] {source_id}: "
                     f"{source_new} new, {source_updated} updated"
                 )
             new_total += source_new
@@ -240,13 +226,9 @@ class Storage:
 
         conn.commit()
         print(
-            f"[Storage] Saved: {new_total} new, {updated_total} updated "
+            f"[Sqlite] Saved: {new_total} new, {updated_total} updated "
             f"(date={date})"
         )
-
-        # ── S3 upload ────────────────────────────────────────────
-        if self._s3:
-            self._s3.upload_file(self._get_db_path(date), self._s3_key(date))
 
     # ── Query methods ───────────────────────────────────────────────
 
@@ -268,15 +250,12 @@ class Storage:
             "UPDATE news_items SET notified = 1 WHERE notified = 0"
         )
         conn.commit()
-        print(f"[Storage] Marked items as notified (date={date})")
-
-        if self._s3:
-            self._s3.upload_file(self._get_db_path(date), self._s3_key(date))
+        print(f"[Sqlite] Marked items as notified (date={date})")
 
     # ── Cleanup ─────────────────────────────────────────────────────
 
     def cleanup(self) -> None:
-        """Close all cached connections and remove tracked temp files."""
+        """Close all cached connections."""
         for conn in self._connections.values():
             try:
                 conn.close()
@@ -284,11 +263,4 @@ class Storage:
                 pass
         self._connections.clear()
 
-        for tmp_file in self._temp_files:
-            try:
-                os.unlink(str(tmp_file))
-            except OSError:
-                pass
-        self._temp_files.clear()
-
-        print("[Storage] Cleanup complete")
+        print("[Sqlite] Cleanup complete")

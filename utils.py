@@ -26,6 +26,39 @@ def format_time_display(timezone: str = DEFAULT_TIMEZONE) -> str:
     return get_configured_time(timezone).strftime("%H:%M")
 
 
+def format_datetime_now(timezone: str = DEFAULT_TIMEZONE) -> str:
+    """Get current datetime as YYYY-MM-DD HH:MM:SS (default for published_at)."""
+    return get_configured_time(timezone).strftime("%Y-%m-%d %H:%M:%S")
+
+
+# ── Filename sanitization ───────────────────────────────────────
+
+def sanitize_filename(title: str, max_len: int = 80) -> str:
+    """将标题转为安全的文件名，保留中英文可读性。
+
+    - 保留中文、英文、数字
+    - 空格和空白替换为 ``-``
+    - 移除文件系统非法字符：``/ \\ : * ? " < > |``
+    - 多个连字符合并为一个
+    - 截断至 *max_len* 字符以内
+    - 空字符串返回 ``"untitled"``
+    """
+    import re
+
+    # 移除文件系统非法字符
+    safe = re.sub(r'[/\\:*?"<>|]', '', title)
+    # 空格和空白替换为连字符
+    safe = re.sub(r'\s+', '-', safe)
+    # 多个连字符合并
+    safe = re.sub(r'-{2,}', '-', safe)
+    # 去除首尾连字符
+    safe = safe.strip('-')
+    # 截断
+    if len(safe) > max_len:
+        safe = safe[:max_len].rstrip('-')
+    return safe or "untitled"
+
+
 # ── URL normalization ───────────────────────────────────────────
 
 PLATFORM_PARAMS_TO_REMOVE = {

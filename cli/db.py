@@ -106,9 +106,9 @@ def _clear_postgresql(
     force: bool,
 ) -> None:
     """Delete rows from PostgreSQL ``news_articles`` + ``news_images``."""
-    from storage.postgres import Database
+    from storage.postgres import PostgreSQL
 
-    db = Database(config["postgresql"])
+    db = PostgreSQL(config["postgresql"])
     try:
         db.connect()
 
@@ -182,18 +182,18 @@ def _clear_sqlite(
     after: Optional[str],
     force: bool,
 ) -> None:
-    """Clear news data from SQLite files under ``output/news/``."""
+    """Clear news data from SQLite files under ``output/db/``."""
     import sqlite3
 
     storage_cfg = config.get("storage", {})
     data_dir = Path(storage_cfg.get("local", {}).get("data_dir", "output"))
-    news_dir = data_dir / "news"
+    db_dir = data_dir / "db"
 
-    if not news_dir.is_dir():
-        print(f"[SQLite] Directory not found: {news_dir} — nothing to delete.")
+    if not db_dir.is_dir():
+        print(f"[SQLite] Directory not found: {db_dir} — nothing to delete.")
         return
 
-    db_files = sorted(news_dir.glob("*.db"))
+    db_files = sorted(db_dir.glob("*.db"))
     if not db_files:
         print("[SQLite] No .db files found — nothing to delete.")
         return

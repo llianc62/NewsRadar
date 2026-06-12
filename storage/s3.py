@@ -37,8 +37,8 @@ class S3Client:
             access_key="AKIA...",
             secret_key="...",
         )
-        client.download_file("news/2026-06-06.db", Path("/tmp/out.db"))
-        client.upload_file(Path("/tmp/out.db"), "news/2026-06-06.db")
+        client.download_file("db/2026-06-06.db", Path("/tmp/out.db"))
+        client.upload_file(Path("/tmp/out.db"), "db/2026-06-06.db")
     """
 
     def __init__(
@@ -64,7 +64,7 @@ class S3Client:
         signature_version = "s3" if use_sigv2 else "s3v4"
 
         boto_config = BotoConfig(
-            s3={"addressing_style": "virtual"},
+            s3={"addressing_style": "path"},
             signature_version=signature_version,
         )
 
@@ -181,6 +181,30 @@ class S3Client:
         except Exception as e:
             print(f"[S3Client] Upload failed ({key}): {e}")
             return False
+
+    # ── Presigned URLs ──────────────────────────────────────────────
+
+    def presigned_get_url(
+        self, key: str, expires_in: int = 604800
+    ) -> Optional[str]:
+        """Generate a presigned GET URL for *key*.
+
+        Args:
+            key: Object key in the bucket.
+            expires_in: URL validity in seconds (default 7 days).
+
+        Returns:
+            Presigned URL string, or None on failure.
+        """
+        try:
+            return self._client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": self.bucket_name, "Key": key},
+                ExpiresIn=expires_in,
+            )
+        except Exception as e:
+            print(f"[S3Client] Presigned URL failed ({key}): {e}")
+            return None
 
     # ── Factory ─────────────────────────────────────────────────────
 

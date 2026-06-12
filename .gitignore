@@ -9,7 +9,10 @@ dist/
 .claude/
 .superpowers/
 .codegraph/
+.agents/
 
+
+skills-lock.json
 .mcp.json
 
 .env

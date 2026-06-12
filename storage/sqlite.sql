@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS news_items (
     first_crawl_time TEXT NOT NULL,
     last_crawl_time TEXT NOT NULL,
     crawl_count INTEGER DEFAULT 1,
+    category TEXT DEFAULT '',
+    tags TEXT DEFAULT '',  -- JSON array string, e.g. '["tag1","tag2"]'
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 

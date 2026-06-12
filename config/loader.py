@@ -90,7 +90,7 @@ def _load_notification_config(raw: Dict) -> Dict:
     notification = raw.get("notification", {})
     email = notification.get("email", {})
     return {
-        "frequency_words": notification.get("frequency_words", "news/frequency_words.txt"),
+        "frequency_words": notification.get("frequency_words", "frequency_words.txt"),
         "max_news_per_keyword": notification.get("max_news_per_keyword", 0),
         "email": {
             "smtp_server": _get_env_str("NEWSNOW_EMAIL_SMTP_SERVER")
@@ -113,6 +113,7 @@ def _load_storage_config(raw: Dict) -> Dict:
     local = storage.get("local", {})
     remote = storage.get("remote", {})
     return {
+        "backend": storage.get("backend", "local"),
         "local": {
             "data_dir": local.get("data_dir", "output"),
         },
@@ -146,17 +147,6 @@ def _load_postgresql_config(raw: Dict) -> Dict:
         "password": _get_env_str("PG_PASSWORD") or pg.get("password", ""),
         "min_connections": pg.get("min_connections", 2),
         "max_connections": pg.get("max_connections", 10),
-    }
-
-
-def _load_minio_config(raw: Dict) -> Dict:
-    minio = raw.get("minio", {})
-    return {
-        "endpoint_url": _get_env_str("MINIO_ENDPOINT_URL") or minio.get("endpoint_url", ""),
-        "bucket_name": _get_env_str("MINIO_BUCKET_NAME") or minio.get("bucket_name", ""),
-        "access_key_id": _get_env_str("MINIO_ACCESS_KEY_ID") or minio.get("access_key_id", ""),
-        "secret_access_key": _get_env_str("MINIO_SECRET_ACCESS_KEY") or minio.get("secret_access_key", ""),
-        "region": _get_env_str("MINIO_REGION") or minio.get("region", ""),
     }
 
 
@@ -198,7 +188,6 @@ def load_config(path: str = "config.yaml") -> Dict[str, Any]:
         "notification": _load_notification_config(raw),
         "storage": _load_storage_config(raw),
         "postgresql": _load_postgresql_config(raw),
-        "minio": _load_minio_config(raw),
         "web": _load_web_config(raw),
     }
 

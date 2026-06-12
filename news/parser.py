@@ -10,16 +10,16 @@ Provides two classes:
 Reference: https://github.com/microsoft/markitdown
 """
 
-import html as _html
-import json
 import re
-import tempfile
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, Literal, Optional
-from urllib.parse import urljoin, urlparse
-
+import json
 import requests
+
+import html as _html
+from urllib.parse import unquote, urlparse
+
+from typing import Any, Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -37,11 +37,11 @@ class HtmlParser:
 
         parser = HtmlParser(config)
         markdown = parser.parse(html_text, url="https://example.com")
-        markdown = parser.parse_with_images(html, url, image_processor)
     """
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
-        cfg = config or {}
+        self._config = config or {}
+        cfg = self._config
         crawler_cfg = cfg.get("crawler", {})
         self.max_content_length = crawler_cfg.get("max_content_length", 100000)
 
@@ -54,87 +54,92 @@ class HtmlParser:
 
     # ── Public API ─────────────────────────────────────────────────
 
-    def parse(self, html: str, url: str = "") -> Optional[str]:
-        """Extract Markdown content from HTML.
+    def parse(self, html: str, url: str = "") -> Optional[Dict[str, Any]]:
+        """Extract Markdown + metadata from HTML.
 
         Uses trafilatura when available, falling back to HTML-stripping.
+        Does **not** download or process images — callers should use
+        :class:`ImageProcessor` separately when image handling is needed.
 
         Args:
             html: Raw HTML text.
             url: Source URL (passed to trafilatura for metadata).
 
         Returns:
-            Markdown string, or None if extraction produced nothing useful.
+            Dict with keys ``markdown``, ``title``, ``author``,
+            ``published_at``, ``summary``, ``category``, ``tags``,
+            or None if extraction produced nothing useful.
         """
-        markdown = None
+        result = None
 
         if self._has_trafilatura:
-            markdown = self._extract_with_trafilatura(html, url)
+            result = self._extract_with_trafilatura(html, url)
 
-        if markdown is None:
-            markdown = self._fallback(html)
+        if result is None:
+            result = self._fallback(html, url)
 
-        if markdown is None:
-            markdown = self._extract_spa_data(html, url)
+        if result is None:
+            result = self._extract_spa_data(html, url)
 
-        if markdown and len(markdown) > self.max_content_length:
-            markdown = markdown[:self.max_content_length] + "\n\n... (truncated)"
+        if result is not None:
+            md = result.get("markdown", "")
+            if md and len(md) > self.max_content_length:
+                result["markdown"] = md[:self.max_content_length] + "\n\n... (truncated)"
 
-        return markdown
-
-    def parse_with_images(
-        self,
-        html: str,
-        url: str,
-        image_processor: "ImageProcessor",
-        article_id: str = "",
-    ) -> Optional[str]:
-        """Parse HTML and process images through *image_processor*.
-
-        Extracts ``<img>`` tags from *html*, downloads and stores images
-        via *image_processor*, then backfills the Markdown output with
-        the resolved image references.
-
-        Args:
-            html: Raw HTML text.
-            url: Source URL (for resolving relative image URLs).
-            image_processor: Configured :class:`ImageProcessor` instance.
-            article_id: Optional article ID for file naming.
-
-        Returns:
-            Markdown with image URLs replaced by local paths / MinIO URLs.
-        """
-        markdown = self.parse(html, url)
-        if markdown is None:
-            return None
-
-        return image_processor.process(html, markdown, url, article_id)
+        return result
 
     # ── trafilatura path ───────────────────────────────────────────
 
-    def _extract_with_trafilatura(self, html: str, url: str) -> Optional[str]:
-        """Use trafilatura for content extraction."""
+    def _extract_with_trafilatura(self, html: str, url: str) -> Optional[Dict[str, Any]]:
+        """Use trafilatura for content + metadata extraction."""
         import trafilatura
 
-        result = trafilatura.extract(
+        # 正文提取（Markdown，不嵌入 metadata）
+        markdown = trafilatura.extract(
             html,
             url=url,
             output_format="markdown",
-            with_metadata=True,
             include_tables=True,
             include_images=True,
             include_links=True,
             include_formatting=True,
         )
-        if result and len(result.strip()) > 50:
-            return result.strip()
-        return None
+        if not markdown or len(markdown.strip()) <= 50:
+            return None
+
+        # 元数据提取（轻量，只解析 head/meta/JSON-LD）
+        try:
+            doc = trafilatura.extract_metadata(html, default_url=url)
+        except Exception:
+            doc = None
+
+        return self._build_result(markdown=markdown.strip(), doc=doc)
 
     # ── Fallback: HTML strip ───────────────────────────────────────
 
-    def _fallback(self, html_text: str) -> Optional[str]:
+    def _fallback(self, html_text: str, url: str = "") -> Optional[Dict[str, Any]]:
         """Strip HTML tags, collapse whitespace — used when trafilatura
-        is unavailable or fails to extract meaningful content."""
+        is unavailable or fails to extract meaningful content.
+
+        Also extracts title from ``<title>`` tag and metadata from
+        ``<meta>`` tags (author, description, published_time).
+        """
+        # Extract title from <title> tag
+        title = ""
+        title_match = re.search(r"<title[^>]*>(.*?)</title>", html_text, re.DOTALL | re.IGNORECASE)
+        if title_match:
+            title = _html.unescape(title_match.group(1).strip())
+
+        # Extract metadata from <meta> tags
+        author = self._extract_meta(html_text, r'name=["\']author["\']')
+        summary = (
+            self._extract_meta(html_text, r'name=["\']description["\']')
+            or self._extract_meta(html_text, r'property=["\']og:description["\']')
+        )
+        published_at = self._extract_meta(
+            html_text, r'property=["\']article:published_time["\']'
+        )
+
         text = re.sub(
             r'<(script|style|nav|header|footer|aside)[^>]*>.*?</\1>',
             '',
@@ -151,12 +156,95 @@ class HtmlParser:
             text = '\n\n'.join(paragraphs)
 
         if len(text) > 100:
-            return text
+            return self._build_result(
+                markdown=text,
+                title=title,
+                author=author,
+                published_at=published_at,
+                summary=summary,
+            )
         return None
+
+    @staticmethod
+    def _extract_meta(html_text: str, attr_pattern: str) -> str:
+        """Extract ``content`` attribute from a ``<meta>`` tag matching
+        *attr_pattern*."""
+        pattern = re.compile(
+            r'<meta[^>]*' + attr_pattern + r'[^>]*content=["\']([^"\']+)["\']',
+            re.IGNORECASE,
+        )
+        match = pattern.search(html_text)
+        return match.group(1).strip() if match else ""
+
+    # ── Unified result builder ──────────────────────────────────────
+
+    @staticmethod
+    def _build_result(
+        markdown: str,
+        doc: Any = None,
+        title: str = "",
+        author: str = "",
+        published_at: str = "",
+        summary: str = "",
+        category: str = "",
+        tags: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Combine markdown with metadata into a unified result dict.
+
+        Args:
+            markdown: Extracted Markdown text (required).
+            doc: Optional trafilatura ``Document`` — metadata is read
+                from its fields when provided.
+            title, author, published_at, summary, category, tags:
+                Explicit overrides, taking precedence over *doc* fields.
+
+        Returns:
+            Dict with keys ``markdown``, ``title``, ``author``,
+            ``published_at``, ``summary``, ``category``, ``tags``.
+        """
+        result: Dict[str, Any] = {
+            "markdown": markdown,
+            "title": title,
+            "author": author,
+            "published_at": published_at,
+            "summary": summary,
+            "category": category,
+            "tags": tags or [],
+        }
+        if doc is not None:
+            if doc.title:
+                result["title"] = doc.title
+            if doc.author:
+                result["author"] = doc.author
+            if doc.date:
+                result["published_at"] = doc.date
+            if doc.description:
+                result["summary"] = doc.description
+            # categories → 取首个作为主分类，其余合并到 tags
+            if doc.categories:
+                result["category"] = doc.categories[0]
+                if len(doc.categories) > 1:
+                    result["tags"] = list(set(result["tags"] + doc.categories[1:]))
+            if doc.tags:
+                result["tags"] = list(set(result["tags"] + doc.tags))
+        # 显式传入的字段优先（覆盖 doc）
+        if title:
+            result["title"] = title
+        if author:
+            result["author"] = author
+        if published_at:
+            result["published_at"] = published_at
+        if summary:
+            result["summary"] = summary
+        if category:
+            result["category"] = category
+        if tags:
+            result["tags"] = list(set(result["tags"] + tags))
+        return result
 
     # ── SPA data extraction ────────────────────────────────────────
 
-    def _extract_spa_data(self, html_text: str, url: str = "") -> Optional[str]:
+    def _extract_spa_data(self, html_text: str, url: str = "") -> Optional[Dict[str, Any]]:
         """Extract content from SPA embedded JSON when DOM-based
         extraction fails (e.g. wallstreetcn.com, Next.js sites).
 
@@ -165,7 +253,7 @@ class HtmlParser:
         ``title`` and ``content`` keys — the content is then converted to
         Markdown via trafilatura (or HTML-stripped as fallback).
 
-        Returns Markdown string, or None if no SPA data was found.
+        Returns result dict, or None if no SPA data was found.
         """
         candidates = self._find_json_candidates(html_text)
         for data in candidates:
@@ -178,11 +266,41 @@ class HtmlParser:
             # content is HTML — convert to Markdown
             markdown = None
             if self._has_trafilatura:
-                markdown = self._extract_with_trafilatura(content, url)
+                extracted = self._extract_with_trafilatura(content, url)
+                if extracted is not None:
+                    markdown = extracted["markdown"]
             if markdown is None:
-                markdown = self._fallback(content)
+                markdown = self._fallback(content, url)
+                if markdown is not None:
+                    markdown = markdown["markdown"]
             if markdown and len(markdown.strip()) > 50:
-                return markdown
+                # 从 SPA JSON / JSON-LD 中提取元数据
+                title = article.get("title") or article.get("headline", "")
+                author_val = ""
+                pub_at = article.get("datePublished") or article.get("date", "")
+                summary_val = article.get("description") or article.get("abstract", "")
+                category_val = ""
+                tags_val: List[str] = []
+                # JSON-LD keywords
+                keywords = article.get("keywords")
+                if isinstance(keywords, str):
+                    tags_val = [k.strip() for k in keywords.split(",") if k.strip()]
+                elif isinstance(keywords, list):
+                    tags_val = [str(k) for k in keywords if k]
+                # JSON-LD articleSection
+                section = article.get("articleSection")
+                if isinstance(section, str) and section:
+                    category_val = section
+
+                return self._build_result(
+                    markdown=markdown.strip(),
+                    title=title,
+                    author=author_val,
+                    published_at=pub_at,
+                    summary=summary_val,
+                    category=category_val,
+                    tags=tags_val,
+                )
         return None
 
     def _find_json_candidates(self, html_text: str):
@@ -274,8 +392,30 @@ class HtmlParser:
         is returned.  For JSON-LD objects, also accepts
         ``@type: Article/NewsArticle`` with ``headline``+``articleBody``.
 
-        Returns the article dict, or None.
+        Returns a dict with keys ``title``, ``content``, ``author``,
+        ``datePublished``, ``description``, ``keywords``, ``articleSection``,
+        or None.
         """
+
+        def _get_author(obj: dict) -> str:
+            """Extract author name from a JSON-LD object."""
+            author = obj.get("author", "")
+            if isinstance(author, str):
+                return author
+            if isinstance(author, dict):
+                return author.get("name", "")
+            if isinstance(author, list):
+                names = []
+                for a in author:
+                    if isinstance(a, str):
+                        names.append(a)
+                    elif isinstance(a, dict):
+                        n = a.get("name", "")
+                        if n:
+                            names.append(n)
+                return ", ".join(names)
+            return ""
+
         best = None
         best_len = 0
 
@@ -291,7 +431,15 @@ class HtmlParser:
                         content_len = len(body)
                         if content_len > best_len:
                             best_len = content_len
-                            best = {"title": headline, "content": body}
+                            best = {
+                                "title": headline,
+                                "content": body,
+                                "author": _get_author(obj),
+                                "datePublished": obj.get("datePublished", ""),
+                                "description": obj.get("description", ""),
+                                "keywords": obj.get("keywords", []),
+                                "articleSection": obj.get("articleSection", ""),
+                            }
 
                 # Generic SPA embedded article: title + content
                 title = obj.get("title")
@@ -301,7 +449,16 @@ class HtmlParser:
                     content_len = len(content)
                     if content_len > best_len:
                         best_len = content_len
-                        best = {"title": title, "content": content}
+                        best = {
+                            "title": title,
+                            "content": content,
+                            "author": obj.get("author", ""),
+                            "datePublished": obj.get("datePublished")
+                                or obj.get("date", ""),
+                            "description": obj.get("description", ""),
+                            "keywords": obj.get("keywords", []),
+                            "articleSection": obj.get("articleSection", ""),
+                        }
 
                 # Recurse into nested objects
                 for v in obj.values():
@@ -321,18 +478,27 @@ class HtmlParser:
 
 
 class ImageProcessor:
-    """Download article images, store locally or upload to MinIO,
-    return resolved references for backfilling Markdown.
+    """Download article images, store via :class:`FileStorage`,
+    return mapping from original URL → stored path.
 
-    Supports two storage backends:
-
-    * ``"local"`` — save to ``{output_dir}/images/{date}/{article_id}/``
-    * ``"minio"`` — upload to MinIO and return object URLs
+    Does NOT modify Markdown — callers handle string replacement
+    using the returned mapping dicts.
 
     Usage::
 
-        ip = ImageProcessor(storage_backend="local", config=config)
-        updated_md = ip.process(html, markdown, base_url="...", article_id="42")
+        from storage import create_storage
+
+        ip = ImageProcessor(storage=create_storage(config), max_workers=8)
+
+        # Batch download (parallel, dedup by URL)
+        results = ip.download_images([
+            {"id": "article_1", "url": "https://x.com/a.jpg"},
+            {"id": "article_1", "url": "https://x.com/b.jpg"},
+            {"id": "article_2", "url": "https://x.com/a.jpg"},  # dedup
+        ])
+        # → [{"id": "article_1", "url": "images/a.jpg"},
+        #    {"id": "article_1", "url": "images/b.jpg"},
+        #    {"id": "article_2", "url": "images/a.jpg"}]
     """
 
     # Content-Type → file extension mapping
@@ -346,19 +512,17 @@ class ImageProcessor:
 
     def __init__(
         self,
-        storage_backend: Literal["local", "minio"] = "local",
-        config: Optional[Dict[str, Any]] = None,
-    ):
-        self.storage_backend = storage_backend
-        cfg = config or {}
+        storage: "FileStorage",
+        max_workers: int = 8,
+    ) -> None:
+        from storage import FileStorage  # noqa: F811
+        from storage.files import S3Storage  # noqa: F811
 
-        storage_cfg = cfg.get("storage", {})
-        self.data_dir = storage_cfg.get("local", {}).get("data_dir", "output")
-
-        self._minio_config = cfg.get("minio", {})
-        self._minio_storage = None  # Lazy init
-
+        self._storage: FileStorage = storage
+        self._is_s3 = isinstance(storage, S3Storage)
+        self._max_workers = max_workers
         self._session: Optional[requests.Session] = None
+        self._executor: Optional[ThreadPoolExecutor] = None
 
     # ── Session ────────────────────────────────────────────────────
 
@@ -375,66 +539,58 @@ class ImageProcessor:
             })
         return self._session
 
+    def _get_executor(self) -> ThreadPoolExecutor:
+        """Lazy-init the thread pool for parallel image downloads."""
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(max_workers=self._max_workers)
+        return self._executor
+
     # ── Public API ─────────────────────────────────────────────────
 
-    def process(
+    def download_images(
         self,
-        html: str,
-        markdown: str,
-        base_url: str = "",
-        article_id: str = "",
-    ) -> str:
-        """Extract ``<img>`` tags from *html*, download images, store,
-        and replace image URLs in *markdown* with resolved references.
+        images: Dict[str, str],
+    ) -> Dict[str, str]:
+        """Download images and store via the configured storage backend.
+
+        Dict keys deduplicate image URLs naturally — each unique URL is
+        downloaded once.
 
         Args:
-            html: Original HTML (used to discover ``<img>`` tags).
-            markdown: Parsed Markdown (image URLs are replaced in-place).
-            base_url: Source URL for resolving relative image URLs.
-            article_id: Article identifier for directory / object naming.
+            images: ``{image_url: ""}`` — values are ignored on input.
 
         Returns:
-            Markdown with image URLs replaced.
+            ``{image_url: stored_path, ...}``
+            *stored_path* is a relative path (``images/<filename>``) for
+            local, or an S3 object URL for the S3 backend.
         """
-        img_pattern = re.compile(
-            r'<img[^>]+src=["\']([^"\']+)["\']'
-            r'(?:[^>]+alt=["\']([^"\']*)["\'])?',
-            re.IGNORECASE,
-        )
+        urls = list(images.keys())
+        if not urls:
+            return {}
 
-        img_index = 0
-        for match in img_pattern.finditer(html):
-            src = match.group(1)
+        images_dir = self._images_dir()
 
-            # Resolve relative URLs
-            img_url = self._resolve_url(src, base_url)
-            if img_url is None:
-                continue
+        print(f"[ImageProcessor] Downloading {len(urls)} unique images "
+              f"(workers={self._max_workers})")
 
+        url_map: Dict[str, Optional[str]] = {}
+        executor = self._get_executor()
+        futures = {
+            executor.submit(self._download_and_save, url, images_dir): url
+            for url in urls
+        }
+
+        for future in as_completed(futures):
+            url = futures[future]
             try:
-                image_data, content_type = self.download(img_url)
-                if image_data is None:
-                    continue
+                url_map[url] = future.result()
             except Exception as e:
-                print(f"[ImageProcessor] Download failed [{img_url}]: {e}")
-                continue
+                print(f"[ImageProcessor] Download failed [{url}]: {e}")
 
-            ext = self.EXT_MAP.get(content_type, ".jpg")
-            filename = f"img_{img_index:02d}{ext}"
+        success = sum(1 for v in url_map.values() if v is not None)
+        print(f"[ImageProcessor] Downloaded {success}/{len(urls)} images")
 
-            try:
-                resolved = self.save(image_data, filename, content_type, article_id)
-                if resolved:
-                    # Replace original src in Markdown
-                    markdown = markdown.replace(src, resolved)
-                    markdown = markdown.replace(img_url, resolved)
-            except Exception as e:
-                print(f"[ImageProcessor] Save failed [{img_url}]: {e}")
-                continue
-
-            img_index += 1
-
-        return markdown
+        return {u: p for u, p in url_map.items() if p is not None}
 
     def download(self, url: str) -> Optional[tuple]:
         """Download an image from *url*.
@@ -455,108 +611,70 @@ class ImageProcessor:
             print(f"[ImageProcessor] HTTP error for {url}: {e}")
             return None
 
-    def save(
-        self,
-        data: bytes,
-        filename: str,
-        content_type: str,
-        article_id: str = "",
-    ) -> Optional[str]:
-        """Store image and return its access path / URL.
-
-        Args:
-            data: Image binary data.
-            filename: Desired filename (e.g. ``img_00.jpg``).
-            content_type: MIME type.
-            article_id: Article identifier for directory nesting.
-
-        Returns:
-            Local file path (local backend) or MinIO URL (minio backend).
-        """
-        if self.storage_backend == "minio":
-            return self._save_to_minio(data, filename, content_type, article_id)
-        else:
-            return self._save_to_local(data, filename, article_id)
-
-    # ── Local storage ──────────────────────────────────────────────
-
-    def _save_to_local(
-        self,
-        data: bytes,
-        filename: str,
-        article_id: str = "",
-    ) -> str:
-        """Save image to ``{data_dir}/images/{YYYY-MM}/{article_id}/``."""
-        date_prefix = datetime.now().strftime("%Y-%m")
-        out_dir = Path(self.data_dir) / "images" / date_prefix
-        if article_id:
-            out_dir = out_dir / str(article_id)
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        out_path = out_dir / filename
-        out_path.write_bytes(data)
-        return str(out_path)
-
-    # ── MinIO storage ──────────────────────────────────────────────
-
-    def _save_to_minio(
-        self,
-        data: bytes,
-        filename: str,
-        content_type: str,
-        article_id: str = "",
-    ) -> Optional[str]:
-        """Upload image to MinIO and return the object URL."""
-        if self._minio_storage is None:
-            from storage.minio import ImageStorage
-
-            if not self._minio_config:
-                print("[ImageProcessor] MinIO config missing — falling back to local")
-                return self._save_to_local(data, filename, article_id)
-
-            self._minio_storage = ImageStorage(
-                endpoint_url=self._minio_config.get("endpoint_url", ""),
-                access_key=self._minio_config.get("access_key_id", ""),
-                secret_key=self._minio_config.get("secret_access_key", ""),
-                bucket_name=self._minio_config.get("bucket_name", ""),
-                region=self._minio_config.get("region") or None,
-            )
-
-        date_prefix = datetime.now().strftime("%Y-%m")
-        if article_id:
-            object_key = f"{date_prefix}/{article_id}/{filename}"
-        else:
-            object_key = f"{date_prefix}/{filename}"
-
-        with tempfile.NamedTemporaryFile(
-            suffix=Path(filename).suffix, delete=False
-        ) as tmp:
-            tmp.write(data)
-            tmp_path = Path(tmp.name)
-
-        try:
-            url = self._minio_storage.upload_image(tmp_path, object_key, content_type)
-            return url
-        except Exception as e:
-            print(f"[ImageProcessor] MinIO upload failed: {e}")
-            return None
-        finally:
-            tmp_path.unlink(missing_ok=True)
-
     # ── Helpers ────────────────────────────────────────────────────
 
-    def _resolve_url(self, src: str, base_url: str) -> Optional[str]:
-        """Resolve a potentially-relative image URL against *base_url*.
+    @staticmethod
+    def _images_dir() -> str:
+        """Derive today's image directory: ``news/YYYY-MM-DD/images``."""
+        from utils import format_date_folder
+        return f"news/{format_date_folder()}/images"
 
-        Returns None for data URIs or URLs without a network location.
+    def _download_and_save(
+        self,
+        url: str,
+        images_dir: str,
+    ) -> Optional[str]:
+        """Download single image + save — used as a future in the thread pool.
+
+        Returns a relative path (``images/<filename>``) for local storage,
+        or the S3 object URL for the S3 backend.  Returns None on failure.
         """
-        if not src or src.startswith("data:"):
+        try:
+            result = self.download(url)
+            if result is None:
+                return None
+            image_data, content_type = result
+        except Exception as e:
+            print(f"[ImageProcessor] Download failed [{url}]: {e}")
             return None
 
-        parsed = urlparse(src)
-        if not parsed.netloc:
-            if not base_url:
-                return None
-            return urljoin(base_url, src)
+        ext = self.EXT_MAP.get(content_type, ".jpg")
+        filename = self._extract_filename(url, ext)
+        path = f"{images_dir}/{filename}"
+        saved = self._storage.save_file(image_data, path, content_type)
+        if not saved:
+            return None
+        if self._is_s3:
+            return f"/media/{saved}"  # web proxy route → presigned redirect
+        return f"images/{filename}"  # relative path for local storage
 
-        return src
+    def _extract_filename(self, url: str, default_ext: str) -> str:
+        """Extract original filename from image *url*, falling back to
+        a generated name if the URL path doesn't contain a usable filename.
+        """
+        parsed = urlparse(url)
+        path = unquote(parsed.path)
+        name = path.rsplit("/", 1)[-1] if "/" in path else path
+
+        # Keep only safe characters
+        name = re.sub(r"[^\w.\-]", "_", name)
+
+        if not name or "." not in name:
+            return f"image{default_ext}"
+
+        # Ensure extension matches content type if possible
+        root, ext = name.rsplit(".", 1)
+        ext = f".{ext.lower()}"
+        if ext not in self.EXT_MAP.values():
+            ext = default_ext
+
+        return f"{root}{ext}"
+
+    def close(self) -> None:
+        """Shut down the thread pool and close the HTTP session."""
+        if self._executor is not None:
+            self._executor.shutdown(wait=True)
+            self._executor = None
+        if self._session is not None:
+            self._session.close()
+            self._session = None

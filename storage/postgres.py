@@ -1,13 +1,14 @@
 # coding=utf-8
 """PostgreSQL database layer — connection pool, schema init, CRUD.
 
-Wraps ``psycopg2`` ``ThreadedConnectionPool`` inside a ``Database``
+Wraps ``psycopg2`` ``ThreadedConnectionPool`` inside a ``PostgreSQL``
 class (no more module-level global ``_pool``).
 """
 
 import json
 from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import psycopg2
@@ -21,80 +22,14 @@ psycopg2.extras.register_default_jsonb(loads=json.loads)
 _timezone_offset: str = "+08:00"
 
 
-SCHEMA_SQL = """
-CREATE TABLE IF NOT EXISTS news_articles (
-    id              BIGSERIAL PRIMARY KEY,
-    source_id       VARCHAR(100) NOT NULL,
-    source_name     VARCHAR(200) NOT NULL,
-    source_type     VARCHAR(10)  NOT NULL CHECK (source_type IN ('hotlist', 'rss')),
-    tier            SMALLINT     NOT NULL DEFAULT 4 CHECK (tier BETWEEN 1 AND 4),
-    priority        SMALLINT     NOT NULL DEFAULT 0,
-    url             TEXT DEFAULT '',
-    mobile_url      TEXT DEFAULT '',
-    guid            TEXT DEFAULT '',
-    title           TEXT NOT NULL,
-    summary         TEXT DEFAULT '',
-    content         TEXT DEFAULT '',
-    author          TEXT DEFAULT '',
-    tags            TEXT[] DEFAULT '{}',
-    keywords        JSONB DEFAULT '[]',
-    entities        JSONB DEFAULT '{}',
-    heat_score      INTEGER DEFAULT NULL CHECK (heat_score BETWEEN 0 AND 100),
-    sentiment_score INTEGER DEFAULT NULL CHECK (sentiment_score BETWEEN 0 AND 100),
-    confidence      INTEGER DEFAULT NULL CHECK (confidence BETWEEN 0 AND 100),
-    category        VARCHAR(50) DEFAULT NULL,
-    rank            SMALLINT DEFAULT NULL,
-    ranks           SMALLINT[] DEFAULT '{}',
-    sync_status     VARCHAR(10) NOT NULL DEFAULT 'local' CHECK (sync_status IN ('local', 'cloud')),
-    is_analyzed     BOOLEAN NOT NULL DEFAULT FALSE,
-    notified        BOOLEAN NOT NULL DEFAULT FALSE,
-    published_at     TIMESTAMPTZ DEFAULT NULL,
-    first_crawled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_crawled_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE IF NOT EXISTS news_images (
-    id           BIGSERIAL PRIMARY KEY,
-    article_id   BIGINT NOT NULL REFERENCES news_articles(id) ON DELETE CASCADE,
-    image_url    TEXT NOT NULL,
-    original_url TEXT DEFAULT '',
-    width        INTEGER DEFAULT NULL,
-    height       INTEGER DEFAULT NULL,
-    file_size    INTEGER DEFAULT NULL,
-    sort_order   SMALLINT DEFAULT 0,
-    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- Dedup indexes (partial unique, matching SQLite logic)
-CREATE UNIQUE INDEX IF NOT EXISTS idx_dedup_hotlist
-    ON news_articles (source_id, url)
-    WHERE source_type = 'hotlist' AND url != '';
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_dedup_rss
-    ON news_articles (source_id, guid)
-    WHERE source_type = 'rss' AND guid != '';
-
--- Query indexes
-CREATE INDEX IF NOT EXISTS idx_published_at   ON news_articles (published_at DESC);
-CREATE INDEX IF NOT EXISTS idx_tier_priority  ON news_articles (tier, priority DESC);
-CREATE INDEX IF NOT EXISTS idx_heat_score     ON news_articles (heat_score DESC);
-CREATE INDEX IF NOT EXISTS idx_category       ON news_articles (category);
-CREATE INDEX IF NOT EXISTS idx_sync_status    ON news_articles (sync_status);
-CREATE INDEX IF NOT EXISTS idx_is_analyzed    ON news_articles (is_analyzed);
-
--- GIN indexes
-CREATE INDEX IF NOT EXISTS idx_tags_gin     ON news_articles USING GIN (tags);
-CREATE INDEX IF NOT EXISTS idx_keywords_gin ON news_articles USING GIN (keywords);
-CREATE INDEX IF NOT EXISTS idx_entities_gin ON news_articles USING GIN (entities);
-
--- Full-text search index
-CREATE INDEX IF NOT EXISTS idx_fulltext ON news_articles
-    USING GIN (to_tsvector('simple', title || ' ' || COALESCE(summary, '') || ' ' || COALESCE(content, '')));
-
--- Images index
-CREATE INDEX IF NOT EXISTS idx_images_article ON news_images (article_id);
-"""
+def _load_schema() -> str:
+    """Read the PostgreSQL schema DDL from schema_postgres.sql."""
+    schema_path = Path(__file__).parent / "postgres.sql"
+    if not schema_path.exists():
+        raise FileNotFoundError(
+            f"PostgreSQL schema file not found: {schema_path}"
+        )
+    return schema_path.read_text(encoding="utf-8")
 
 
 def _to_timestamptz(value: str, fallback_date: Optional[str]) -> Optional[datetime]:
@@ -115,12 +50,12 @@ def _to_timestamptz(value: str, fallback_date: Optional[str]) -> Optional[dateti
     return None
 
 
-class Database:
+class PostgreSQL:
     """PostgreSQL connection pool and CRUD operations.
 
     Usage::
 
-        db = Database({"host": "localhost", "port": 5432, ...})
+        db = PostgreSQL({"host": "localhost", "port": 5432, ...})
         db.connect()
         db.init_schema()
         db.save_news_data(news_data, source_tiers)
@@ -163,7 +98,7 @@ class Database:
         conn = self._pool.getconn()
         try:
             with conn.cursor() as cur:
-                cur.execute(SCHEMA_SQL)
+                cur.execute(_load_schema())
             conn.commit()
             print("[DB] Schema initialized successfully")
         finally:
@@ -195,7 +130,7 @@ class Database:
     def get_conn(self):
         """Yield a connection from the pool with auto commit/rollback."""
         if self._pool is None:
-            raise RuntimeError("Database not connected. Call connect() first.")
+            raise RuntimeError("PostgreSQL not connected. Call connect() first.")
         conn = self._pool.getconn()
         try:
             yield conn
@@ -276,7 +211,10 @@ class Database:
             item.title, source_id, item.source_name, item.source_type,
             tier, priority, item.url, item.mobile_url, item.rank,
             item.guid, ts_pub, item.summary, item.author,
-            item.content, sync_status, ts_first, ts_last,
+            item.content,
+            item.category if item.category else None,
+            item.tags if item.tags else [],
+            sync_status, ts_first, ts_last,
             item.ranks if item.ranks else [],
         )
 
@@ -287,11 +225,12 @@ class Database:
                        (title, source_id, source_name, source_type,
                         tier, priority, url, mobile_url, rank,
                         guid, published_at, summary, author,
-                        content,
+                        content, category, tags,
                         sync_status, notified,
                         first_crawled_at, last_crawled_at, ranks)
                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
-                               %s, %s, %s, %s, %s, %s, FALSE, %s, %s, %s)
+                               %s, %s, %s, %s, %s, %s, %s, %s,
+                               FALSE, %s, %s, %s)
                        ON CONFLICT (source_id, url)
                        WHERE source_type = 'hotlist' AND url != ''
                        DO NOTHING""",
@@ -303,11 +242,12 @@ class Database:
                        (title, source_id, source_name, source_type,
                         tier, priority, url, mobile_url, rank,
                         guid, published_at, summary, author,
-                        content,
+                        content, category, tags,
                         sync_status, notified,
                         first_crawled_at, last_crawled_at, ranks)
                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
-                               %s, %s, %s, %s, %s, %s, FALSE, %s, %s, %s)
+                               %s, %s, %s, %s, %s, %s, %s, %s,
+                               FALSE, %s, %s, %s)
                        ON CONFLICT (source_id, url)
                        WHERE source_type = 'hotlist' AND url != ''
                        DO UPDATE SET
@@ -318,6 +258,8 @@ class Database:
                            priority = EXCLUDED.priority,
                            tier = EXCLUDED.tier,
                            summary = EXCLUDED.summary,
+                           category = EXCLUDED.category,
+                           tags = EXCLUDED.tags,
                            content = CASE
                                WHEN news_articles.content IS NULL OR news_articles.content = ''
                                THEN EXCLUDED.content
@@ -332,11 +274,12 @@ class Database:
                        (title, source_id, source_name, source_type,
                         tier, priority, url, mobile_url, rank,
                         guid, published_at, summary, author,
-                        content,
+                        content, category, tags,
                         sync_status, notified,
                         first_crawled_at, last_crawled_at, ranks)
                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
-                               %s, %s, %s, %s, %s, %s, FALSE, %s, %s, %s)
+                               %s, %s, %s, %s, %s, %s, %s, %s,
+                               FALSE, %s, %s, %s)
                        ON CONFLICT (source_id, guid)
                        WHERE source_type = 'rss' AND guid != ''
                        DO NOTHING""",
@@ -348,11 +291,12 @@ class Database:
                        (title, source_id, source_name, source_type,
                         tier, priority, url, mobile_url, rank,
                         guid, published_at, summary, author,
-                        content,
+                        content, category, tags,
                         sync_status, notified,
                         first_crawled_at, last_crawled_at, ranks)
                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
-                               %s, %s, %s, %s, %s, %s, FALSE, %s, %s, %s)
+                               %s, %s, %s, %s, %s, %s, %s, %s,
+                               FALSE, %s, %s, %s)
                        ON CONFLICT (source_id, guid)
                        WHERE source_type = 'rss' AND guid != ''
                        DO UPDATE SET
@@ -363,6 +307,8 @@ class Database:
                            priority = EXCLUDED.priority,
                            tier = EXCLUDED.tier,
                            summary = EXCLUDED.summary,
+                           category = EXCLUDED.category,
+                           tags = EXCLUDED.tags,
                            content = CASE
                                WHEN news_articles.content IS NULL OR news_articles.content = ''
                                THEN EXCLUDED.content
@@ -376,10 +322,12 @@ class Database:
                    (title, source_id, source_name, source_type,
                     tier, priority, url, mobile_url, rank,
                     guid, published_at, summary, author,
+                    content, category, tags,
                     sync_status, notified,
                     first_crawled_at, last_crawled_at, ranks)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
-                           %s, %s, %s, %s, %s, FALSE, %s, %s, %s)""",
+                           %s, %s, %s, %s, %s, %s, %s, %s,
+                           FALSE, %s, %s, %s)""",
                 common_values,
             )
 

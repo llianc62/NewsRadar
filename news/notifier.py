@@ -188,7 +188,7 @@ def run_notifier(config: dict) -> None:
     import os
 
     from news.keywords import load_frequency_words, match_and_group
-    from storage.sqlite import Storage
+    from storage.sqlite import Sqlite
     from utils import format_date_folder, format_time_display, DEFAULT_TIMEZONE
 
     timezone = config.get("app", {}).get("timezone", DEFAULT_TIMEZONE)
@@ -197,19 +197,16 @@ def run_notifier(config: dict) -> None:
 
     print(f"=== Notifier === {date} {time_str}")
 
-    # Init storage
+    # Init database
     storage_config = config.get("storage", {})
-    storage = Storage(
-        data_dir=storage_config.get("local", {}).get("data_dir", "output"),
-        timezone=timezone,
-        s3_config=storage_config.get("remote") or None,
-    )
+    data_dir = storage_config.get("local", {}).get("data_dir", "output")
+    db = Sqlite(data_dir=data_dir, timezone=timezone)
 
     # Get unnotified items
-    rows = storage.get_unnotified(date)
+    rows = db.get_unnotified(date)
     if not rows:
         print("No new items to notify")
-        storage.cleanup()
+        db.cleanup()
         return
 
     # Convert rows to dicts
@@ -218,7 +215,7 @@ def run_notifier(config: dict) -> None:
 
     # Load keywords and match
     freq_path = config.get("notification", {}).get(
-        "frequency_words", "news/frequency_words.txt"
+        "frequency_words", "frequency_words.txt"
     )
     if not os.path.exists(freq_path):
         # Fall back to root-level file for backward compatibility
@@ -248,7 +245,7 @@ def run_notifier(config: dict) -> None:
         send_email(html, smtp_server, smtp_port, from_addr, to_addr, password)
 
     # Mark as notified
-    storage.mark_notified(date)
+    db.mark_notified(date)
 
-    storage.cleanup()
+    db.cleanup()
     print("=== Done ===")

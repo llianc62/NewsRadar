@@ -23,11 +23,9 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 from config.loader import load_config
-from storage.postgres import Database
+from storage.postgres import PostgreSQL
 from web.app import create_app
-from news.crawler import fetch_all, save_to_postgres
-from news.grabber import OutputStyle
-from storage.sync import sync_from_cloud
+from news.crawler import Crawler, OutputStyle
 
 
 _SHUTDOWN_TIMEOUT = 10  # seconds to wait for async tasks to finish
@@ -52,7 +50,7 @@ class NewsRadarDaemon:
 
     def __init__(self, config_path: str = "config.yaml"):
         self.config = load_config(config_path)
-        self.db = Database(self.config["postgresql"])
+        self.db = PostgreSQL(self.config["postgresql"])
         self._shutdown_event = asyncio.Event()
         self._bg_tasks: list[asyncio.Task] = []
         self._uvicorn_server = None
@@ -127,13 +125,10 @@ class NewsRadarDaemon:
 
     async def _crawl_job(self) -> None:
         """Fetch news (with content) → save to PostgreSQL."""
-        news_data, source_tiers = await self._run_in_thread(
-            fetch_all, self.config, True, output_style=OutputStyle.POSTGRESQL
+        crawler = Crawler(self.config, pg_db=self.db)
+        await self._run_in_thread(
+            crawler.fetch_all, OutputStyle.POSTGRESQL, True, True
         )
-        if not self._shutdown_event.is_set():
-            await self._run_in_thread(
-                save_to_postgres, news_data, source_tiers, self.db
-            )
 
     async def _sync_job(self) -> None:
         """Sync cloud SQLite data into PostgreSQL."""
@@ -141,7 +136,8 @@ class NewsRadarDaemon:
         if not (s3_config.get("bucket_name") and s3_config.get("endpoint_url")):
             print("[Sync] S3 not configured — skipping.")
             return
-        result = await self._run_in_thread(sync_from_cloud, self.db, s3_config)
+        crawler = Crawler(self.config, pg_db=self.db)
+        result = await self._run_in_thread(crawler.sync_from_cloud)
         print(f"[Sync] {result}")
 
     # ── Run ──────────────────────────────────────────────────────
@@ -165,7 +161,8 @@ class NewsRadarDaemon:
             "crawl": self._crawl_signal,
             "sync": self._sync_signal,
         }
-        app = create_app(self.db, signals=signals)
+        s3_cfg = self.config.get("storage", {}).get("remote", {})
+        app = create_app(self.db, signals=signals, s3_config=s3_cfg)
         web_task = asyncio.create_task(self._serve_web(app), name="web")
 
         # 4. Launch Workers (wait for signal → execute job → loop)
@@ -178,7 +175,7 @@ class NewsRadarDaemon:
 
         # 5. Launch Timers (set signal every N minutes)
         crawl_interval = self.config.get("crawler", {}).get("daemon_interval_minutes", 60)
-        sync_interval = self.config.get("crawler", {}).get("sync_interval_minutes", 360)
+        sync_interval = self.config.get("crawler", {}).get("sync_interval_minutes", 60)
 
         for sig, interval, name in [
             (self._crawl_signal, crawl_interval, "Crawl"),
