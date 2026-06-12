@@ -29,7 +29,7 @@ def grab_one(
     """Fetch a single URL, parse content, optionally download images.
 
     Default: download article body → Markdown files (no images).
-    ``--image``: also download images referenced in the article.
+    ``--images``: also download images referenced in the article.
     ``--no-content``: fetch metadata only, skip body download.
     """
     config = load_config("config.yaml")

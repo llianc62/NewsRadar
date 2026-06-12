@@ -1,24 +1,22 @@
 # coding=utf-8
-"""Public S3 client — reusable by SQLite storage and cloud sync.
+"""S3-compatible object storage client.
 
-Extracted from the old ``storage.py`` so that ``sync.py`` no longer
-needs to call private ``_download_from_s3()`` methods.
+Supports MinIO, AWS S3, Tencent COS, Aliyun OSS, Cloudflare R2.
+Provides SigV2/SigV4 auto-detection, an ``init_by_config`` factory,
+and presigned URL generation.
 """
 
+import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
-HAS_BOTO3 = False
-try:
-    import boto3
-    from botocore.config import Config as BotoConfig
-    from botocore.exceptions import ClientError
+logger = logging.getLogger(__name__)
 
-    HAS_BOTO3 = True
-except ImportError:
-    pass
+import boto3
+from botocore.config import Config as BotoConfig
+from botocore.exceptions import ClientError
 
 
 class S3Client:
@@ -49,8 +47,6 @@ class S3Client:
         secret_access_key: str,
         region: str = "",
     ):
-        if not HAS_BOTO3:
-            raise ImportError("S3 storage requires boto3: pip install boto3")
 
         self.endpoint_url = endpoint_url
         self.bucket_name = bucket_name
@@ -78,10 +74,40 @@ class S3Client:
             client_kwargs["region_name"] = region
 
         self._client = boto3.client("s3", **client_kwargs)
-        print(
-            f"[S3Client] Ready, bucket={bucket_name}, "
-            f"signature={signature_version}"
+        logger.info(
+            "S3Client ready, bucket=%s, signature=%s",
+            bucket_name, signature_version,
         )
+        self._ensure_bucket()
+
+    # ── Bucket lifecycle ───────────────────────────────────────────────
+
+    def _ensure_bucket(self) -> None:
+        """Create the bucket if it doesn't already exist.
+
+        Raises:
+            botocore.exceptions.ClientError: If bucket access or creation
+                fails for reasons other than "bucket does not exist yet".
+        """
+        try:
+            self._client.head_bucket(Bucket=self.bucket_name)
+            logger.info("Bucket '%s' already exists", self.bucket_name)
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in ("404", "NoSuchBucket", "Not Found"):
+                try:
+                    self._client.create_bucket(Bucket=self.bucket_name)
+                    logger.info("Bucket '%s' created", self.bucket_name)
+                except Exception:
+                    logger.exception(
+                        "Failed to create bucket '%s'", self.bucket_name
+                    )
+                    raise
+            else:
+                logger.error(
+                    "head_bucket failed for '%s': %s", self.bucket_name, e
+                )
+                raise
 
     # ── Existence check ─────────────────────────────────────────────
 
@@ -94,11 +120,36 @@ class S3Client:
             code = e.response.get("Error", {}).get("Code", "")
             if code in ("404", "NoSuchKey", "Not Found"):
                 return False
-            print(f"[S3Client] head_object failed ({key}): {e}")
+            logger.warning("head_object failed (%s): %s", key, e)
             return False
+
+    # ── List objects ──────────────────────────────────────────────────
+
+    def list_objects(
+        self,
+        prefix: str = "",
+        max_keys: int = 1000,
+    ) -> List[str]:
+        """List object keys in the bucket, optionally filtered by *prefix*.
+
+        Uses ``list_objects_v2`` paginator to handle buckets with more
+        than 1000 objects.  Returns an empty list on failure.
+        """
+        try:
+            keys: List[str] = []
+            paginator = self._client.get_paginator("list_objects_v2")
+            pages = paginator.paginate(
+                Bucket=self.bucket_name,
+                Prefix=prefix,
+                PaginationConfig={"MaxItems": max_keys, "PageSize": 1000},
+            )
+            for page in pages:
+                for obj in page.get("Contents", []):
+                    keys.append(obj["Key"])
+            return keys
         except Exception as e:
-            print(f"[S3Client] head_object failed ({key}): {e}")
-            return False
+            logger.error("list_objects failed (prefix=%r): %s", prefix, e)
+            return []
 
     # ── Download ────────────────────────────────────────────────────
 
@@ -114,17 +165,17 @@ class S3Client:
                 ):
                     f.write(chunk)
 
-            print(f"[S3Client] Downloaded: {key} -> {local_path}")
+            logger.info("Downloaded: %s -> %s", key, local_path)
             return True
         except ClientError as e:
             code = e.response.get("Error", {}).get("Code", "")
             if code in ("404", "NoSuchKey", "Not Found"):
-                print(f"[S3Client] Object not found: {key}")
+                logger.info("Object not found: %s", key)
             else:
-                print(f"[S3Client] Download failed ({key}): {e}")
+                logger.error("Download failed (%s): %s", key, e)
             return False
         except Exception as e:
-            print(f"[S3Client] Download failed ({key}): {e}")
+            logger.error("Download failed (%s): %s", key, e)
             return False
 
     def download_to_temp(self, key: str) -> Optional[Path]:
@@ -147,40 +198,56 @@ class S3Client:
 
     # ── Upload ──────────────────────────────────────────────────────
 
+    def upload(
+        self,
+        data: bytes,
+        key: str,
+        content_type: str = "application/octet-stream",
+    ) -> bool:
+        """Upload raw bytes directly to S3 (no temp file needed).
+
+        Args:
+            data: Raw bytes to upload.
+            key: Object key in the bucket.
+            content_type: MIME type for the object.
+
+        Returns:
+            True on success.
+        """
+        try:
+            self._client.put_object(
+                Bucket=self.bucket_name,
+                Key=key,
+                Body=data,
+                ContentLength=len(data),
+                ContentType=content_type,
+            )
+            logger.info("Uploaded: %s (%d bytes)", key, len(data))
+            return True
+        except Exception as e:
+            logger.error("Upload failed (%s): %s", key, e)
+            return False
+
     def upload_file(
         self,
         local_path: Path,
         key: str,
-        content_type: str = "application/x-sqlite3",
+        content_type: str,
     ) -> bool:
         """Upload a local file to S3.
 
-        Reads the entire file into memory to provide a concrete
-        ``ContentLength`` (avoids chunked transfer-encoding issues
-        with Tencent COS / Aliyun OSS).
+        Delegates to :meth:`upload` after reading the file into memory
+        (avoids chunked transfer-encoding issues with Tencent COS /
+        Aliyun OSS).
         """
         if not local_path.exists():
-            print(f"[S3Client] File not found: {local_path}")
+            logger.warning("File not found: %s", local_path)
             return False
 
-        try:
-            local_size = local_path.stat().st_size
+        with open(local_path, "rb") as f:
+            data = f.read()
 
-            with open(local_path, "rb") as f:
-                file_content = f.read()
-
-            self._client.put_object(
-                Bucket=self.bucket_name,
-                Key=key,
-                Body=file_content,
-                ContentLength=local_size,
-                ContentType=content_type,
-            )
-            print(f"[S3Client] Uploaded: {key} ({local_size} bytes)")
-            return True
-        except Exception as e:
-            print(f"[S3Client] Upload failed ({key}): {e}")
-            return False
+        return self.upload(data, key, content_type)
 
     # ── Presigned URLs ──────────────────────────────────────────────
 
@@ -203,32 +270,32 @@ class S3Client:
                 ExpiresIn=expires_in,
             )
         except Exception as e:
-            print(f"[S3Client] Presigned URL failed ({key}): {e}")
+            logger.error("Presigned URL failed (%s): %s", key, e)
             return None
 
     # ── Factory ─────────────────────────────────────────────────────
 
     @classmethod
-    def from_config(cls, config: dict) -> Optional["S3Client"]:
-        """Create an S3Client from a config dict, or None if not configured.
+    def init_by_config(cls, config: dict) -> Optional["S3Client"]:
+        """Create an S3Client from a config dict.
 
         Config dict keys: bucket_name, access_key_id, secret_access_key,
         endpoint_url, region.
-        Also checks env vars as fallback.
+
+        Returns ``None`` when S3 is *not* configured (all required keys
+        are empty or missing). This is the legitimate "S3 disabled" case.
+
+        Raises ``ValueError`` when S3 is *partially* configured — some
+        required keys are present but not all. This is a configuration
+        error and should fail fast.
         """
-        bucket = config.get("bucket_name") or os.environ.get("S3_BUCKET_NAME")
-        access_key = config.get("access_key_id") or os.environ.get("S3_ACCESS_KEY_ID")
-        secret_key = config.get("secret_access_key") or os.environ.get("S3_SECRET_ACCESS_KEY")
-        endpoint = config.get("endpoint_url") or os.environ.get("S3_ENDPOINT_URL")
-        region = config.get("region", "")
+        required = ["endpoint_url", "bucket_name", "access_key_id", "secret_access_key"]
+        vals = {k: config.get(k, "") for k in required}
 
-        if not all([bucket, access_key, secret_key, endpoint]):
+        missing = [k for k, v in vals.items() if not v]
+        if len(missing) == len(required):
             return None
+        if missing:
+            raise ValueError(f"S3 partially configured. Missing: {', '.join(missing)}")
 
-        return cls(
-            endpoint_url=endpoint,
-            bucket_name=bucket,
-            access_key_id=access_key,
-            secret_access_key=secret_key,
-            region=region,
-        )
+        return cls(**vals, region=config.get("region", ""))

@@ -6,6 +6,9 @@ __pycache__/
 *.egg-info/
 dist/
 
+.docker/
+
+
 .claude/
 .superpowers/
 .codegraph/
@@ -18,5 +21,6 @@ skills-lock.json
 .env
 
 output/
+data/
 
 temp.md

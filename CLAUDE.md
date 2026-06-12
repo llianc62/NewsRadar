@@ -37,9 +37,17 @@ NewsRadar is a **news aggregation system** with two operational modes sharing th
 **Local daemon** (`main.py`) — long-running process with PostgreSQL, FastAPI web dashboard, and background workers.
 **Cloud CI** (`cli/` package + GitHub Actions) — stateless cron jobs that fetch news, store in SQLite, and sync via S3.
 
+### GitHub Actions workflows
+
+| Workflow | Schedule | Purpose |
+|----------|----------|---------|
+| `crawler.yml` | Hourly | Fetch all sources → SQLite → S3 upload |
+| `notifier.yml` | Beijing 8:00/12:00/16:00/22:00 | Download daily DB from S3 → keyword match → HTML report → email |
+| `check-in.yml` | Weekly | Reset workflow runs to keep repository active |
+
 ### CLI package (`cli/`)
 
-Typir-based CLI with commands registered as submodules:
+Typer-based CLI with commands registered as submodules:
 
 | Command | Module | Purpose |
 |---------|--------|---------|
@@ -67,9 +75,16 @@ Config sources ──► NewsnowFetcher (hot-list API) ──► NewsData ──
 - `news/models.py` — `NewsItem` and `NewsData` dataclasses, plus converter functions from raw fetch results
 - `news/crawler.py` — `Crawler` class with `OutputStyle` enum (`MARKDOWN`, `HTML`, `SQLITE`, `POSTGRESQL`). Public API: `fetch()` (single URL), `fetch_all()` (all configured sources). Phased pipeline: hot-list → RSS → optional content body download → optional image download → persistence. Uses `ThreadPoolExecutor` for concurrent HTML download/parse.
 - `news/parser.py` — `HtmlParser` (trafilatura-based HTML → Markdown) and `ImageProcessor` (parallel image download with storage backend)
+- `news/images.py` — `ImageProcessor` class: downloads article images concurrently via `ThreadPoolExecutor`, saves through a `FileStorage` backend, returns `{url: saved_path}` mapping for Markdown content replacement. Supports batch download with automatic Content-Type → extension detection.
 - `news/notifier.py` — HTML report generation + SMTP email. `run_notifier()` loads keywords, matches titles, sends report, marks notified.
 - `news/keywords.py` — keyword matching engine parsing `frequency_words.txt` format (`/regex/`, `!filter`, `+required`, `@N` limits, `=> Display Name`)
-- `news/constants.py` — tier labels/colors (both hex and CSS-variable forms), source types, sentiment thresholds — single source of truth shared by web and notifier
+- `news/constants.py` — tier labels/colors (both hex and CSS-variable forms), source types, sentiment thresholds (>= 67 positive, <= 33 negative) — single source of truth shared by web and notifier
+
+### Shared utilities (`utils.py`)
+
+- Time formatting: `format_date_folder()`, `format_time_display()`, `format_datetime_now()` — all timezone-aware (default `Asia/Shanghai`)
+- `sanitize_filename()` — safe filename generation preserving Chinese/English readability
+- `normalize_url()` — removes tracking parameters (`utm_*`, `ref`, etc.) with per-platform customisation (`PLATFORM_PARAMS_TO_REMOVE`)
 
 ### Daemon pattern (`main.py`)
 

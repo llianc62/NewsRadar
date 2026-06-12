@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
+from storage.files import S3Storage
 from news.constants import TIER_LABELS, TIER_COLORS, TIER_BG
 
 WEB_DIR = Path(__file__).parent
@@ -63,18 +64,18 @@ def render_template(name: str, **context) -> str:
 
 # ── App factory ──────────────────────────────────────────────────
 
-def create_app(db, signals: dict = None, s3_config: dict = None):
+def create_app(db, s3_config: dict, signals: dict = None):
     """Create and configure the FastAPI application.
 
     Args:
         db: A connected :class:`storage.postgres.PostgreSQL` instance.
             It is stored in ``app.state.db`` for route handlers.
+        s3_config: S3 config dict for the ``/media/`` image proxy
+            (required). Keys: endpoint_url, bucket_name,
+            access_key_id, secret_access_key, region.
         signals: Optional dict of ``asyncio.Event`` signals for manual
             task triggering via ``POST /api/trigger/{name}``.
             Keys: ``"crawl"``, ``"sync"``.
-        s3_config: Optional S3 remote config dict for the ``/media/``
-            image proxy.  Keys: endpoint_url, bucket_name,
-            access_key_id, secret_access_key, region.
 
     Returns:
         Configured FastAPI application.
@@ -95,7 +96,9 @@ def create_app(db, signals: dict = None, s3_config: dict = None):
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.state.db = db
     app.state.signals = signals or {}
-    app.state.s3_config = s3_config or {}
+
+    # S3 storage — required for /media/ proxy
+    app.state.s3_storage = S3Storage(s3_config)
 
     # ── Routes ───────────────────────────────────────────────────
 
@@ -227,19 +230,8 @@ def create_app(db, signals: dict = None, s3_config: dict = None):
         """
         from fastapi.responses import RedirectResponse
 
-        s3_cfg = app.state.s3_config
-        if not s3_cfg:
-            return JSONResponse({"error": "S3 not configured"}, status_code=404)
-
-        from storage.s3 import S3Client
-        client = S3Client.from_config(s3_cfg)
-        if client is None:
-            return JSONResponse({"error": "S3 client init failed"}, status_code=404)
-
-        url = client.presigned_get_url(path, expires_in=3600)
-        if url is None:
-            return JSONResponse({"error": "presigned URL generation failed"}, status_code=404)
-
+        storage = app.state.s3_storage
+        url = storage.get(path, expires_in=3600)
         return RedirectResponse(url=url)
 
     # ── Manual trigger API ───────────────────────────────────────

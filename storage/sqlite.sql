@@ -15,10 +15,6 @@ CREATE TABLE IF NOT EXISTS news_items (
     published_at TEXT,
     summary TEXT,
     author TEXT,
-    notified INTEGER NOT NULL DEFAULT 0,
-    first_crawl_time TEXT NOT NULL,
-    last_crawl_time TEXT NOT NULL,
-    crawl_count INTEGER DEFAULT 1,
     category TEXT DEFAULT '',
     tags TEXT DEFAULT '',  -- JSON array string, e.g. '["tag1","tag2"]'
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -34,5 +30,5 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_dedup_rss
 
 -- Query indexes
 CREATE INDEX IF NOT EXISTS idx_tier_priority ON news_items(tier, priority DESC);
-CREATE INDEX IF NOT EXISTS idx_notified ON news_items(notified);
+
 CREATE INDEX IF NOT EXISTS idx_source_type ON news_items(source_type);

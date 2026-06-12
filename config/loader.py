@@ -109,30 +109,45 @@ def _load_notification_config(raw: Dict) -> Dict:
 
 
 def _load_storage_config(raw: Dict) -> Dict:
+    """Load storage config with separate cloud and resource sections.
+
+    ``cloud`` — SQLite DB file transfer (CI ↔ daemon bridge).
+        Env: ``CLOUD_S3_*`` → YAML.
+
+    ``resource`` — project files/images (local MinIO object storage).
+        Env: ``RESOURCE_S3_*`` → YAML.
+    """
     storage = raw.get("storage", {})
     local = storage.get("local", {})
-    remote = storage.get("remote", {})
+    cloud = storage.get("cloud", {})
+    resource = storage.get("resource", {})
     return {
-        "backend": storage.get("backend", "local"),
         "local": {
             "data_dir": local.get("data_dir", "output"),
         },
-        "remote": {
-            "endpoint_url": _get_env_str("S3_ENDPOINT_URL")
-            or _get_env_str("NEWSNOW_S3_ENDPOINT_URL")
-            or remote.get("endpoint_url", ""),
-            "bucket_name": _get_env_str("S3_BUCKET_NAME")
-            or _get_env_str("NEWSNOW_S3_BUCKET_NAME")
-            or remote.get("bucket_name", ""),
-            "access_key_id": _get_env_str("S3_ACCESS_KEY_ID")
-            or _get_env_str("NEWSNOW_S3_ACCESS_KEY_ID")
-            or remote.get("access_key_id", ""),
-            "secret_access_key": _get_env_str("S3_SECRET_ACCESS_KEY")
-            or _get_env_str("NEWSNOW_S3_SECRET_ACCESS_KEY")
-            or remote.get("secret_access_key", ""),
-            "region": _get_env_str("S3_REGION")
-            or _get_env_str("NEWSNOW_S3_REGION")
-            or remote.get("region", ""),
+        "cloud": {
+            "endpoint_url": _get_env_str("CLOUD_S3_ENDPOINT_URL")
+            or cloud.get("endpoint_url", ""),
+            "bucket_name": _get_env_str("CLOUD_S3_BUCKET_NAME")
+            or cloud.get("bucket_name", ""),
+            "access_key_id": _get_env_str("CLOUD_S3_ACCESS_KEY_ID")
+            or cloud.get("access_key_id", ""),
+            "secret_access_key": _get_env_str("CLOUD_S3_SECRET_ACCESS_KEY")
+            or cloud.get("secret_access_key", ""),
+            "region": _get_env_str("CLOUD_S3_REGION")
+            or cloud.get("region", ""),
+        },
+        "resource": {
+            "endpoint_url": _get_env_str("RESOURCE_S3_ENDPOINT_URL")
+            or resource.get("endpoint_url", ""),
+            "bucket_name": _get_env_str("RESOURCE_S3_BUCKET_NAME")
+            or resource.get("bucket_name", ""),
+            "access_key_id": _get_env_str("RESOURCE_S3_ACCESS_KEY_ID")
+            or resource.get("access_key_id", ""),
+            "secret_access_key": _get_env_str("RESOURCE_S3_SECRET_ACCESS_KEY")
+            or resource.get("secret_access_key", ""),
+            "region": _get_env_str("RESOURCE_S3_REGION")
+            or resource.get("region", ""),
         },
     }
 
@@ -170,7 +185,7 @@ def load_config(path: str = "config.yaml") -> Dict[str, Any]:
 
     Returns:
         Structured config dict accessible by path:
-        ``config["app"]["timezone"]``, ``config["storage"]["remote"]["bucket_name"]``
+        ``config["app"]["timezone"]``, ``config["storage"]["cloud"]["bucket_name"]``, ``config["storage"]["resource"]["bucket_name"]``
     """
     config_path = os.environ.get("CONFIG_PATH", path)
 
@@ -199,12 +214,19 @@ def _print_config_sources(config: Dict) -> None:
     """Print key config sources (env var vs file)."""
     sources = []
 
-    remote = config["storage"]["remote"]
-    if remote["endpoint_url"]:
-        src = "env" if os.environ.get("S3_ENDPOINT_URL") or os.environ.get("NEWSNOW_S3_ENDPOINT_URL") else "file"
-        sources.append(f"S3({src})")
+    cloud = config["storage"]["cloud"]
+    if cloud["endpoint_url"]:
+        src = "env" if os.environ.get("CLOUD_S3_ENDPOINT_URL") else "file"
+        sources.append(f"Cloud({src})")
     else:
-        sources.append("S3(unconfigured)")
+        sources.append("Cloud(unconfigured)")
+
+    resource = config["storage"]["resource"]
+    if resource["endpoint_url"]:
+        src = "env" if os.environ.get("RESOURCE_S3_ENDPOINT_URL") else "file"
+        sources.append(f"Resource({src})")
+    else:
+        sources.append("Resource(unconfigured)")
 
     email = config["notification"]["email"]
     if email["from_addr"] and email["to_addr"]:

@@ -1,23 +1,20 @@
 # coding=utf-8
 """Unified storage layer — local filesystem and S3-compatible backends.
 
-Provides a base class with two implementations so that callers can
-instantiate the storage backend they need without reading config
-details themselves::
+Two-method interface::
 
-    from storage import create_storage
+    from storage.files import LocalStorage, S3Storage
 
-    storage = create_storage(config)
-    url = storage.save_file(image_bytes, "images/2026-06-09/img_00.jpg",
-                            content_type="image/jpeg")
+    storage = LocalStorage("output")
+    key = storage.save(image_bytes, "news/2026-06-09/img_00.jpg",
+                       content_type="image/jpeg")
+    url = storage.get(key)  # absolute path for local, presigned URL for S3
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from tempfile import mkdtemp, mktemp
-from typing import Optional
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -29,28 +26,31 @@ class FileStorage(ABC):
     """Abstract storage backend — local filesystem or S3-compatible."""
 
     @abstractmethod
-    def save_file(self, data: bytes, path: str,
-                  content_type: str = "") -> str:
-        """Persist *data* at *path* and return an access URL or file path.
+    def save(self, data: bytes, path: str,
+             content_type: str = "") -> str:
+        """Persist *data* at *path*, return the logical path.
+
+        Both backends return *path* unchanged — a relative path for
+        :class:`LocalStorage`, an S3 object key for :class:`S3Storage`.
 
         Args:
             data: Raw file bytes.
-            path: Logical path (e.g. ``images/2026-06-09/img_00.jpg``).
+            path: Logical path (e.g. ``news/2026-06-09/img_00.jpg``).
             content_type: MIME type (used only by remote backends).
-
-        Returns:
-            Local absolute path (``LocalStorage``) or object URL
-            (``S3Storage``).
         """
         ...
 
     @abstractmethod
-    def get_path(self, *parts: str) -> Path:
-        """Create and return a directory path suitable for staging files.
+    def get(self, path: str, expires_in: int = 604800) -> str:
+        """Return an access URL for the stored object at *path*.
 
-        For ``LocalStorage`` this is a persistent directory under
-        ``data_dir``.  For ``S3Storage`` this is a temporary directory
-        (callers should clean up).
+        :class:`LocalStorage` returns the absolute filesystem path.
+        :class:`S3Storage` returns a presigned GET URL (default 7-day
+        expiry).
+
+        Args:
+            path: Logical path returned by :meth:`save`.
+            expires_in: Presigned URL validity in seconds (S3 only).
         """
         ...
 
@@ -75,17 +75,15 @@ class LocalStorage(FileStorage):
 
     # ── FileStorage interface ────────────────────────────────────────
 
-    def save_file(self, data: bytes, path: str,
-                  content_type: str = "") -> str:
+    def save(self, data: bytes, path: str,
+             content_type: str = "") -> str:
         full = self._data_dir / path
         full.parent.mkdir(parents=True, exist_ok=True)
         full.write_bytes(data)
-        return str(full)
+        return path
 
-    def get_path(self, *parts: str) -> Path:
-        p = self._data_dir.joinpath(*parts)
-        p.mkdir(parents=True, exist_ok=True)
-        return p
+    def get(self, path: str, expires_in: int = 604800) -> str:
+        return str(self._data_dir / path)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -97,71 +95,32 @@ class S3Storage(FileStorage):
     """S3-compatible object storage (MinIO, AWS S3, Tencent COS …).
 
     Wraps :class:`storage.s3.S3Client` and provides the same
-    ``save_file`` / ``get_path`` interface as :class:`LocalStorage`.
+    ``save`` / ``get`` interface as :class:`LocalStorage`.
     """
 
-    def __init__(self, remote_config: dict) -> None:
+    def __init__(self, config: dict) -> None:
         from storage.s3 import S3Client
 
-        rc = dict(remote_config)
-        client = S3Client.from_config(rc)
-        if client is None:
+        s3 = S3Client.init_by_config(config)
+        if s3 is None:
             raise ValueError(
                 "S3Storage requires valid remote config "
                 "(endpoint_url, bucket_name, access_key_id, secret_access_key)"
             )
-        self._s3 = client
-        self._endpoint = rc.get("endpoint_url", "")
-        self._bucket = rc.get("bucket_name", "")
+        self._s3 = s3
+        self._endpoint = config.get("endpoint_url", "")
+        self._bucket = config.get("bucket_name", "")
 
     # ── FileStorage interface ────────────────────────────────────────
 
-    def save_file(self, data: bytes, path: str,
-                  content_type: str = "") -> str:
-        suffix = Path(path).suffix
-        tmp = Path(mktemp(suffix=suffix))
-        tmp.write_bytes(data)
-        try:
-            self._s3.upload_file(
-                tmp, path,
-                content_type=content_type or "application/octet-stream",
-            )
-        finally:
-            tmp.unlink(missing_ok=True)
-        # 返回 S3 对象 key（相对路径），不拼 URL
-        # 浏览器端通过 web 代理 /media/{path} 访问，由服务端动态签名
+    def save(self, data: bytes, path: str,
+             content_type: str = "") -> str:
+        self._s3.upload(
+            data, path,
+            content_type=content_type or "application/octet-stream",
+        )
         return path
 
-    def get_path(self, *parts: str) -> Path:
-        """Return a temporary staging directory.
-
-        Callers should clean up when done.  S3 has no persistent local
-        filesystem, so a temp directory is the best we can offer.
-        """
-        return Path(mkdtemp())
-
-
-# ═══════════════════════════════════════════════════════════════════
-# Factory
-# ═══════════════════════════════════════════════════════════════════
-
-
-def create_storage(config: dict) -> FileStorage:
-    """Create the appropriate storage backend from *config*.
-
-    Reads ``storage.backend``:
-
-    * ``"remote"`` → :class:`S3Storage` (configured from
-      ``storage.remote``).
-    * otherwise → :class:`LocalStorage` (data dir from
-      ``storage.local.data_dir``, default ``output``).
-    """
-    storage_cfg = config.get("storage", {})
-    backend = storage_cfg.get("backend", "local")
-
-    if backend == "remote":
-        remote_cfg = storage_cfg.get("remote", {})
-        return S3Storage(remote_cfg)
-
-    data_dir = storage_cfg.get("local", {}).get("data_dir", "output")
-    return LocalStorage(data_dir)
+    def get(self, path: str, expires_in: int = 604800) -> str:
+        url = self._s3.presigned_get_url(path, expires_in=expires_in)
+        return url or path

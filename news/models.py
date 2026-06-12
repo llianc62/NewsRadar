@@ -19,17 +19,14 @@ class NewsItem:
     mobile_url: str = ""
     rank: int = 0
     guid: str = ""
-    published_at: str = ""
     summary: str = ""
     content: str = ""
     author: str = ""
-    notified: int = 0
-    first_crawl_time: str = ""
-    last_crawl_time: str = ""
-    crawl_count: int = 1
     category: str = ""
     tags: List[str] = field(default_factory=list)
     ranks: List[int] = field(default_factory=list)
+    published_at: str = ""
+    crawled_at: str = ""
 
 
 @dataclass

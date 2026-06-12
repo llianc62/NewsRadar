@@ -13,6 +13,7 @@ is :attr:`OutputStyle.SQLITE` or :attr:`OutputStyle.POSTGRESQL`.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -22,9 +23,12 @@ from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
+from urllib.parse import urlparse
 
 from news.fetcher import NewsnowFetcher, RssFetcher
-from news.parser import HtmlParser, ImageProcessor
+from news.parser import HtmlParser
+from news.images import ImageProcessor
+from storage.files import LocalStorage, S3Storage
 from utils import format_date_folder, format_datetime_now, format_time_display, sanitize_filename
 
 from news.models import NewsData, NewsItem
@@ -57,20 +61,26 @@ class Crawler:
         self._config = config
 
         cfg = config.get("crawler", {})
-        self.max_workers = cfg.get("max_workers", 5)
+        self.max_workers = cfg.get("max_workers", 8)
         self.timeout = cfg.get("timeout", 30)
 
         self.parser = parser or HtmlParser(config)
 
-        # Unified file storage — local or S3, chosen by storage.backend.
-        from storage import create_storage
-        self.storage = create_storage(config)
+        # File storage — always local (markdown/html file output)
+        sc = config.get("storage", {})
+        data_dir = sc.get("local", {}).get("data_dir", "output")
+        self._local_storage = LocalStorage(data_dir)
+
+        # Resource storage — local MinIO/S3 for project files/images
+        # None means "skip image download" (fetch_all)
+        self._resource_storage = None
+        resource_cfg = sc.get("resource", {})
+        required_keys = ["endpoint_url", "bucket_name", "access_key_id", "secret_access_key"]
+        if all(resource_cfg.get(k) for k in required_keys):
+            self._resource_storage = S3Storage(resource_cfg)
 
         # Thread pool (lazy)
         self._executor: Optional[ThreadPoolExecutor] = None
-
-        # Image processor (lazy — created on first use when with_image=True)
-        self._image_processor: Optional[ImageProcessor] = None
 
         # DB connections (lazy or injected)
         self._pg_db = pg_db
@@ -78,6 +88,9 @@ class Crawler:
 
         # HTTP session (lazy)
         self._session: Optional[requests.Session] = None
+
+        # Image processor (lazy) — shared across fetch calls
+        self._image_processor: Optional[ImageProcessor] = None
 
     # ── HTTP session ─────────────────────────────────────────────────
 
@@ -121,11 +134,8 @@ class Crawler:
         return self._executor
 
     def _get_image_processor(self) -> ImageProcessor:
-        """Lazy-init the :class:`ImageProcessor` with the configured storage."""
         if self._image_processor is None:
-            self._image_processor = ImageProcessor(
-                storage=self.storage, max_workers=10,
-            )
+            self._image_processor = ImageProcessor(max_workers=10)
         return self._image_processor
 
     # ═══════════════════════════════════════════════════════════════════
@@ -154,16 +164,8 @@ class Crawler:
             "source_name": "Manual Grab",
             "source_type": "manual",
             "url": url,
-            "mobile_url": "",
             "rank": 0,
-            "guid": "",
-            "published_at": "",
-            "summary": "",
-            "author": "",
             "content": "",
-            "category": "",
-            "tags": [],
-            "ranks": [],
         }
 
         # ── Download HTML ──────────────────────────────────────────
@@ -200,7 +202,7 @@ class Crawler:
 
             # Phase 2: batch image download (if requested)
             if with_image:
-                self._download_images_batch([item])
+                self._run_batch_image_download([item], self._local_storage)
 
         self._persist(output_style, item, source_tiers=tiers)
 
@@ -248,12 +250,7 @@ class Crawler:
 
         # ── Enrichment ─────────────────────────────────────────────
         if with_content:
-            # Phase 1: download HTML + parse Markdown
-            self._run_batch_parse(all_items)
-
-            # Phase 2: batch image download (if requested)
-            if with_image:
-                self._download_images_batch(all_items)
+            self._enrich_content(all_items, with_image=with_image)
 
         # ── Persistence ────────────────────────────────────────────
         self._persist(output_style, *all_items, source_tiers=source_tiers)
@@ -269,6 +266,32 @@ class Crawler:
             if f.get("enabled", True):
                 tiers[f["id"]] = {"tier": f.get("tier", 3), "priority": f.get("priority", 0)}
         return tiers
+
+    # ═══════════════════════════════════════════════════════════════════
+    # Internal — content enrichment (shared by fetch_all + cloud sync)
+    # ═══════════════════════════════════════════════════════════════════
+
+    def _enrich_content(
+        self,
+        items: List[Dict[str, Any]],
+        with_image: bool = False,
+    ) -> None:
+        """Enrich items with parsed Markdown content and optionally images.
+
+        Phase 1: download HTML + parse to Markdown via thread pool.
+        Phase 2 (optional): download article images and replace URLs in-place.
+
+        Each item dict is mutated in-place — ``content``, ``title``,
+        ``author``, ``published_at``, ``summary``, ``category``, ``tags``
+        are set or updated.  Items without a URL are silently skipped.
+
+        Args:
+            image_storage: Optional :class:`FileStorage` override for images.
+                When None, defaults to ``self._image_storage``.
+        """
+        self._run_batch_parse(items)
+        if with_image:
+            self._run_batch_image_download(items, image_storage=self._resource_storage)
 
     # ═══════════════════════════════════════════════════════════════════
     # Internal — batch content fetch
@@ -333,9 +356,8 @@ class Crawler:
             print(f"[Crawler] No content extracted: {url}")
             return False
 
-        item["content"] = parsed["markdown"]
-        # Populate metadata from parsed result (don't overwrite existing values)
         item["title"] = parsed.get("title") or item.get("title", "")
+        item["content"] = parsed["markdown"]
         item["author"] = parsed.get("author", "")
         item["published_at"] = parsed.get("published_at", "")
         item["summary"] = parsed.get("summary", "")
@@ -343,30 +365,41 @@ class Crawler:
         item["tags"] = parsed.get("tags", [])
         return True
 
-    def _download_images_batch(
+    def _run_batch_image_download(
         self,
         items: List[Dict[str, Any]],
+        image_storage=None,
     ) -> None:
         """Phase 2: download article images in batch and replace URLs in-place.
 
         Collects all unique image URLs across items, downloads them via
-        :class:`ImageProcessor`, then replaces each URL with its local path.
+        :class:`ImageProcessor`, then replaces each URL with its access URL.
         Avoids re-extracting URLs per item during replacement — instead
         iterates over the download map directly.
+
+        Args:
+            image_storage: :class:`FileStorage` for images.  When None,
+                defaults to ``self._image_storage``.  When both are None,
+                image download is skipped.
         """
+        if image_storage is None:
+            print("[Crawler] Phase 2 — S3 not configured, skipping image download")
+            return
+
         # Collect unique image URLs across all items
-        all_urls: Dict[str, str] = {}
+        urls = set()
         for it in items:
             if it.get("content"):
                 for img_url in Crawler._extract_image_urls(it["content"]):
-                    all_urls[img_url] = ""
+                    urls.add(img_url)
 
-        if not all_urls:
+        if not urls:
             print("[Crawler] Phase 2 — no images found, skipping")
             return
 
-        print(f"[Crawler] Phase 2 — downloading {len(all_urls)} unique images")
-        url_map = self._get_image_processor().download_images(all_urls)
+        print(f"[Crawler] Phase 2 — downloading {len(urls)} unique images")
+        processor = self._get_image_processor()
+        url_map = processor.download(*urls, storage=image_storage)
         if not url_map:
             print("[Crawler] Phase 2 done (no images downloaded)")
             return
@@ -435,7 +468,6 @@ class Crawler:
         """Build a :class:`NewsData` from a list of item dicts."""
         tz = self._config.get("app", {}).get("timezone", "Asia/Shanghai")
         date = format_date_folder(tz)
-        time_str = format_time_display(tz)
 
         by_source: Dict[str, List[NewsItem]] = {}
         for d in items:
@@ -458,19 +490,40 @@ class Crawler:
                 author=d.get("author", ""),
                 category=d.get("category", ""),
                 tags=d.get("tags", []),
-                first_crawl_time=d.get("first_crawl_time") or time_str,
-                last_crawl_time=d.get("last_crawl_time") or time_str,
-                crawl_count=d.get("crawl_count") or 1,
                 ranks=d.get("ranks", []),
+                crawled_at=format_datetime_now(tz),
             ))
 
         return NewsData(date=date, items=by_source)
 
     # ── Backend-specific persist ─────────────────────────────────────
 
+    @staticmethod
+    def _yaml_str(value: str) -> str:
+        """Escape a string for safe YAML value output.
+
+        Unquoted when safe; double-quoted with internal escapes otherwise.
+        """
+        if not value:
+            return '""'
+        # If the value looks safe (no colons at start, no quotes, no
+        # leading/trailing whitespace), return it bare.
+        if (
+            not value.startswith((" ", "-", ":", "#", "!", ">", "|", "&", "*"))
+            and '"' not in value
+            and "'" not in value
+            and "\n" not in value
+        ):
+            return value
+        # Otherwise double-quote with escapes
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+
     def _persist_md(self, data: NewsData) -> None:
         """Write each article to a Markdown file via the storage layer.
 
+        A YAML frontmatter block is prepended to the content, built from
+        item metadata (title, url, hostname, description, date).
         Filenames are derived from the article title via
         :func:`sanitize_filename` for readability.
         """
@@ -486,9 +539,40 @@ class Crawler:
                 else:
                     seen[safe_title] = 1
 
+                # ── Build YAML frontmatter from item fields ──────────
+                hostname = ""
+                if item.url:
+                    try:
+                        hostname = urlparse(item.url).hostname or ""
+                    except Exception:
+                        pass
+
+                frontmatter_lines = ["---"]
+                if item.title:
+                    frontmatter_lines.append(
+                        f"title: {self._yaml_str(item.title)}"
+                    )
+                if item.url:
+                    frontmatter_lines.append(f"url: {self._yaml_str(item.url)}")
+                if hostname:
+                    frontmatter_lines.append(
+                        f"hostname: {self._yaml_str(hostname)}"
+                    )
+                if item.summary:
+                    frontmatter_lines.append(
+                        f"description: {self._yaml_str(item.summary)}"
+                    )
+                if item.published_at:
+                    date = item.published_at[:10]  # YYYY-MM-DD
+                    frontmatter_lines.append(f"date: {date}")
+                frontmatter_lines.append("---\n")
+                frontmatter = "\n".join(frontmatter_lines)
+
+                full_content = frontmatter + (item.content or "")
+
                 path = f"news/{data.date}/{safe_title}.md"
-                saved = self.storage.save_file(
-                    (item.content or "").encode("utf-8"),
+                saved = self._local_storage.save(
+                    full_content.encode("utf-8"),
                     path,
                     content_type="text/markdown",
                 )
@@ -508,7 +592,7 @@ class Crawler:
                     seen[safe_title] = 1
 
                 path = f"news/{data.date}/{safe_title}.html"
-                saved = self.storage.save_file(
+                saved = self._local_storage.save(
                     (item.content or "").encode("utf-8"),
                     path,
                     content_type="text/html",
@@ -526,97 +610,147 @@ class Crawler:
     def _persist_postgresql(
         self, data: NewsData, source_tiers: dict
     ) -> None:
-        """Save to PostgreSQL."""
+        """Save to PostgreSQL.
+
+        Transforms relative image paths (``images/xxx.png``) to
+        ``/media/news/YYYY-MM-DD/images/xxx.png`` so the web
+        ``/media/`` proxy can resolve them to S3 objects.
+        """
+        # Transform image paths for web/S3 resolution
+        date_str = format_date_folder()
+        media_prefix = f"/media/news/{date_str}/images/"
+        for items in data.items.values():
+            for item in items:
+                if item.content:
+                    item.content = item.content.replace("images/", media_prefix)
+
         db = self._get_pg_db()
-        result = db.save_news_data(data, source_tiers, sync_status="local")
+        result = db.save_news_data(data, source_tiers, crawled_from="local")
         print(f"[Crawler] PG save result: {result}")
 
     # ═══════════════════════════════════════════════════════════════════
     # Cloud sync — download S3 SQLite DBs → merge into PostgreSQL
     # ═══════════════════════════════════════════════════════════════════
 
-    def sync_from_cloud(
-        self,
-        dates: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
-        """Download daily SQLite DBs from S3 and merge into PostgreSQL.
+    def sync_from_cloud(self) -> None:
+        """Download recent SQLite DBs from S3, enrich incremental content,
+        and merge into PostgreSQL via UPSERT.
 
-        Args:
-            dates: List of YYYY-MM-DD date strings. Defaults to past 7 days.
+        Queries PostgreSQL for the latest cloud-synced ``crawled_at``
+        timestamp, then downloads all S3 DB files from that date onwards.
+        Within each DB, only rows with ``created_at`` strictly after the
+        threshold are enriched and synced — avoiding redundant HTTP
+        requests for content that was already synced.
 
-        Returns:
-            {"dates_processed": int, "total_new": int, "total_skipped": int,
-             "errors": [str]}
+        Uses UPSERT (NOT DO NOTHING) so that previously synced rows get
+        their metadata refreshed on re-crawl.
         """
+        from datetime import datetime
         from storage.s3 import S3Client
 
-        s3_config = self._config["storage"]["remote"]
-        s3 = S3Client.from_config(s3_config)
-        if s3 is None:
-            return {
-                "dates_processed": 0, "total_new": 0, "total_skipped": 0,
-                "errors": ["S3 not configured"],
-            }
+        cloud_config = self._config["storage"]["cloud"]
+        cloud_storage = S3Client.init_by_config(cloud_config)
+        if not cloud_storage:
+            print("[Sync] S3 not configured, skipping")
+            return
 
-        if dates is None:
-            from datetime import datetime, timedelta
-            import pytz
-            tz = pytz.timezone("Asia/Shanghai")
-            today = datetime.now(tz).date()
-            dates = [
-                (today - timedelta(days=i)).strftime("%Y-%m-%d")
-                for i in range(1, 8)
-            ]
+        # ── Determine sync threshold ──────────────────────────────
+        pg_db = self._get_pg_db()
+        latest_crawled = pg_db.get_latest_cloud_sync_date()  # datetime or None
 
+        if latest_crawled is not None:
+            print(f"\n[Sync] Latest cloud crawled_at in PG: {latest_crawled}")
+            since_dt = latest_crawled.date()  # for S3 key comparison
+            threshold_str = latest_crawled.strftime("%Y-%m-%d %H:%M:%S")  # for row filtering
+        else:
+            print("[Sync] No cloud records in PG — syncing all available S3 DBs")
+            since_dt = None
+            threshold_str = None
+
+        # ── Discover DBs on S3 ────────────────────────────────────
+        all_keys = cloud_storage.list_objects(prefix="db/", max_keys=5000)
+        db_keys: List[str] = []
+
+        for key in all_keys:
+            if not key.endswith(".db"):
+                continue
+            basename = key.rsplit("/", 1)[-1]  # "2026-06-10.db"
+            date_str = basename.replace(".db", "")
+            try:
+                key_dt = datetime.strptime(date_str, "%Y-%m-%d")
+                if since_dt is None or key_dt >= since_dt:
+                    db_keys.append(key)
+            except ValueError:
+                continue  # skip keys with unexpected names
+
+        if not db_keys:
+            print("[Sync] No DBs found to sync")
+            return
+
+        print(f"[Sync] Found {len(db_keys)} DB(s) to sync: {sorted(db_keys)}")
+
+        # ── Process each day ──────────────────────────────────────
         total_new = 0
         total_skipped = 0
-        errors: List[str] = []
 
-        for date_str in dates:
+        for key in sorted(db_keys):
+            date_str = key.rsplit("/", 1)[-1].replace(".db", "")
             print(f"\n[Sync] Processing {date_str}...")
 
-            key = f"db/{date_str}.db"
-            tmp = s3.download_to_temp(key)
-
+            tmp = cloud_storage.download_to_temp(key)
             if tmp is None:
-                print(f"[Sync] No S3 object for {date_str}, skipping")
+                print(f"[Sync] Failed to download {key}, skipping")
                 continue
+
+            day_new = 0
+            day_skipped = 0
 
             try:
                 rows = Crawler._read_sqlite_db(tmp)
                 print(f"[Sync] Read {len(rows)} rows from {date_str}.db")
 
-                if not rows:
-                    continue
+                # ── Incremental filtering ─────────────────────────
+                if threshold_str is not None:
+                    before = len(rows)
+                    rows = [
+                        r for r in rows
+                        if r.get("created_at", "") > threshold_str
+                    ]
+                    filtered = before - len(rows)
+                    if filtered > 0:
+                        print(
+                            f"[Sync] Filtered {filtered} rows "
+                            f"(created_at <= {threshold_str})"
+                        )
 
-                news_data = Crawler._rows_to_newsdata(rows, date_str)
-                db = self._get_pg_db()
-                result = db.save_news_data(
-                    news_data, sync_status="cloud", skip_existing=True,
-                )
-                total_new += result.get("new", 0)
-                total_skipped += result.get("skipped", 0)
+                if rows:
+                    self._enrich_content(rows, with_image=True)
+
+                    news_data = Crawler._rows_to_newsdata(rows, date_str)
+                    result = pg_db.save_news_data(
+                        news_data, crawled_from="cloud", skip_existing=False,
+                    )
+                    day_new = result.get("processed", 0)
+                    day_skipped = result.get("skipped", 0)
+                    total_new += day_new
+                    total_skipped += day_skipped
 
             except Exception as e:
-                msg = f"Failed to sync {date_str}: {e}"
-                print(f"[Sync] {msg}")
-                errors.append(msg)
+                print(f"[Sync] Failed to sync {date_str}: {e}")
             finally:
                 try:
                     os.unlink(str(tmp))
                 except OSError:
                     pass
 
+            print(
+                f"[Sync] {date_str} done: {day_new} upserted, {day_skipped} skipped"
+            )
+
         print(
-            f"\n[Sync] Complete: {total_new} new, {total_skipped} skipped, "
-            f"{len(errors)} errors"
+            f"\n[Sync] Complete: {total_new} upserted, {total_skipped} skipped "
+            f"({len(db_keys)} day(s) processed)"
         )
-        return {
-            "dates_processed": len(dates),
-            "total_new": total_new,
-            "total_skipped": total_skipped,
-            "errors": errors,
-        }
 
     @staticmethod
     def _read_sqlite_db(db_path) -> List[Dict[str, Any]]:
@@ -635,13 +769,25 @@ class Crawler:
     def _rows_to_newsdata(
         rows: List[Dict[str, Any]], date_str: str
     ) -> NewsData:
-        """Convert SQLite rows to a NewsData object."""
+        """Convert SQLite rows (optionally enriched) to a NewsData object."""
         items: Dict[str, List[NewsItem]] = {}
 
         for row in rows:
             source_id = row.get("source_id", "unknown")
             if source_id not in items:
                 items[source_id] = []
+
+            # tags may be a JSON string (raw SQLite) or a list (after enrichment)
+            tags_val = row.get("tags", [])
+            if isinstance(tags_val, str):
+                try:
+                    tags = json.loads(tags_val)
+                except (json.JSONDecodeError, TypeError):
+                    tags = []
+            elif isinstance(tags_val, list):
+                tags = tags_val
+            else:
+                tags = []
 
             item = NewsItem(
                 title=row.get("title", ""),
@@ -656,10 +802,11 @@ class Crawler:
                 guid=row.get("guid", ""),
                 published_at=row.get("published_at", ""),
                 summary=row.get("summary", ""),
+                content=row.get("content", ""),
                 author=row.get("author", ""),
-                first_crawl_time=row.get("first_crawl_time", ""),
-                last_crawl_time=row.get("last_crawl_time", ""),
-                crawl_count=row.get("crawl_count", 1),
+                category=row.get("category", ""),
+                tags=tags,
+                crawled_at=row.get("created_at", ""),
             )
             items[source_id].append(item)
 

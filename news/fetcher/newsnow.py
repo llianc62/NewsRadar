@@ -132,16 +132,13 @@ class NewsFetcher:
                     data = json.loads(response)
                     results[id_value] = {}
 
-                    # Parse top-level updatedTime (Unix ms) as ISO datetime
-                    updated_time_str = ""
-                    ut = data.get("updatedTime")
-                    if ut:
-                        try:
-                            updated_time_str = datetime.fromtimestamp(
-                                ut / 1000
-                            ).isoformat()
-                        except (ValueError, OSError):
-                            pass
+                    updated_ts = data.get("updatedTime")
+                    if updated_ts:
+                        published_date = datetime.fromtimestamp(
+                            updated_ts / 1000
+                        ).strftime("%Y-%m-%d")
+                    else:
+                        published_date = datetime.now().strftime("%Y-%m-%d")
 
                     for index, item in enumerate(data.get("items", []), 1):
                         title = item.get("title")
@@ -163,7 +160,7 @@ class NewsFetcher:
                                 "ranks": [index],
                                 "url": url,
                                 "mobileUrl": mobile_url,
-                                "published_at": updated_time_str,
+                                "published_at": published_date,
                             }
                 except json.JSONDecodeError:
                     print(f"Failed to parse response for {id_value}")

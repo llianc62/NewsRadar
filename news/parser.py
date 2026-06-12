@@ -1,26 +1,16 @@
 # coding=utf-8
-"""HTML content parser with image processing support.
-
-Provides two classes:
-
-* ``HtmlParser`` — HTML → Markdown conversion (trafilatura + fallback).
-* ``ImageProcessor`` — download images, store locally or upload to MinIO,
-  return reference paths for backfilling Markdown.
+"""HTML content parser — HTML → Markdown conversion (trafilatura + fallback).
 
 Reference: https://github.com/microsoft/markitdown
 """
 
 import re
 import json
-import requests
 
+import trafilatura
 import html as _html
-from urllib.parse import unquote, urlparse
 
 from typing import Any, Dict, List, Optional
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
-
 
 # ═══════════════════════════════════════════════════════════════════
 # HtmlParser
@@ -92,9 +82,9 @@ class HtmlParser:
 
     def _extract_with_trafilatura(self, html: str, url: str) -> Optional[Dict[str, Any]]:
         """Use trafilatura for content + metadata extraction."""
-        import trafilatura
 
-        # 正文提取（Markdown，不嵌入 metadata）
+        title = self._extract_title_from_html(html)
+
         markdown = trafilatura.extract(
             html,
             url=url,
@@ -103,17 +93,51 @@ class HtmlParser:
             include_images=True,
             include_links=True,
             include_formatting=True,
+            with_metadata=False,
         )
+
+        # 如果正文小于50个字符，就默认是无效文档。
         if not markdown or len(markdown.strip()) <= 50:
             return None
 
+        # 标题来源：正文 H1（干净无后缀） > HTML <title>/og:title
+        title =  self._extract_markdown_heading(markdown) or title
+
+        # 优化 markdown 文本
+        markdown = self._beautify_markdown_formatting(markdown)
+
         # 元数据提取（轻量，只解析 head/meta/JSON-LD）
         try:
-            doc = trafilatura.extract_metadata(html, default_url=url)
+            metadata = trafilatura.extract_metadata(html, default_url=url)
         except Exception:
-            doc = None
+            metadata = None
 
-        return self._build_result(markdown=markdown.strip(), doc=doc)
+        if metadata is None:
+            return self._build_result(
+                markdown=markdown.strip(),
+                title=title,
+            )
+
+        tags: List[str] = []
+        if metadata and metadata.categories and len(metadata.categories) > 1:
+            tags = list(metadata.categories[1:])
+        if metadata and metadata.tags:
+            tags = list(set(tags + metadata.tags))
+
+        author = (metadata.author or "").strip() if metadata else ""
+        published_at = (metadata.date or "").strip()
+        summary = (metadata.description or "").strip()
+        category = metadata.categories[0] if metadata.categories else ""
+
+        return self._build_result(
+            markdown=markdown.strip(),
+            title=title,
+            author=author,
+            published_at=published_at,
+            summary=summary,
+            category=category,
+            tags=tags,
+        )
 
     # ── Fallback: HTML strip ───────────────────────────────────────
 
@@ -124,11 +148,7 @@ class HtmlParser:
         Also extracts title from ``<title>`` tag and metadata from
         ``<meta>`` tags (author, description, published_time).
         """
-        # Extract title from <title> tag
-        title = ""
-        title_match = re.search(r"<title[^>]*>(.*?)</title>", html_text, re.DOTALL | re.IGNORECASE)
-        if title_match:
-            title = _html.unescape(title_match.group(1).strip())
+        title = self._extract_title_from_html(html_text)
 
         # Extract metadata from <meta> tags
         author = self._extract_meta(html_text, r'name=["\']author["\']')
@@ -176,12 +196,75 @@ class HtmlParser:
         match = pattern.search(html_text)
         return match.group(1).strip() if match else ""
 
+    @staticmethod
+    def _extract_title_from_html(html_text: str) -> str:
+        """Extract title from ``og:title`` meta or ``<title>`` tag.
+
+        Prefers ``og:title`` (usually cleaner, without site-name suffix).
+        """
+        match = re.search(
+            r'<meta[^>]*property=["\']og:title["\'][^>]*'
+            r'content=["\']([^"\']+)["\']',
+            html_text,
+            re.IGNORECASE,
+        )
+        if match:
+            return _html.unescape(match.group(1).strip())
+
+        match = re.search(
+            r"<title[^>]*>(.*?)</title>",
+            html_text,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if match:
+            return _html.unescape(match.group(1).strip())
+        return ""
+
+    @staticmethod
+    def _beautify_markdown_formatting(markdown: str) -> str:
+        """Remove UI noise that trafilatura picks up from interactive
+        widgets (e.g. praise button ``- +1`` on thepaper.cn). Normalize
+        ``**`` bold markers for consistency.
+
+        1. Strip stray spaces *inside* the markers so all bold is
+           ``**text**`` (fixes asymmetric ``**text **`` etc.).
+        2. Insert a space *outside* when the marker abuts external
+           text (e.g. ``是**text**普`` → ``是 **text** 普``).
+        3. praise button ``- +1`` on thepaper.cn.
+        """
+
+        # Remove UI noise
+        markdown = re.sub(r"^- \+1\n+(?=# )", "", markdown, count=1)
+        # Normalize internal spacing: strip spaces between ** and content
+        markdown = re.sub(r"\*\* +", "**", markdown)
+        markdown = re.sub(r" +\*\*", "**", markdown)
+        # Add external spacing: space between **...** and adjacent text
+        markdown = re.sub(r"([^\s*])(\*\*.*?\*\*)", r"\1 \2", markdown)
+        markdown = re.sub(r"(\*\*.*?\*\*)([^\s*])", r"\1 \2", markdown)
+        return markdown
+
+    @staticmethod
+    def _extract_markdown_heading(markdown: str) -> str:
+        """Extract article title from the first H1 heading in markdown.
+
+        trafilatura converts body ``<h1>`` to ``# heading`` — this is the
+        clean article title without site-name suffixes that pollute
+        ``<title>`` and ``og:title``.
+        """
+        match = re.search(
+            r"^#\s+(.+?)$",
+            markdown.strip(),
+            re.MULTILINE,
+        )
+        if match:
+            return match.group(1).strip()
+        return ""
+
     # ── Unified result builder ──────────────────────────────────────
 
     @staticmethod
     def _build_result(
         markdown: str,
-        doc: Any = None,
         title: str = "",
         author: str = "",
         published_at: str = "",
@@ -189,20 +272,13 @@ class HtmlParser:
         category: str = "",
         tags: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Combine markdown with metadata into a unified result dict.
+        """Build a unified result dict from extracted content and metadata.
 
-        Args:
-            markdown: Extracted Markdown text (required).
-            doc: Optional trafilatura ``Document`` — metadata is read
-                from its fields when provided.
-            title, author, published_at, summary, category, tags:
-                Explicit overrides, taking precedence over *doc* fields.
-
-        Returns:
-            Dict with keys ``markdown``, ``title``, ``author``,
-            ``published_at``, ``summary``, ``category``, ``tags``.
+        All callers are responsible for extracting their own metadata
+        and passing it as explicit parameters — there is no implicit
+        override logic inside this method.
         """
-        result: Dict[str, Any] = {
+        return {
             "markdown": markdown,
             "title": title,
             "author": author,
@@ -211,36 +287,6 @@ class HtmlParser:
             "category": category,
             "tags": tags or [],
         }
-        if doc is not None:
-            if doc.title:
-                result["title"] = doc.title
-            if doc.author:
-                result["author"] = doc.author
-            if doc.date:
-                result["published_at"] = doc.date
-            if doc.description:
-                result["summary"] = doc.description
-            # categories → 取首个作为主分类，其余合并到 tags
-            if doc.categories:
-                result["category"] = doc.categories[0]
-                if len(doc.categories) > 1:
-                    result["tags"] = list(set(result["tags"] + doc.categories[1:]))
-            if doc.tags:
-                result["tags"] = list(set(result["tags"] + doc.tags))
-        # 显式传入的字段优先（覆盖 doc）
-        if title:
-            result["title"] = title
-        if author:
-            result["author"] = author
-        if published_at:
-            result["published_at"] = published_at
-        if summary:
-            result["summary"] = summary
-        if category:
-            result["category"] = category
-        if tags:
-            result["tags"] = list(set(result["tags"] + tags))
-        return result
 
     # ── SPA data extraction ────────────────────────────────────────
 
@@ -382,7 +428,6 @@ class HtmlParser:
             except (json.JSONDecodeError, ValueError):
                 continue
         return results
-
     @staticmethod
     def _find_article_in_json(data):
         """Recursively search *data* for an object that has both a
@@ -470,211 +515,3 @@ class HtmlParser:
 
         _search(data)
         return best
-
-
-# ═══════════════════════════════════════════════════════════════════
-# ImageProcessor
-# ═══════════════════════════════════════════════════════════════════
-
-
-class ImageProcessor:
-    """Download article images, store via :class:`FileStorage`,
-    return mapping from original URL → stored path.
-
-    Does NOT modify Markdown — callers handle string replacement
-    using the returned mapping dicts.
-
-    Usage::
-
-        from storage import create_storage
-
-        ip = ImageProcessor(storage=create_storage(config), max_workers=8)
-
-        # Batch download (parallel, dedup by URL)
-        results = ip.download_images([
-            {"id": "article_1", "url": "https://x.com/a.jpg"},
-            {"id": "article_1", "url": "https://x.com/b.jpg"},
-            {"id": "article_2", "url": "https://x.com/a.jpg"},  # dedup
-        ])
-        # → [{"id": "article_1", "url": "images/a.jpg"},
-        #    {"id": "article_1", "url": "images/b.jpg"},
-        #    {"id": "article_2", "url": "images/a.jpg"}]
-    """
-
-    # Content-Type → file extension mapping
-    EXT_MAP: Dict[str, str] = {
-        "image/jpeg": ".jpg",
-        "image/png": ".png",
-        "image/gif": ".gif",
-        "image/webp": ".webp",
-        "image/svg+xml": ".svg",
-    }
-
-    def __init__(
-        self,
-        storage: "FileStorage",
-        max_workers: int = 8,
-    ) -> None:
-        from storage import FileStorage  # noqa: F811
-        from storage.files import S3Storage  # noqa: F811
-
-        self._storage: FileStorage = storage
-        self._is_s3 = isinstance(storage, S3Storage)
-        self._max_workers = max_workers
-        self._session: Optional[requests.Session] = None
-        self._executor: Optional[ThreadPoolExecutor] = None
-
-    # ── Session ────────────────────────────────────────────────────
-
-    @property
-    def session(self) -> requests.Session:
-        if self._session is None:
-            self._session = requests.Session()
-            self._session.headers.update({
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/91.0.4472.124 Safari/537.36"
-                ),
-            })
-        return self._session
-
-    def _get_executor(self) -> ThreadPoolExecutor:
-        """Lazy-init the thread pool for parallel image downloads."""
-        if self._executor is None:
-            self._executor = ThreadPoolExecutor(max_workers=self._max_workers)
-        return self._executor
-
-    # ── Public API ─────────────────────────────────────────────────
-
-    def download_images(
-        self,
-        images: Dict[str, str],
-    ) -> Dict[str, str]:
-        """Download images and store via the configured storage backend.
-
-        Dict keys deduplicate image URLs naturally — each unique URL is
-        downloaded once.
-
-        Args:
-            images: ``{image_url: ""}`` — values are ignored on input.
-
-        Returns:
-            ``{image_url: stored_path, ...}``
-            *stored_path* is a relative path (``images/<filename>``) for
-            local, or an S3 object URL for the S3 backend.
-        """
-        urls = list(images.keys())
-        if not urls:
-            return {}
-
-        images_dir = self._images_dir()
-
-        print(f"[ImageProcessor] Downloading {len(urls)} unique images "
-              f"(workers={self._max_workers})")
-
-        url_map: Dict[str, Optional[str]] = {}
-        executor = self._get_executor()
-        futures = {
-            executor.submit(self._download_and_save, url, images_dir): url
-            for url in urls
-        }
-
-        for future in as_completed(futures):
-            url = futures[future]
-            try:
-                url_map[url] = future.result()
-            except Exception as e:
-                print(f"[ImageProcessor] Download failed [{url}]: {e}")
-
-        success = sum(1 for v in url_map.values() if v is not None)
-        print(f"[ImageProcessor] Downloaded {success}/{len(urls)} images")
-
-        return {u: p for u, p in url_map.items() if p is not None}
-
-    def download(self, url: str) -> Optional[tuple]:
-        """Download an image from *url*.
-
-        Returns:
-            (image_data: bytes, content_type: str) tuple, or None on failure.
-        """
-        try:
-            resp = self.session.get(url, timeout=15)
-            resp.raise_for_status()
-            content_type = (
-                resp.headers.get("Content-Type", "image/jpeg")
-                .split(";")[0]
-                .strip()
-            )
-            return resp.content, content_type
-        except requests.RequestException as e:
-            print(f"[ImageProcessor] HTTP error for {url}: {e}")
-            return None
-
-    # ── Helpers ────────────────────────────────────────────────────
-
-    @staticmethod
-    def _images_dir() -> str:
-        """Derive today's image directory: ``news/YYYY-MM-DD/images``."""
-        from utils import format_date_folder
-        return f"news/{format_date_folder()}/images"
-
-    def _download_and_save(
-        self,
-        url: str,
-        images_dir: str,
-    ) -> Optional[str]:
-        """Download single image + save — used as a future in the thread pool.
-
-        Returns a relative path (``images/<filename>``) for local storage,
-        or the S3 object URL for the S3 backend.  Returns None on failure.
-        """
-        try:
-            result = self.download(url)
-            if result is None:
-                return None
-            image_data, content_type = result
-        except Exception as e:
-            print(f"[ImageProcessor] Download failed [{url}]: {e}")
-            return None
-
-        ext = self.EXT_MAP.get(content_type, ".jpg")
-        filename = self._extract_filename(url, ext)
-        path = f"{images_dir}/{filename}"
-        saved = self._storage.save_file(image_data, path, content_type)
-        if not saved:
-            return None
-        if self._is_s3:
-            return f"/media/{saved}"  # web proxy route → presigned redirect
-        return f"images/{filename}"  # relative path for local storage
-
-    def _extract_filename(self, url: str, default_ext: str) -> str:
-        """Extract original filename from image *url*, falling back to
-        a generated name if the URL path doesn't contain a usable filename.
-        """
-        parsed = urlparse(url)
-        path = unquote(parsed.path)
-        name = path.rsplit("/", 1)[-1] if "/" in path else path
-
-        # Keep only safe characters
-        name = re.sub(r"[^\w.\-]", "_", name)
-
-        if not name or "." not in name:
-            return f"image{default_ext}"
-
-        # Ensure extension matches content type if possible
-        root, ext = name.rsplit(".", 1)
-        ext = f".{ext.lower()}"
-        if ext not in self.EXT_MAP.values():
-            ext = default_ext
-
-        return f"{root}{ext}"
-
-    def close(self) -> None:
-        """Shut down the thread pool and close the HTTP session."""
-        if self._executor is not None:
-            self._executor.shutdown(wait=True)
-            self._executor = None
-        if self._session is not None:
-            self._session.close()
-            self._session = None

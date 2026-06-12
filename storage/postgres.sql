@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS news_articles (
     id              BIGSERIAL PRIMARY KEY,
     source_id       VARCHAR(100) NOT NULL,
     source_name     VARCHAR(200) NOT NULL,
-    source_type     VARCHAR(10)  NOT NULL CHECK (source_type IN ('hotlist', 'rss')),
+    source_type     VARCHAR(10)  NOT NULL CHECK (source_type IN ('hotlist', 'rss', 'manual')),
     tier            SMALLINT     NOT NULL DEFAULT 4 CHECK (tier BETWEEN 1 AND 4),
     priority        SMALLINT     NOT NULL DEFAULT 0,
     url             TEXT DEFAULT '',
@@ -23,12 +23,11 @@ CREATE TABLE IF NOT EXISTS news_articles (
     category        VARCHAR(50) DEFAULT NULL,
     rank            SMALLINT DEFAULT NULL,
     ranks           SMALLINT[] DEFAULT '{}',
-    sync_status     VARCHAR(10) NOT NULL DEFAULT 'local' CHECK (sync_status IN ('local', 'cloud')),
+    crawled_from    VARCHAR(10) NOT NULL DEFAULT 'local' CHECK (crawled_from IN ('local', 'cloud')),
     is_analyzed     BOOLEAN NOT NULL DEFAULT FALSE,
-    notified        BOOLEAN NOT NULL DEFAULT FALSE,
     published_at     TIMESTAMPTZ DEFAULT NULL,
-    first_crawled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    last_crawled_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    crawled_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -59,7 +58,7 @@ CREATE INDEX IF NOT EXISTS idx_published_at   ON news_articles (published_at DES
 CREATE INDEX IF NOT EXISTS idx_tier_priority  ON news_articles (tier, priority DESC);
 CREATE INDEX IF NOT EXISTS idx_heat_score     ON news_articles (heat_score DESC);
 CREATE INDEX IF NOT EXISTS idx_category       ON news_articles (category);
-CREATE INDEX IF NOT EXISTS idx_sync_status    ON news_articles (sync_status);
+CREATE INDEX IF NOT EXISTS idx_crawled_from   ON news_articles (crawled_from);
 CREATE INDEX IF NOT EXISTS idx_is_analyzed    ON news_articles (is_analyzed);
 
 -- GIN indexes

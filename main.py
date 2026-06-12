@@ -132,13 +132,12 @@ class NewsRadarDaemon:
 
     async def _sync_job(self) -> None:
         """Sync cloud SQLite data into PostgreSQL."""
-        s3_config = self.config["storage"]["remote"]
-        if not (s3_config.get("bucket_name") and s3_config.get("endpoint_url")):
-            print("[Sync] S3 not configured — skipping.")
+        cloud_config = self.config["storage"]["cloud"]
+        if not (cloud_config.get("bucket_name") and cloud_config.get("endpoint_url")):
+            print("[Sync] Cloud not configured — skipping.")
             return
         crawler = Crawler(self.config, pg_db=self.db)
-        result = await self._run_in_thread(crawler.sync_from_cloud)
-        print(f"[Sync] {result}")
+        await self._run_in_thread(crawler.sync_from_cloud)
 
     # ── Run ──────────────────────────────────────────────────────
 
@@ -161,8 +160,8 @@ class NewsRadarDaemon:
             "crawl": self._crawl_signal,
             "sync": self._sync_signal,
         }
-        s3_cfg = self.config.get("storage", {}).get("remote", {})
-        app = create_app(self.db, signals=signals, s3_config=s3_cfg)
+        s3_config = self.config.get("storage", {}).get("resource", {})
+        app = create_app(self.db, s3_config, signals=signals)
         web_task = asyncio.create_task(self._serve_web(app), name="web")
 
         # 4. Launch Workers (wait for signal → execute job → loop)

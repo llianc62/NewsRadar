@@ -46,6 +46,7 @@ TIER_BG_CSS = {
 
 SOURCE_TYPE_HOTLIST = "hotlist"
 SOURCE_TYPE_RSS = "rss"
+SOURCE_TYPE_MANUAL = "manual"
 
 # ── Sync status ─────────────────────────────────────────────────────
 

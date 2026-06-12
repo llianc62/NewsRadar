@@ -28,10 +28,10 @@ crawler:
       #   name: "今日头条"
       #   tier: 4
       #   priority: 30
-      - id: "juejin"
-        name: "掘金"
-        tier: 4
-        priority: 20
+      # - id: "juejin"
+      #   name: "掘金"
+      #   tier: 4
+      #   priority: 20
 
   rss:
     enabled: true
@@ -60,15 +60,20 @@ notification:
   email:
     smtp_server: "smtp.qq.com"
     smtp_port: 587
-    from_addr: ""
-    to_addr: ""
-    password: ""
+    from_addr: "lianglian8866@qq.com"
+    to_addr: "lianglian8866@qq.com"
+    password: "ubzpspoeerzwbcif"
 
 storage:
-  backend: "remote"  # "local" or "remote"
   local:
     data_dir: "output"
-  remote:
+  cloud:
+    endpoint_url: "http://localhost:9000"
+    bucket_name: "newsradar"
+    access_key_id: "admin"
+    secret_access_key: "minioadmin"
+    region: ""
+  resource:
     endpoint_url: "http://localhost:9000"
     bucket_name: "newsradar"
     access_key_id: "admin"

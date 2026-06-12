@@ -11,6 +11,8 @@ from email.mime.text import MIMEText
 from email.utils import formataddr, formatdate
 from typing import Dict, List, Optional
 
+from storage.s3 import S3Client
+
 from news.constants import TIER_LABELS, TIER_COLORS, TIER_BG
 
 
@@ -173,19 +175,19 @@ def send_email(
 
 
 def run_notifier(config: dict) -> None:
-    """Run the full notification pipeline.
+    """Run the full notification pipeline (full processing, no persistence).
 
-    1. Download daily SQLite DB from S3
-    2. Query unnotified items
+    1. Download daily SQLite DB from S3 (CI only)
+    2. Query all items
     3. Match keywords and group
     4. Build HTML report
     5. Send email
-    6. Mark items as notified and upload back
 
-    This is the entry point used by both ``cli.py notify`` (GitHub
-    Actions) and any future daemon-triggered notification.
+    The notifier is read-only — it never uploads back to S3.
+    Each run processes the entire day's data from scratch.
     """
     import os
+    from pathlib import Path
 
     from news.keywords import load_frequency_words, match_and_group
     from storage.sqlite import Sqlite
@@ -197,21 +199,36 @@ def run_notifier(config: dict) -> None:
 
     print(f"=== Notifier === {date} {time_str}")
 
-    # Init database
     storage_config = config.get("storage", {})
     data_dir = storage_config.get("local", {}).get("data_dir", "output")
-    db = Sqlite(data_dir=data_dir, timezone=timezone)
+    db_dir = Path(data_dir) / "db"
+    db_path = db_dir / f"{date}.db"
 
-    # Get unnotified items
-    rows = db.get_unnotified(date)
+    # ── Download daily DB from S3 ─────────────────────────────────
+    # GitHub Actions runs are ephemeral — pull the snapshot first.
+    s3 = S3Client.init_by_config(config["storage"]["cloud"])
+    if not s3:
+        raise ValueError(
+            "crawl requires S3 storage. "
+            "Configure storage.cloud in config.yaml or set CLOUD_S3_* env vars."
+        )
+    if s3.object_exists(f"db/{date}.db"):
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        if s3.download_file(f"db/{date}.db", db_path):
+            print("[Notify] Restored DB from S3")
+        else:
+            print("[Notify] Failed to download DB from S3")
+
+    db = Sqlite(data_dir=data_dir, timezone=timezone)
+    rows = db.get_all(date)
     if not rows:
-        print("No new items to notify")
+        print("No items to notify")
         db.cleanup()
         return
 
     # Convert rows to dicts
     items = [dict(row) for row in rows]
-    print(f"Unnotified items: {len(items)}")
+    print(f"Total items: {len(items)}")
 
     # Load keywords and match
     freq_path = config.get("notification", {}).get(
@@ -243,9 +260,6 @@ def run_notifier(config: dict) -> None:
         print("[Email] Missing config — skipping send")
     else:
         send_email(html, smtp_server, smtp_port, from_addr, to_addr, password)
-
-    # Mark as notified
-    db.mark_notified(date)
 
     db.cleanup()
     print("=== Done ===")

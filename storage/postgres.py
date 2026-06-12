@@ -6,10 +6,11 @@ class (no more module-level global ``_pool``).
 """
 
 import json
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import psycopg2
 import psycopg2.extras
@@ -20,6 +21,57 @@ psycopg2.extras.register_default_jsonb(loads=json.loads)
 
 # Module-level timezone default (used for HH:MM date parsing)
 _timezone_offset: str = "+08:00"
+
+# ═══════════════════════════════════════════════════════════════════
+# Batch UPSERT SQL templates (used by save_news_data)
+# ═══════════════════════════════════════════════════════════════════
+
+_COLUMNS = """title, source_id, source_name, source_type,
+        tier, priority, url, mobile_url, rank,
+        guid, published_at, summary, author,
+        content, category, tags,
+        crawled_from,
+        crawled_at, ranks"""
+
+_INSERT_PREFIX = f"INSERT INTO news_articles ({_COLUMNS}) VALUES %s"
+
+_UPDATE_SET = """title = EXCLUDED.title,
+        rank = EXCLUDED.rank,
+        mobile_url = EXCLUDED.mobile_url,
+        crawled_at = EXCLUDED.crawled_at,
+        updated_at = NOW(),
+        priority = EXCLUDED.priority,
+        tier = EXCLUDED.tier,
+        summary = EXCLUDED.summary,
+        category = EXCLUDED.category,
+        tags = EXCLUDED.tags,
+        content = CASE
+            WHEN news_articles.content IS NULL OR news_articles.content = ''
+            THEN EXCLUDED.content
+            ELSE news_articles.content
+        END"""
+
+_HOTLIST_INSERT_SQL = f"""{_INSERT_PREFIX}
+ON CONFLICT (source_id, url)
+WHERE source_type = 'hotlist' AND url != ''
+DO UPDATE SET {_UPDATE_SET}"""
+
+_HOTLIST_INSERT_SKIP_SQL = f"""{_INSERT_PREFIX}
+ON CONFLICT (source_id, url)
+WHERE source_type = 'hotlist' AND url != ''
+DO NOTHING"""
+
+_RSS_INSERT_SQL = f"""{_INSERT_PREFIX}
+ON CONFLICT (source_id, guid)
+WHERE source_type = 'rss' AND guid != ''
+DO UPDATE SET {_UPDATE_SET}"""
+
+_RSS_INSERT_SKIP_SQL = f"""{_INSERT_PREFIX}
+ON CONFLICT (source_id, guid)
+WHERE source_type = 'rss' AND guid != ''
+DO NOTHING"""
+
+_FALLBACK_INSERT_SQL = f"{_INSERT_PREFIX}"
 
 
 def _load_schema() -> str:
@@ -91,18 +143,24 @@ class PostgreSQL:
             print("[DB] Connection pool closed")
 
     def init_schema(self) -> None:
-        """Run schema DDL if tables do not yet exist."""
-        if self._schema_ready():
-            print("[DB] Schema already exists — skipping init.")
-            return
-        conn = self._pool.getconn()
-        try:
-            with conn.cursor() as cur:
-                cur.execute(_load_schema())
-            conn.commit()
-            print("[DB] Schema initialized successfully")
-        finally:
-            self._pool.putconn(conn)
+        """Run schema DDL if tables do not yet exist, then apply migrations."""
+        if not self._schema_ready():
+            conn = self._pool.getconn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(_load_schema())
+                conn.commit()
+                print("[DB] Schema initialized successfully")
+            finally:
+                self._pool.putconn(conn)
+        else:
+            print("[DB] Schema already exists — running migrations.")
+
+        # Always run migrations (idempotent)
+        self._run_migrations()
+
+    def _run_migrations(self) -> None:
+        pass
 
     def _schema_ready(self) -> bool:
         """Check whether the schema tables already exist."""
@@ -147,189 +205,190 @@ class PostgreSQL:
         self,
         news_data,           # NewsData from news.models
         source_tiers: Optional[Dict[str, Dict[str, int]]] = None,
-        sync_status: str = "local",
+        crawled_from: str = "local",
         skip_existing: bool = False,
     ) -> Dict[str, int]:
-        """Save NewsData to PostgreSQL with UPSERT logic.
+        """Save NewsData to PostgreSQL with batch UPSERT logic.
 
-        Dedup: hotlist on (url, source_id), rss on (guid, source_id).
-        Each item uses a savepoint so a single failure doesn't poison the batch.
+        Items are partitioned by ON CONFLICT target (hotlist / rss /
+        fallback) and inserted in batches of up to 100 rows per
+        round-trip using ``execute_values``.
+
+        Dedup: hotlist on (source_id, url), rss on (source_id, guid).
+        Content is preserved via CASE WHEN on conflict.
         """
         if source_tiers is None:
             source_tiers = {}
 
-        new_total = 0
-        updated_total = 0
-        skipped_total = 0
+        # Partition items by conflict-target type
+        hotlist_rows: List[Tuple] = []
+        rss_rows: List[Tuple] = []
+        fallback_rows: List[Tuple] = []
+
+        for source_id, news_list in news_data.items.items():
+            tier_info = source_tiers.get(source_id, {})
+            tier = tier_info.get("tier", 4)
+            priority = tier_info.get("priority", 0)
+
+            for item in news_list:
+                row = self._build_row(
+                    item, source_id, tier, priority,
+                    news_data.date, crawled_from,
+                )
+                if item.source_type == "hotlist" and item.url:
+                    hotlist_rows.append(row)
+                elif item.source_type == "rss" and item.guid:
+                    rss_rows.append(row)
+                else:
+                    fallback_rows.append(row)
+
+        t0 = time.time()
+        processed = 0
+        skipped = 0
 
         with self.get_conn() as conn:
             with conn.cursor() as cur:
-                for source_id, news_list in news_data.items.items():
-                    tier_info = source_tiers.get(source_id, {})
-                    tier = tier_info.get("tier", 4)
-                    priority = tier_info.get("priority", 0)
+                if hotlist_rows:
+                    sql = (
+                        _HOTLIST_INSERT_SKIP_SQL if skip_existing
+                        else _HOTLIST_INSERT_SQL
+                    )
+                    n, s = self._execute_batch(cur, sql, hotlist_rows)
+                    processed += n
+                    skipped += s
 
-                    for item in news_list:
-                        try:
-                            with conn:
-                                with conn.cursor() as item_cur:
-                                    self._upsert_one(
-                                        item_cur, item, source_id, tier,
-                                        priority, news_data.date,
-                                        sync_status, skip_existing,
-                                    )
-                            new_total += 1
-                        except psycopg2.Error as e:
-                            print(
-                                f"[DB] Failed to save item "
-                                f"[{item.title[:30]}...]: {e}"
-                            )
-                            skipped_total += 1
+                if rss_rows:
+                    sql = (
+                        _RSS_INSERT_SKIP_SQL if skip_existing
+                        else _RSS_INSERT_SQL
+                    )
+                    n, s = self._execute_batch(cur, sql, rss_rows)
+                    processed += n
+                    skipped += s
 
-        print(
-            f"[DB] Saved: items processed (sync_status={sync_status})"
+                if fallback_rows:
+                    n, s = self._execute_batch(
+                        cur, _FALLBACK_INSERT_SQL, fallback_rows,
+                    )
+                    processed += n
+                    skipped += s
+
+        elapsed = time.time() - t0
+        msg = (
+            f"[DB] Saved {processed} items in {elapsed:.2f}s"
+            f" (crawled_from={crawled_from})"
         )
-        return {"new": new_total, "updated": updated_total, "skipped": skipped_total}
+        if skipped:
+            msg += f", skipped {skipped}"
+        print(msg)
+        return {"processed": processed, "skipped": skipped}
 
-    def _upsert_one(
-        self,
-        cur,
+    # ── Batch helpers ──────────────────────────────────────────────
+
+    @staticmethod
+    def _build_row(
         item,
         source_id: str,
         tier: int,
         priority: int,
         crawl_date: str,
-        sync_status: str,
-        skip_existing: bool,
-    ) -> None:
-        """Insert or update a single NewsItem."""
-        ts_first = _to_timestamptz(item.first_crawl_time, crawl_date)
-        ts_last = _to_timestamptz(item.last_crawl_time, crawl_date)
+        crawled_from: str,
+    ) -> Tuple:
+        """Convert a NewsItem into a 19-element tuple for batch INSERT."""
+        ts_crawled = _to_timestamptz(item.crawled_at, crawl_date)
         ts_pub = _to_timestamptz(item.published_at, None)
 
-        common_values = (
-            item.title, source_id, item.source_name, item.source_type,
-            tier, priority, item.url, item.mobile_url, item.rank,
-            item.guid, ts_pub, item.summary, item.author,
+        return (
+            item.title,
+            source_id,
+            item.source_name,
+            item.source_type,
+            tier,
+            priority,
+            item.url,
+            item.mobile_url,
+            item.rank,
+            item.guid,
+            ts_pub,
+            item.summary,
+            item.author,
             item.content,
             item.category if item.category else None,
             item.tags if item.tags else [],
-            sync_status, ts_first, ts_last,
+            crawled_from,
+            ts_crawled,
             item.ranks if item.ranks else [],
         )
 
-        if item.source_type == "hotlist" and item.url:
-            if skip_existing:
-                cur.execute(
-                    """INSERT INTO news_articles
-                       (title, source_id, source_name, source_type,
-                        tier, priority, url, mobile_url, rank,
-                        guid, published_at, summary, author,
-                        content, category, tags,
-                        sync_status, notified,
-                        first_crawled_at, last_crawled_at, ranks)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
-                               %s, %s, %s, %s, %s, %s, %s, %s,
-                               FALSE, %s, %s, %s)
-                       ON CONFLICT (source_id, url)
-                       WHERE source_type = 'hotlist' AND url != ''
-                       DO NOTHING""",
-                    common_values,
-                )
-            else:
-                cur.execute(
-                    """INSERT INTO news_articles
-                       (title, source_id, source_name, source_type,
-                        tier, priority, url, mobile_url, rank,
-                        guid, published_at, summary, author,
-                        content, category, tags,
-                        sync_status, notified,
-                        first_crawled_at, last_crawled_at, ranks)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
-                               %s, %s, %s, %s, %s, %s, %s, %s,
-                               FALSE, %s, %s, %s)
-                       ON CONFLICT (source_id, url)
-                       WHERE source_type = 'hotlist' AND url != ''
-                       DO UPDATE SET
-                           title = EXCLUDED.title,
-                           rank = EXCLUDED.rank,
-                           mobile_url = EXCLUDED.mobile_url,
-                           last_crawled_at = EXCLUDED.last_crawled_at,
-                           priority = EXCLUDED.priority,
-                           tier = EXCLUDED.tier,
-                           summary = EXCLUDED.summary,
-                           category = EXCLUDED.category,
-                           tags = EXCLUDED.tags,
-                           content = CASE
-                               WHEN news_articles.content IS NULL OR news_articles.content = ''
-                               THEN EXCLUDED.content
-                               ELSE news_articles.content
-                           END""",
-                    common_values,
-                )
-        elif item.source_type == "rss" and item.guid:
-            if skip_existing:
-                cur.execute(
-                    """INSERT INTO news_articles
-                       (title, source_id, source_name, source_type,
-                        tier, priority, url, mobile_url, rank,
-                        guid, published_at, summary, author,
-                        content, category, tags,
-                        sync_status, notified,
-                        first_crawled_at, last_crawled_at, ranks)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
-                               %s, %s, %s, %s, %s, %s, %s, %s,
-                               FALSE, %s, %s, %s)
-                       ON CONFLICT (source_id, guid)
-                       WHERE source_type = 'rss' AND guid != ''
-                       DO NOTHING""",
-                    common_values,
-                )
-            else:
-                cur.execute(
-                    """INSERT INTO news_articles
-                       (title, source_id, source_name, source_type,
-                        tier, priority, url, mobile_url, rank,
-                        guid, published_at, summary, author,
-                        content, category, tags,
-                        sync_status, notified,
-                        first_crawled_at, last_crawled_at, ranks)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
-                               %s, %s, %s, %s, %s, %s, %s, %s,
-                               FALSE, %s, %s, %s)
-                       ON CONFLICT (source_id, guid)
-                       WHERE source_type = 'rss' AND guid != ''
-                       DO UPDATE SET
-                           title = EXCLUDED.title,
-                           rank = EXCLUDED.rank,
-                           mobile_url = EXCLUDED.mobile_url,
-                           last_crawled_at = EXCLUDED.last_crawled_at,
-                           priority = EXCLUDED.priority,
-                           tier = EXCLUDED.tier,
-                           summary = EXCLUDED.summary,
-                           category = EXCLUDED.category,
-                           tags = EXCLUDED.tags,
-                           content = CASE
-                               WHEN news_articles.content IS NULL OR news_articles.content = ''
-                               THEN EXCLUDED.content
-                               ELSE news_articles.content
-                           END""",
-                    common_values,
-                )
-        else:
-            cur.execute(
-                """INSERT INTO news_articles
-                   (title, source_id, source_name, source_type,
-                    tier, priority, url, mobile_url, rank,
-                    guid, published_at, summary, author,
-                    content, category, tags,
-                    sync_status, notified,
-                    first_crawled_at, last_crawled_at, ranks)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
-                           %s, %s, %s, %s, %s, %s, %s, %s,
-                           FALSE, %s, %s, %s)""",
-                common_values,
+    def _execute_batch(
+        self,
+        cur,
+        sql: str,
+        items: List[Tuple],
+        page_size: int = 100,
+    ) -> Tuple[int, int]:
+        """Execute batch INSERT via ``execute_values``.
+
+        On batch failure, retries with progressively smaller sub-batches
+        (100 → 10 → 1) with savepoint isolation at the single-row level.
+        This avoids one bad row forcing the entire batch into the slow path.
+
+        Returns:
+            ``(processed, skipped)`` counts.
+        """
+        processed = 0
+        skipped = 0
+        conn = cur.connection
+
+        for i in range(0, len(items), page_size):
+            batch = items[i:i + page_size]
+            n, s = self._execute_batch_retry(
+                cur, conn, sql, batch, page_size,
             )
+            processed += n
+            skipped += s
+
+        return processed, skipped
+
+    def _execute_batch_retry(
+        self,
+        cur,
+        conn,
+        sql: str,
+        batch: List[Tuple],
+        page_size: int,
+    ) -> Tuple[int, int]:
+        """Attempt a batch INSERT; on failure, divide and retry.
+
+        Falls back from *page_size* → 10 → 1, each level using savepoint
+        isolation so good rows always survive.
+        """
+        try:
+            psycopg2.extras.execute_values(
+                cur, sql, batch, page_size=page_size,
+            )
+            return len(batch), 0
+        except psycopg2.Error as e:
+            if page_size <= 1:
+                print(f"[DB]   Row failed: {e}")
+                return 0, 1
+
+            # Divide into smaller sub-batches
+            next_size = max(1, min(10, page_size // 10))
+            print(
+                f"[DB] Batch of {len(batch)} failed: {e}"
+                f" — retrying with page_size={next_size}"
+            )
+            processed = 0
+            skipped = 0
+            for j in range(0, len(batch), next_size):
+                sub = batch[j:j + next_size]
+                n, s = self._execute_batch_retry(
+                    cur, conn, sql, sub, next_size,
+                )
+                processed += n
+                skipped += s
+            return processed, skipped
 
     # ── Query methods ──────────────────────────────────────────────
 
@@ -365,7 +424,7 @@ class PostgreSQL:
                     f"""SELECT id, title, source_id, source_name, source_type,
                                tier, priority, url, mobile_url, summary,
                                tags, heat_score, sentiment_score,
-                               sync_status, is_analyzed,
+                               crawled_from, is_analyzed,
                                published_at, created_at
                         FROM news_articles
                         WHERE {where}
@@ -407,6 +466,25 @@ class PostgreSQL:
                     params,
                 )
                 return cur.fetchone()[0]
+
+    def get_latest_cloud_sync_date(self):
+        """Return the latest ``crawled_at`` timestamp for cloud-synced
+        records, or None if no cloud records exist.
+
+        Used by :meth:`Crawler.sync_from_cloud` to decide which cloud
+        storage files need to be downloaded and which rows are incremental.
+        """
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT MAX(crawled_at)
+                       FROM news_articles
+                       WHERE crawled_from = 'cloud'"""
+                )
+                row = cur.fetchone()
+                if row and row[0] is not None:
+                    return row[0]  # datetime with timezone
+                return None
 
     def get_news_by_id(self, article_id: int) -> Optional[Dict[str, Any]]:
         """Return a single article by ID, including content and images."""

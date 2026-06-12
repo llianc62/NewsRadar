@@ -1,4 +1,3 @@
-version: "3.8"
 services:
   postgres:
     image: postgres:16-alpine
@@ -10,7 +9,7 @@ services:
       POSTGRES_USER: newsradar
       POSTGRES_PASSWORD: newsradar
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U newsradar -d newsradar"]
       interval: 5s
@@ -25,9 +24,24 @@ services:
       - "9000:9000"   # API
       - "9001:9001"   # Console
     environment:
-      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_USER: admin
       MINIO_ROOT_PASSWORD: minioadmin
     volumes:
-      - ./data/minio:/data
+      - minio_data:/data
+      - minio_config:/root/.minio
     command: server /data --console-address ":9001"
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     restart: unless-stopped
+
+volumes:
+  postgres_data:
+    name: newsradar_postgres_data
+  minio_data:
+    name: newsradar_minio_data
+  minio_config:
+    name: newsradar_minio_config
