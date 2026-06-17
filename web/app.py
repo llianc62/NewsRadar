@@ -45,7 +45,73 @@ ICONS = {
     "clock": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>',
     "list": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/></svg>',
     "x": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg>',
+
+    # ── Notification ──
+    "bell": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>',
+    "refresh": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>',
+    "check-circle": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>',
+    "x-circle": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>',
 }
+# ── Refetch state (in-memory) ─────────────────────────────────────
+
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+_refetch_tasks: dict[int, dict] = {}       # key=article_id, 去重+状态跟踪
+_notifications: list[dict] = []            # 通知列表，最多 50 条
+_notification_counter: int = 0             # 自增 ID
+_notification_lock = threading.Lock()      # 线程安全
+_refetch_executor: ThreadPoolExecutor | None = None
+
+
+def _now() -> float:
+    return time.time()
+
+
+def _add_notification(article_id: int, title: str, status: str = "pending",
+                      error_message: str = "") -> dict:
+    """Create a notification, append to list, return the dict."""
+    global _notification_counter
+    with _notification_lock:
+        _notification_counter += 1
+        notif = {
+            "id": _notification_counter,
+            "article_id": article_id,
+            "title": title,
+            "status": status,
+            "error_message": error_message,
+            "is_read": False,
+            "created_at": _now(),
+        }
+        _notifications.insert(0, notif)
+        # Cap at 50
+        if len(_notifications) > 50:
+            _notifications.pop()
+        return notif
+
+
+def _run_refetch(article_id: int, url: str, title: str, crawler,
+                 db, notif: dict) -> None:
+    """Execute refetch in background thread, update status on completion."""
+    try:
+        notif["status"] = "running"
+        from news.crawler import OutputStyle
+        crawler.fetch(
+            url,
+            output_style=OutputStyle.POSTGRESQL,
+            with_content=True,
+            with_image=True,
+        )
+        notif["status"] = "completed"
+    except Exception as e:
+        notif["status"] = "failed"
+        notif["error_message"] = str(e)
+    finally:
+        # Remove from dedup dict so re-fetch is allowed again
+        _refetch_tasks.pop(article_id, None)
+
+
 # Markdown-to-HTML converter (GitHub Flavoured Markdown)
 _md_renderer = mistune.create_markdown(
     escape=False,  # allow raw HTML in source (some articles need it)
@@ -73,7 +139,7 @@ def render_template(name: str, **context) -> str:
 
 # ── App factory ──────────────────────────────────────────────────
 
-def create_app(db, s3_config: dict, signals: dict = None):
+def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
     """Create and configure the FastAPI application.
 
     Args:
@@ -85,6 +151,9 @@ def create_app(db, s3_config: dict, signals: dict = None):
         signals: Optional dict of ``asyncio.Event`` signals for manual
             task triggering via ``POST /api/trigger/{name}``.
             Keys: ``"crawl"``, ``"sync"``.
+        crawler: Optional :class:`news.crawler.Crawler` instance for
+            refetch API. If ``None``, the refetch endpoint will reject
+            requests with "抓取服务未就绪".
 
     Returns:
         Configured FastAPI application.
@@ -108,6 +177,14 @@ def create_app(db, s3_config: dict, signals: dict = None):
 
     # S3 storage — required for /media/ proxy
     app.state.s3_storage = S3Storage(s3_config)
+
+    # Refetch state
+    global _refetch_executor
+    if _refetch_executor is None or crawler is not None:
+        if _refetch_executor is not None:
+            _refetch_executor.shutdown(wait=False)
+        _refetch_executor = ThreadPoolExecutor(max_workers=10)
+    app.state.crawler = crawler
 
     # ── Routes ───────────────────────────────────────────────────
 
@@ -347,6 +424,64 @@ def create_app(db, s3_config: dict, signals: dict = None):
             return JSONResponse({"ok": False, "error": "not available"}, status_code=404)
         signal.set()
         return {"ok": True, "task": "sync"}
+
+    # ── Refetch API ────────────────────────────────────────────
+
+    @app.post("/api/news/{article_id}/refetch")
+    async def refetch_article(article_id: int):
+        """Submit a background refetch job for the given article."""
+        article = db.get_news_by_id(article_id)
+        if article is None:
+            return JSONResponse({"ok": False, "error": "文章不存在"}, status_code=404)
+        url = (article.get("url") or "").strip()
+        title = article.get("title") or ""
+        if not url:
+            return {"ok": False, "error": "该文章没有原文链接"}
+
+        # Dedup
+        existing = _refetch_tasks.get(article_id)
+        if existing and existing["status"] in ("pending", "running"):
+            return {"ok": False, "error": "该文章正在抓取中"}
+
+        # Create notification + task
+        notif = _add_notification(article_id, title, status="pending")
+        task = {"article_id": article_id, "title": title,
+                "status": "pending", "created_at": notif["created_at"]}
+        _refetch_tasks[article_id] = task
+
+        c = app.state.crawler
+        if c is None:
+            return {"ok": False, "error": "抓取服务未就绪"}
+
+        _refetch_executor.submit(_run_refetch, article_id, url, title,
+                                 c, db, notif)
+        return {"ok": True, "task": task}
+
+    @app.get("/api/notifications")
+    async def list_notifications(unread_only: bool = Query(False)):
+        """Return notification list, optionally filtered to unread only."""
+        with _notification_lock:
+            result = [dict(n) for n in _notifications]
+        if unread_only:
+            result = [n for n in result if not n.get("is_read")]
+        return result
+
+    @app.get("/api/notifications/unread-count")
+    async def unread_notification_count():
+        """Return the count of unread notifications."""
+        with _notification_lock:
+            count = sum(1 for n in _notifications if not n.get("is_read"))
+        return {"count": count}
+
+    @app.post("/api/notifications/{notif_id}/read")
+    async def mark_notification_read(notif_id: int):
+        """Mark a single notification as read."""
+        with _notification_lock:
+            for n in _notifications:
+                if n["id"] == notif_id:
+                    n["is_read"] = True
+                    return {"ok": True}
+        return JSONResponse({"ok": False, "error": "通知不存在"}, status_code=404)
 
     return app
 
