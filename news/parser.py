@@ -335,8 +335,12 @@ class HtmlParser:
         Each block's ``html`` is the full serialized element including its
         tag, so the reassembled fragment is valid HTML for trafilatura.
         """
+        # scope to <body> to avoid stray elements in <head>
+        body = tree.find(".//body")
+        root = body if body is not None else tree
+
         blocks: List[Block] = []
-        for el in tree.iter():
+        for el in root.iter():
             tag = el.tag if isinstance(el.tag, str) else ""
             if tag not in BLOCK_TAGS:
                 continue
@@ -407,7 +411,7 @@ class HtmlParser:
                 start = i
                 start_found = True
                 break
-            if b.tag in ("h1", "h2", "h3") and b.text_len >= 2:
+            if b.tag in ("h1", "h2", "h3") and b.text_len >= 4:
                 start = i
                 start_found = True
                 break
@@ -421,7 +425,7 @@ class HtmlParser:
                 end = i
                 end_found = True
                 break
-            if b.tag in ("h1", "h2", "h3", "h4") and b.text_len >= 2:
+            if b.tag in ("h1", "h2", "h3", "h4") and b.text_len >= 4:
                 end = i
                 end_found = True
                 break
