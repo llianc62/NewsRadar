@@ -146,7 +146,7 @@ def create_app(db, s3_config: dict, signals: dict = None):
         keyword: str = Query(None),
         date_from: str = Query(None),
         date_to: str = Query(None),
-        page_size: int = Query(50, ge=10, le=100),
+        page_size: int = Query(20, ge=10, le=50),
     ):
         """Hot news page — editorial masonry layout with date-first filtering."""
         per_page = page_size  # 使用用户选择的每页条数

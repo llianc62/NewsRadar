@@ -112,7 +112,7 @@
         <label for="page-size">每页显示</label>
         <select class="page-size-select" id="page-size"
                 onchange="changePageSize(this.value)">
-          {% for ps in [20, 30, 50, 100] %}
+          {% for ps in [10, 20, 30, 50] %}
           <option value="{{ ps }}"{% if ps == current_page_size %} selected{% endif %}>{{ ps }} 条</option>
           {% endfor %}
         </select>
