@@ -63,7 +63,7 @@
       <span class="deck-filter-label">层级</span>
       <div class="tier-segments">
         {% for t in tier_labels %}
-        <a href="?page=1&panel_page=1{% if t.tier > 0 %}&tier={{ t.tier }}{% endif %}{% if current_sentiment %}&sentiment={{ current_sentiment }}{% endif %}{% if current_keyword %}&keyword={{ current_keyword }}{% endif %}"
+        <a href="?page=1&date_from={{ current_date_from }}&date_to={{ current_date_to }}&page_size={{ current_page_size }}{% if t.tier > 0 %}&tier={{ t.tier }}{% endif %}{% if current_sentiment %}&sentiment={{ current_sentiment }}{% endif %}{% if current_keyword %}&keyword={{ current_keyword }}{% endif %}"
            class="tier-seg{% if (t.tier == 0 and not current_tier) or (t.tier == current_tier) %} active{% endif %}">
           <span class="tier-seg-name">{{ t.label }}</span>
           <span class="tier-seg-count">{{ t.count }} 条</span>
@@ -77,7 +77,7 @@
       <span class="deck-filter-label">情绪</span>
       <div class="sentiment-toggles">
         {% for s in sentiment_toggles %}
-        <a href="?page=1&panel_page=1{% if current_tier %}&tier={{ current_tier }}{% endif %}{% if s.value != current_sentiment %}&sentiment={{ s.value }}{% endif %}{% if current_keyword %}&keyword={{ current_keyword }}{% endif %}"
+        <a href="?page=1&date_from={{ current_date_from }}&date_to={{ current_date_to }}&page_size={{ current_page_size }}{% if current_tier %}&tier={{ current_tier }}{% endif %}{% if s.value != current_sentiment %}&sentiment={{ s.value }}{% endif %}{% if current_keyword %}&keyword={{ current_keyword }}{% endif %}"
            class="sent-toggle {{ s.css_class }}{% if s.value == current_sentiment %} active{% endif %}">
           <span class="sent-dot"></span> {{ s.label }} <span class="sent-count">{{ s.count }}</span>
         </a>
@@ -91,7 +91,7 @@
       <div class="keyword-scroll-wrap">
         <div class="keyword-scroll">
           {% for kw in keyword_list %}
-          <a href="?page=1&panel_page=1{% if current_tier %}&tier={{ current_tier }}{% endif %}{% if current_sentiment %}&sentiment={{ current_sentiment }}{% endif %}{% if current_keyword != kw.tag %}&keyword={{ kw.tag }}{% endif %}"
+          <a href="?page=1&date_from={{ current_date_from }}&date_to={{ current_date_to }}&page_size={{ current_page_size }}{% if current_tier %}&tier={{ current_tier }}{% endif %}{% if current_sentiment %}&sentiment={{ current_sentiment }}{% endif %}{% if current_keyword != kw.tag %}&keyword={{ kw.tag }}{% endif %}"
              class="keyword-tag{% if kw.tag == current_keyword %} active{% endif %}">{{ kw.tag }}</a>
           {% endfor %}
         </div>
@@ -111,7 +111,7 @@
       </span>
       {% endfor %}
     </div>
-    <a href="?page=1&panel_page=1" class="active-filters-clear">清除全部</a>
+    <a href="?page=1&date_from={{ current_date_from }}&date_to={{ current_date_to }}&page_size={{ current_page_size }}" class="active-filters-clear">清除全部</a>
   </div>
   {% endif %}
 

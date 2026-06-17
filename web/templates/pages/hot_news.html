@@ -227,9 +227,12 @@ function selectPreset(preset) {
     var params = new URLSearchParams(window.location.search);
     params.delete('date_from');
     params.delete('date_to');
+    params.set('all', '1');
     params.set('page', '1');
     window.location.search = params.toString();
   } else {
+    var params = new URLSearchParams(window.location.search);
+    params.delete('all');
     var p = PRESETS[preset];
     if (p) navigateDate(p.from, p.to);
   }

@@ -156,7 +156,13 @@ def create_app(db, s3_config: dict, signals: dict = None):
         # ── Date range defaults ──
         from datetime import date as date_type
         today_str = date_type.today().isoformat()
-        if date_from is None and date_to is None:
+        show_all = request.query_params.get("all") == "1"
+        if show_all:
+            # "全部" preset — no date filter
+            date_from = None
+            date_to = None
+        elif date_from is None and date_to is None:
+            # First visit with no date params — default to today
             date_from = today_str
             date_to = today_str
 
@@ -176,7 +182,10 @@ def create_app(db, s3_config: dict, signals: dict = None):
             tier=tier_filter, keyword=keyword,
             date_from=date_from, date_to=date_to,
         )
-        keyword_list = db.get_keyword_counts(tier=tier_filter, sentiment=sentiment)
+        keyword_list = db.get_keyword_counts(
+            tier=tier_filter, sentiment=sentiment,
+            date_from=date_from, date_to=date_to,
+        )
         high_impact = db.get_high_impact_count(
             tier=tier_filter, keyword=keyword,
             date_from=date_from, date_to=date_to,

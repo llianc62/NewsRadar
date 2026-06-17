@@ -1,0 +1,1235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NewsRadar · 热点新闻 (Redesign)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600;6..72,700&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    /* ═══════════════════════════════════════════════════════════════════
+       NewsRadar Hot-News Redesign — Editorial Date-Aware Layout
+       ═══════════════════════════════════════════════════════════════════ */
+
+    /* ── Design Tokens ── */
+    :root {
+      --bg: #faf9f6;
+      --bg-warm: #f5f2ed;
+      --surface: #ffffff;
+      --surface-hover: #fefcf9;
+      --border: #e8e4dd;
+      --border-light: #f0ece5;
+      --text: #1a1816;
+      --text-secondary: #6b6560;
+      --text-muted: #9c958e;
+      --accent: #f25f0f;
+      --accent-light: #fff5f0;
+      --accent-glow: rgba(242, 95, 15, 0.12);
+      --amber: #e6a817;
+      --amber-light: #fffbed;
+      --green: #2d9a4e;
+      --green-light: #eaf7ef;
+      --red: #d93838;
+      --red-light: #fdf0f0;
+      --blue: #2b6fcf;
+      --blue-light: #eef5fd;
+      --purple: #7c3aed;
+      --purple-light: #f5f0ff;
+
+      --radius-sm: 6px;
+      --radius: 10px;
+      --radius-lg: 16px;
+      --radius-xl: 20px;
+
+      --shadow-xs: 0 1px 2px rgba(0,0,0,0.03);
+      --shadow-sm: 0 1px 3px rgba(0,0,0,0.04), 0 1px 2px rgba(0,0,0,0.03);
+      --shadow: 0 4px 12px rgba(0,0,0,0.04), 0 1px 3px rgba(0,0,0,0.03);
+      --shadow-lg: 0 12px 32px rgba(0,0,0,0.06), 0 2px 6px rgba(0,0,0,0.03);
+
+      --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+      --ease-out-back: cubic-bezier(0.34, 1.56, 0.64, 1);
+      --ease-spring: cubic-bezier(0.34, 1.3, 0.64, 1);
+      --duration-fast: 150ms;
+      --duration-normal: 300ms;
+      --duration-slow: 450ms;
+    }
+
+    /* ── Reset ── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'DM Sans', -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+    }
+    a { color: inherit; text-decoration: none; }
+
+    /* ═══════════════════════════════════════════
+       LAYOUT
+       ═══════════════════════════════════════════ */
+    .app-layout {
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 0 28px;
+    }
+
+    /* ═══════════════════════════════════════════
+       SECTION HEADER
+       ═══════════════════════════════════════════ */
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 32px 0 8px;
+    }
+    .section-header-line {
+      width: 3px; height: 28px; border-radius: 2px; background: var(--accent);
+      flex-shrink: 0;
+    }
+    .section-header h1 {
+      font-family: 'Newsreader', serif;
+      font-size: 28px; font-weight: 600;
+      color: var(--text); letter-spacing: -0.3px;
+    }
+    .section-header .today-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px; color: var(--text-muted);
+      margin-left: auto;
+      background: var(--bg-warm);
+      padding: 5px 14px; border-radius: 20px;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .today-badge .dot {
+      width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.75); }
+    }
+
+    /* ═══════════════════════════════════════════
+       CONTROL DECK
+       ═══════════════════════════════════════════ */
+    .control-deck {
+      background: var(--surface);
+      border: 1px solid var(--border-light);
+      border-radius: var(--radius-xl);
+      margin-bottom: 24px;
+      overflow: hidden;
+      box-shadow: var(--shadow-sm);
+    }
+
+    /* ── Stats Strip ── */
+    .deck-stats {
+      display: flex; align-items: center; gap: 0;
+      padding: 20px 24px;
+      border-bottom: 1px solid var(--border-light);
+    }
+    .deck-stat {
+      flex: 1; display: flex; align-items: center; gap: 12px;
+    }
+    .deck-stat + .deck-stat {
+      padding-left: 20px; border-left: 1px solid var(--border-light); margin-left: 4px;
+    }
+    .deck-stat-icon {
+      width: 40px; height: 40px; border-radius: var(--radius);
+      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .deck-stat-icon.fire { background: var(--accent-light); color: var(--accent); }
+    .deck-stat-icon.up   { background: var(--red-light); color: var(--red); }
+    .deck-stat-icon.time { background: var(--amber-light); color: var(--amber); }
+    .deck-stat-icon svg { width: 18px; height: 18px; }
+    .deck-stat-value {
+      font-family: 'Newsreader', serif; font-size: 24px; font-weight: 700;
+      color: var(--text); line-height: 1.1;
+    }
+    .deck-stat-label { font-size: 11px; color: var(--text-muted); font-weight: 500; }
+
+    /* Sentiment mini-bar */
+    .deck-sentiment {
+      flex: 1.2; display: flex; flex-direction: column; gap: 6px;
+      padding-left: 20px; border-left: 1px solid var(--border-light); margin-left: 4px;
+    }
+    .deck-sentiment-header {
+      display: flex; justify-content: space-between; align-items: baseline;
+    }
+    .deck-sentiment-label { font-size: 11px; font-weight: 600; color: var(--text-secondary); }
+    .deck-sentiment-numbers {
+      font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-muted);
+    }
+    .deck-sentiment-track {
+      height: 6px; border-radius: 3px; background: var(--border-light);
+      display: flex; overflow: hidden;
+    }
+    .ds-red    { background: var(--red); }
+    .ds-neutral { background: #d4c9b8; }
+    .ds-green  { background: var(--green); }
+
+    /* ── Filter toggle ── */
+    .deck-filter-toggle {
+      flex-shrink: 0;
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 7px 14px;
+      border: 1px solid var(--border-light);
+      border-radius: var(--radius);
+      background: var(--bg);
+      cursor: pointer;
+      font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 500;
+      color: var(--text-secondary);
+      transition: all var(--duration-fast);
+      margin-left: 16px;
+    }
+    .deck-filter-toggle:hover {
+      border-color: var(--accent); color: var(--accent); background: var(--accent-light);
+    }
+    .deck-filter-toggle-chevron {
+      display: flex; align-items: center;
+      transition: transform var(--duration-normal) var(--ease-out-expo);
+    }
+    .deck-filter-toggle-chevron svg { width: 14px; height: 14px; }
+    .control-deck.filters-collapsed .deck-filter-toggle-chevron { transform: rotate(-90deg); }
+    .control-deck.filters-collapsed .deck-stats { border-bottom-color: transparent; }
+
+    /* ── Filters collapse ── */
+    .deck-filters-collapse {
+      overflow: hidden;
+      transition: max-height var(--duration-slow) var(--ease-out-expo),
+                  opacity var(--duration-normal) var(--ease-out-expo);
+      max-height: 800px;
+      opacity: 1;
+    }
+    .control-deck.filters-collapsed .deck-filters-collapse {
+      max-height: 0;
+      opacity: 0;
+    }
+
+    /* ── Filter sections ── */
+    .deck-filters { padding: 18px 24px 14px; }
+    .deck-filter-section {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 0;
+    }
+    .deck-filter-section + .deck-filter-section {
+      border-top: 1px solid var(--border-light);
+    }
+    .deck-filter-label {
+      font-size: 11px; font-weight: 600;
+      color: var(--text-secondary);
+      min-width: 48px; flex-shrink: 0;
+    }
+
+    /* Tier segments */
+    .tier-segments { display: flex; gap: 6px; flex: 1; }
+    .tier-seg {
+      position: relative;
+      flex: 1; max-width: 140px;
+      padding: 9px 14px;
+      border-radius: var(--radius);
+      border: 1px solid var(--border-light);
+      background: var(--bg);
+      cursor: pointer;
+      text-align: center;
+      transition: all var(--duration-fast);
+      display: flex; flex-direction: column; align-items: center; gap: 2px;
+      text-decoration: none;
+    }
+    .tier-seg:hover {
+      border-color: var(--border); background: var(--surface);
+      transform: translateY(-1px); box-shadow: var(--shadow-xs);
+    }
+    .tier-seg.active {
+      border-color: var(--accent); background: var(--accent-light);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+    .tier-seg-name { font-size: 12px; font-weight: 600; color: var(--text); }
+    .tier-seg.active .tier-seg-name { color: var(--accent); }
+    .tier-seg-count {
+      font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 500;
+      color: var(--text-muted);
+    }
+    .tier-seg.active .tier-seg-count { color: var(--accent); opacity: 0.8; }
+
+    /* Sentiment toggles */
+    .sentiment-toggles { display: flex; gap: 6px; flex: 1; }
+    .sent-toggle {
+      display: flex; align-items: center; gap: 6px;
+      padding: 8px 16px; border-radius: 20px;
+      border: 1px solid var(--border-light);
+      background: var(--bg);
+      cursor: pointer;
+      font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 500;
+      color: var(--text-secondary);
+      transition: all var(--duration-fast);
+      white-space: nowrap;
+      text-decoration: none;
+    }
+    .sent-toggle:hover { border-color: var(--border); background: var(--surface); }
+    .sent-toggle .sent-dot {
+      width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0;
+    }
+    .sent-toggle.positive .sent-dot { background: var(--red); }
+    .sent-toggle.negative .sent-dot { background: var(--green); }
+    .sent-toggle.neutral .sent-dot { background: var(--text-muted); }
+    .sent-toggle.active { color: #fff; border-color: transparent; }
+    .sent-toggle.positive.active { background: var(--red); }
+    .sent-toggle.negative.active { background: var(--green); }
+    .sent-toggle.neutral.active { background: var(--text-secondary); }
+    .sent-toggle.active .sent-dot { background: #fff; }
+    .sent-toggle .sent-count {
+      font-family: 'JetBrains Mono', monospace; font-size: 10px; opacity: 0.6;
+    }
+
+    /* Keyword tags */
+    .keyword-scroll-wrap { flex: 1; min-width: 0; }
+    .keyword-scroll { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0; }
+    .keyword-tag {
+      padding: 6px 14px; border-radius: 16px;
+      border: 1px solid var(--border-light);
+      background: var(--bg);
+      cursor: pointer;
+      font-family: 'DM Sans', sans-serif; font-size: 11px; font-weight: 500;
+      color: var(--text-secondary);
+      transition: all var(--duration-fast);
+      text-decoration: none;
+    }
+    .keyword-tag:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-light); }
+    .keyword-tag.active {
+      border-color: var(--accent); background: var(--accent); color: #fff; font-weight: 600;
+    }
+
+    /* ═══════════════════════════════════════════
+       ★ DATE FILTER — NEW (v9)
+       ═══════════════════════════════════════════ */
+    .deck-filter-section.date-section {
+      border-top: 1px solid var(--border-light);
+      flex-wrap: wrap;
+    }
+
+    /* Quick presets */
+    .date-presets {
+      display: flex; gap: 4px; flex: 1; flex-wrap: wrap;
+    }
+    .date-preset {
+      padding: 7px 14px;
+      border-radius: 20px;
+      border: 1px solid var(--border-light);
+      background: var(--bg);
+      cursor: pointer;
+      font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 500;
+      color: var(--text-secondary);
+      transition: all var(--duration-fast);
+      white-space: nowrap;
+      text-decoration: none;
+    }
+    .date-preset:hover {
+      border-color: var(--accent); color: var(--accent);
+      background: var(--accent-light);
+      transform: translateY(-1px);
+    }
+    .date-preset.active {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+      font-weight: 600;
+      box-shadow: 0 2px 8px rgba(242, 95, 15, 0.25);
+    }
+    .date-preset.today-preset {
+      border-color: var(--amber);
+      background: var(--amber-light);
+      color: #8b6f15;
+      font-weight: 600;
+    }
+    .date-preset.today-preset.active {
+      background: var(--amber);
+      color: #fff;
+      border-color: var(--amber);
+    }
+    .date-preset.today-preset .today-dot {
+      display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+      background: var(--amber); margin-right: 2px; vertical-align: middle;
+    }
+    .date-preset.today-preset.active .today-dot { background: #fff; }
+
+    /* Custom range */
+    .date-custom {
+      display: flex; align-items: center; gap: 8px;
+      margin-left: 12px;
+      padding-left: 12px;
+      border-left: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+    .date-custom-label {
+      font-size: 10px; font-weight: 600; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .date-input-wrap {
+      position: relative;
+    }
+    .date-input {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px; font-weight: 500;
+      padding: 7px 12px;
+      border: 1px solid var(--border-light);
+      border-radius: var(--radius);
+      background: var(--bg);
+      color: var(--text);
+      width: 138px;
+      transition: all var(--duration-fast);
+      outline: none;
+      cursor: pointer;
+    }
+    .date-input:hover { border-color: var(--border); }
+    .date-input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-glow);
+    }
+    .date-input::-webkit-calendar-picker-indicator {
+      cursor: pointer; opacity: 0.5; filter: invert(0.5);
+    }
+    .date-separator {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px; color: var(--text-muted);
+      font-weight: 500;
+    }
+    .date-apply-btn {
+      padding: 7px 16px;
+      border-radius: var(--radius);
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+      font-family: 'DM Sans', sans-serif; font-size: 12px; font-weight: 600;
+      transition: all var(--duration-fast);
+      white-space: nowrap;
+    }
+    .date-apply-btn:hover {
+      background: #e0550a;
+      box-shadow: 0 2px 8px rgba(242, 95, 15, 0.3);
+    }
+    .date-clear-btn {
+      padding: 7px 12px;
+      border-radius: var(--radius);
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-family: 'DM Sans', sans-serif; font-size: 11px; font-weight: 500;
+      transition: all var(--duration-fast);
+      white-space: nowrap;
+    }
+    .date-clear-btn:hover { color: var(--red); background: var(--red-light); }
+
+    /* Active date indicator */
+    .date-active-range {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 500;
+      color: var(--accent); background: var(--accent-light);
+      padding: 4px 12px; border-radius: 14px;
+      margin-left: 8px;
+    }
+    .date-active-range .range-icon {
+      width: 14px; height: 14px;
+    }
+
+    /* ── Active filter bar ── */
+    .deck-active-filters {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 24px;
+      border-top: 1px solid var(--border-light);
+      background: var(--bg-warm);
+      min-height: 44px;
+    }
+    .active-filters-label {
+      font-size: 10px; font-weight: 600; color: var(--text-muted); flex-shrink: 0;
+    }
+    .active-filter-chips { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; }
+    .active-chip {
+      display: flex; align-items: center; gap: 5px;
+      padding: 3px 10px 3px 12px;
+      border-radius: 14px;
+      font-size: 11px; font-weight: 500;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      animation: chipIn 0.3s var(--ease-out-back);
+    }
+    @keyframes chipIn {
+      from { opacity: 0; transform: scale(0.8); }
+      to { opacity: 1; transform: scale(1); }
+    }
+    .active-chip .chip-remove {
+      width: 16px; height: 16px; border-radius: 50%;
+      border: none; background: var(--border-light);
+      color: var(--text-muted); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 10px; line-height: 1; transition: all var(--duration-fast);
+      text-decoration: none;
+    }
+    .active-chip .chip-remove:hover { background: var(--accent); color: #fff; }
+    .active-filters-clear {
+      font-size: 11px; font-weight: 500; color: var(--text-muted);
+      cursor: pointer; border: none; background: none;
+      padding: 4px 8px; border-radius: 6px;
+      transition: all var(--duration-fast);
+      font-family: inherit; flex-shrink: 0; text-decoration: none;
+    }
+    .active-filters-clear:hover { color: var(--red); background: var(--red-light); }
+
+    /* ═══════════════════════════════════════════
+       RESULTS BAR
+       ═══════════════════════════════════════════ */
+    .results-bar {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 20px;
+    }
+    .results-count {
+      font-family: 'Newsreader', serif;
+      font-size: 16px; font-weight: 500; color: var(--text-secondary);
+    }
+    .results-count strong {
+      color: var(--text); font-weight: 700;
+    }
+    .results-controls {
+      display: flex; align-items: center; gap: 10px;
+    }
+    .page-size-select {
+      font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 500;
+      padding: 6px 30px 6px 14px;
+      border: 1px solid var(--border); border-radius: 20px;
+      background: var(--surface); color: var(--text); cursor: pointer;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%239c958e' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 12px center;
+      transition: border-color var(--duration-fast);
+    }
+    .page-size-select:hover { border-color: var(--accent); }
+    .results-controls label {
+      font-size: 11px; color: var(--text-muted); font-weight: 500;
+    }
+
+    /* ═══════════════════════════════════════════
+       MASONRY CARDS
+       ═══════════════════════════════════════════ */
+    .masonry { column-count: 3; column-gap: 16px; }
+    @media (max-width: 1400px) { .masonry { column-count: 2; } }
+    @media (max-width: 900px) { .masonry { column-count: 1; } }
+    .masonry-card {
+      break-inside: avoid; margin-bottom: 16px;
+      background: var(--surface); border: 1px solid var(--border-light);
+      border-radius: var(--radius-lg); overflow: hidden; cursor: pointer;
+      transition: transform var(--duration-normal) var(--ease-out-expo),
+                  box-shadow var(--duration-normal);
+      position: relative;
+    }
+    .masonry-card:hover {
+      transform: translateY(-3px); box-shadow: var(--shadow-lg);
+    }
+    .masonry-card::after {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+      background: linear-gradient(90deg, var(--accent), var(--amber));
+      opacity: 0; transition: opacity var(--duration-normal);
+    }
+    .masonry-card:hover::after { opacity: 1; }
+    .masonry-card.new-card {
+      animation: cardIn 0.5s var(--ease-out-expo) forwards;
+      opacity: 0;
+    }
+    @keyframes cardIn {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .card-body { padding: 18px 20px 16px; }
+    .card-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+    .card-source {
+      font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+      color: var(--accent); background: var(--accent-light); padding: 3px 10px; border-radius: 4px;
+    }
+    .card-source.t2 { color: #8b6f15; background: var(--amber-light); }
+    .card-source.t3 { color: var(--blue); background: var(--blue-light); }
+    .card-heat {
+      margin-left: auto; display: flex; align-items: center; gap: 4px;
+      font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600; color: var(--accent);
+    }
+    .card-title-link {
+      font-family: 'Newsreader', serif; font-size: 18px; font-weight: 600;
+      color: var(--text); line-height: 1.35; margin-bottom: 10px; letter-spacing: -0.2px;
+      display: block; text-decoration: none;
+    }
+    .card-title-link:hover { color: var(--accent); }
+    .card-summary {
+      font-size: 13px; line-height: 1.65; color: var(--text-secondary); margin-bottom: 14px;
+    }
+    .card-footer {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+      padding-top: 12px; border-top: 1px solid var(--border-light);
+    }
+    .card-tag { font-size: 10px; font-weight: 600; padding: 3px 10px; border-radius: 12px; letter-spacing: 0.3px; }
+    .card-tag.positive { background: var(--red-light); color: var(--red); }
+    .card-tag.negative { background: var(--green-light); color: var(--green); }
+    .card-tag.neutral { background: var(--bg-warm); color: var(--text-muted); }
+    .card-tag.keyword { background: var(--purple-light); color: var(--purple); }
+    .card-time {
+      margin-left: auto; font-size: 11px; color: var(--text-muted);
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* ═══════════════════════════════════════════
+       EMPTY STATE
+       ═══════════════════════════════════════════ */
+    .empty-state {
+      text-align: center; padding: 80px 20px;
+      color: var(--text-muted);
+    }
+    .empty-state svg { width: 64px; height: 64px; margin-bottom: 16px; opacity: 0.3; }
+    .empty-state h3 {
+      font-family: 'Newsreader', serif; font-size: 20px; font-weight: 500;
+      color: var(--text-secondary); margin-bottom: 8px;
+    }
+    .empty-state p { font-size: 13px; }
+
+    /* ═══════════════════════════════════════════
+       PAGINATION
+       ═══════════════════════════════════════════ */
+    .pagination-bar {
+      display: flex; align-items: center; justify-content: center; gap: 4px;
+      padding: 32px 0 48px;
+    }
+    .pg-btn {
+      width: 36px; height: 36px;
+      display: flex; align-items: center; justify-content: center;
+      border: 1px solid transparent; border-radius: 10px;
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 13px; font-weight: 500; cursor: pointer;
+      transition: all var(--duration-fast);
+      font-family: 'JetBrains Mono', monospace;
+      text-decoration: none;
+    }
+    .pg-btn:hover { background: var(--surface); border-color: var(--border); color: var(--accent); }
+    .pg-btn.active {
+      background: var(--accent); color: #fff; border-color: var(--accent);
+      box-shadow: 0 2px 8px rgba(242, 95, 15, 0.2);
+    }
+    .pg-btn.arr { font-size: 15px; }
+    .pg-btn.disabled {
+      opacity: 0.3; pointer-events: none; cursor: default;
+    }
+    .pg-ellipsis {
+      width: 36px; height: 36px; display: flex; align-items: center; justify-content: center;
+      color: var(--text-muted); font-size: 13px;
+    }
+
+    /* ═══════════════════════════════════════════
+       THEME SWITCHER (DEMO ONLY)
+       ═══════════════════════════════════════════ */
+    .demo-badge {
+      position: fixed; top: 16px; right: 16px;
+      background: var(--accent); color: #fff;
+      font-family: 'JetBrains Mono', monospace; font-size: 10px; font-weight: 600;
+      padding: 6px 14px; border-radius: 20px;
+      z-index: 1000;
+      letter-spacing: 0.5px;
+      box-shadow: 0 2px 12px rgba(242, 95, 15, 0.3);
+    }
+  </style>
+</head>
+<body>
+
+<div class="demo-badge">REDESIGN PREVIEW</div>
+
+<div class="app-layout">
+
+  <!-- ═══════════════ SECTION HEADER ═══════════════ -->
+  <div class="section-header">
+    <div class="section-header-line"></div>
+    <h1>热点新闻</h1>
+    <span class="today-badge">
+      <span class="dot"></span> 2026-06-17
+    </span>
+  </div>
+
+  <!-- ═══════════════ CONTROL DECK ═══════════════ -->
+  <div class="control-deck filters-collapsed" id="control-deck">
+
+    <!-- Stats Strip -->
+    <div class="deck-stats">
+      <div class="deck-stat">
+        <div class="deck-stat-icon fire">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 21c3.5-3.5 5-7 5-10a5 5 0 1 0-10 0c0 3 1.5 6.5 5 10z"/></svg>
+        </div>
+        <div>
+          <div class="deck-stat-value">487</div>
+          <div class="deck-stat-label">今日热点</div>
+        </div>
+      </div>
+      <div class="deck-stat">
+        <div class="deck-stat-icon up">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 18l5-6 4 4 9-10"/><path d="M16 6h5v5"/></svg>
+        </div>
+        <div>
+          <div class="deck-stat-value">142</div>
+          <div class="deck-stat-label">利好信号</div>
+        </div>
+      </div>
+      <div class="deck-stat">
+        <div class="deck-stat-icon time">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+        </div>
+        <div>
+          <div class="deck-stat-value">89</div>
+          <div class="deck-stat-label">即时影响</div>
+        </div>
+      </div>
+      <div class="deck-sentiment">
+        <div class="deck-sentiment-header">
+          <span class="deck-sentiment-label">情绪分布</span>
+          <span class="deck-sentiment-numbers">利空 98 · 中性 247 · 利好 142</span>
+        </div>
+        <div class="deck-sentiment-track">
+          <div class="ds-red" style="width:20.1%"></div>
+          <div class="ds-neutral" style="width:50.7%"></div>
+          <div class="ds-green" style="width:29.2%"></div>
+        </div>
+      </div>
+
+      <button class="deck-filter-toggle" id="deck-filter-toggle-btn"
+              onclick="toggleDeckFilters()">
+        <span class="deck-filter-toggle-label">筛选</span>
+        <span class="deck-filter-toggle-chevron">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6l5 4 5-4"/></svg>
+        </span>
+      </button>
+    </div>
+
+    <!-- Filters Collapse -->
+    <div class="deck-filters-collapse">
+
+      <div class="deck-filters">
+
+        <!-- Tier -->
+        <div class="deck-filter-section">
+          <span class="deck-filter-label">层级</span>
+          <div class="tier-segments">
+            <a href="#" class="tier-seg active">
+              <span class="tier-seg-name">全部</span>
+              <span class="tier-seg-count">12,847 条</span>
+            </a>
+            <a href="#" class="tier-seg">
+              <span class="tier-seg-name">T1·核心</span>
+              <span class="tier-seg-count">1,204 条</span>
+            </a>
+            <a href="#" class="tier-seg">
+              <span class="tier-seg-name">T2·重要</span>
+              <span class="tier-seg-count">4,892 条</span>
+            </a>
+            <a href="#" class="tier-seg">
+              <span class="tier-seg-name">T3·关注</span>
+              <span class="tier-seg-count">3,911 条</span>
+            </a>
+            <a href="#" class="tier-seg">
+              <span class="tier-seg-name">T4·参考</span>
+              <span class="tier-seg-count">2,840 条</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Sentiment -->
+        <div class="deck-filter-section">
+          <span class="deck-filter-label">情绪</span>
+          <div class="sentiment-toggles">
+            <a href="#" class="sent-toggle positive">
+              <span class="sent-dot"></span> 利好 <span class="sent-count">142</span>
+            </a>
+            <a href="#" class="sent-toggle negative">
+              <span class="sent-dot"></span> 利空 <span class="sent-count">98</span>
+            </a>
+            <a href="#" class="sent-toggle neutral">
+              <span class="sent-dot"></span> 中性 <span class="sent-count">247</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Keywords -->
+        <div class="deck-filter-section">
+          <span class="deck-filter-label">主题</span>
+          <div class="keyword-scroll-wrap">
+            <div class="keyword-scroll">
+              <a href="#" class="keyword-tag">AI</a>
+              <a href="#" class="keyword-tag active">芯片</a>
+              <a href="#" class="keyword-tag">新能源</a>
+              <a href="#" class="keyword-tag">美联储</a>
+              <a href="#" class="keyword-tag">港股</a>
+              <a href="#" class="keyword-tag">房地产</a>
+              <a href="#" class="keyword-tag">黄金</a>
+              <a href="#" class="keyword-tag">比特币</a>
+              <a href="#" class="keyword-tag">特斯拉</a>
+            </div>
+          </div>
+        </div>
+
+        <!-- ★ NEW: Date Filter ★ -->
+        <div class="deck-filter-section date-section" id="date-filter-section">
+          <span class="deck-filter-label">时间</span>
+
+          <!-- Quick presets -->
+          <div class="date-presets" id="date-presets">
+            <a href="#" class="date-preset today-preset active" data-preset="today">
+              <span class="today-dot"></span> 今日
+            </a>
+            <a href="#" class="date-preset" data-preset="3days">近3天</a>
+            <a href="#" class="date-preset" data-preset="week">近一周</a>
+            <a href="#" class="date-preset" data-preset="month">近一月</a>
+            <a href="#" class="date-preset" data-preset="3months">近三月</a>
+            <a href="#" class="date-preset" data-preset="year">近一年</a>
+            <a href="#" class="date-preset" data-preset="thisYear">今年</a>
+          </div>
+
+          <!-- Custom date range -->
+          <div class="date-custom" id="date-custom">
+            <span class="date-custom-label">自定义</span>
+            <div class="date-input-wrap">
+              <input type="date" class="date-input" id="date-from" value="2026-06-17" title="开始日期">
+            </div>
+            <span class="date-separator">→</span>
+            <div class="date-input-wrap">
+              <input type="date" class="date-input" id="date-to" value="2026-06-17" title="结束日期">
+            </div>
+            <button class="date-apply-btn" onclick="applyCustomDate()">应用</button>
+            <button class="date-clear-btn" onclick="clearCustomDate()">重置</button>
+          </div>
+
+          <!-- Active range display -->
+          <span class="date-active-range" id="date-active-range" style="display:none;">
+            <svg class="range-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="18" rx="3"/><path d="M3 10h18"/><path d="M8 2v4"/><path d="M16 2v4"/></svg>
+            <span id="date-range-text"></span>
+          </span>
+        </div>
+
+      </div><!-- /deck-filters -->
+
+      <!-- Active Filters -->
+      <div class="deck-active-filters">
+        <span class="active-filters-label">当前筛选</span>
+        <div class="active-filter-chips" id="active-filter-chips">
+          <span class="active-chip">
+            今日
+            <a href="#" class="chip-remove" onclick="return false;">&times;</a>
+          </span>
+        </div>
+        <a href="#" class="active-filters-clear">清除全部</a>
+      </div>
+
+    </div><!-- /deck-filters-collapse -->
+
+  </div><!-- /control-deck -->
+
+  <!-- ═══════════════ RESULTS BAR ═══════════════ -->
+  <div class="results-bar">
+    <div class="results-count">
+      共 <strong>487</strong> 条新闻
+    </div>
+    <div class="results-controls">
+      <label for="page-size">每页显示</label>
+      <select class="page-size-select" id="page-size" onchange="changePageSize()">
+        <option value="20">20 条</option>
+        <option value="30">30 条</option>
+        <option value="50" selected>50 条</option>
+        <option value="100">100 条</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- ═══════════════ MASONRY CARDS ═══════════════ -->
+  <div class="masonry" id="masonry-grid">
+    <!-- Cards rendered by JS -->
+  </div>
+
+  <!-- ═══════════════ EMPTY STATE ═══════════════ -->
+  <div class="empty-state" id="empty-state" style="display:none;">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round">
+      <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+    </svg>
+    <h3>该时间范围内暂无新闻</h3>
+    <p>尝试调整日期筛选条件或切换其他预设范围</p>
+  </div>
+
+  <!-- ═══════════════ PAGINATION ═══════════════ -->
+  <div class="pagination-bar" id="pagination-bar">
+    <!-- Rendered by JS -->
+  </div>
+
+</div><!-- /app-layout -->
+
+<script>
+// ═══════════════════════════════════════════════
+// Mock data — simulate backend response
+// ═══════════════════════════════════════════════
+const SOURCES = ['新华社', '财联社', '华尔街见闻', '36氪', '澎湃新闻', '界面新闻', '每日经济新闻', '第一财经', '证券时报'];
+const KEYWORDS = ['AI', '芯片', '新能源', '美联储', '港股', '房地产', '黄金', '比特币', '特斯拉', 'A股', 'IPO', '降息'];
+const SENTIMENTS = [
+  { label: '利好', cls: 'positive' },
+  { label: '利空', cls: 'negative' },
+  { label: '中性', cls: 'neutral' },
+];
+const TIERS = [
+  { tier: 1, cls: '', color: '#f25f0f' },
+  { tier: 2, cls: 't2', color: '#8b6f15' },
+  { tier: 3, cls: 't3', color: '#2b6fcf' },
+  { tier: 4, cls: '', color: '#9c958e' },
+];
+
+function randomPick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+function randInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
+
+const NEWS_TITLES = [
+  '央行宣布降准0.5个百分点，释放长期流动性约1万亿元',
+  '国务院常务会议：研究推动经济持续回升向好的一批政策措施',
+  '美国CPI数据超预期回落，市场押注美联储9月降息',
+  '华为发布全新AI芯片，性能较上一代提升300%',
+  '特斯拉FSD在中国获批测试许可，自动驾驶板块大涨',
+  '二手房成交量连续3月回升，一线城市房价企稳信号明显',
+  '国家数据局挂牌后首次发布数据要素三年行动计划',
+  'OpenAI发布GPT-5，推理能力大幅超越前代',
+  'A股三大指数集体收涨，北向资金净流入超百亿',
+  '国际金价突破2500美元/盎司，创历史新高',
+  '工信部：加快布局人形机器人、元宇宙等未来产业',
+  '美联储维持利率不变，点阵图显示年内或降息两次',
+  '比亚迪第1000万辆新能源汽车下线，海外市场加速扩张',
+  '证监会发布减持新规，严格规范大股东减持行为',
+  '英伟达市值突破5万亿美元，AI芯片需求持续旺盛',
+];
+
+function generateCard(index) {
+  const title = randomPick(NEWS_TITLES);
+  const source = randomPick(SOURCES);
+  const sentiment = randomPick(SENTIMENTS);
+  const tierInfo = randomPick(TIERS);
+  const kws = [];
+  const kwCount = randInt(1, 3);
+  for (let i = 0; i < kwCount; i++) {
+    const kw = randomPick(KEYWORDS);
+    if (!kws.includes(kw)) kws.push(kw);
+  }
+  const heat = randInt(50, 999);
+  const hoursAgo = randInt(0, 23);
+  const minsAgo = randInt(0, 59);
+  const timeStr = hoursAgo === 0 ? `${minsAgo}分钟前` : `${hoursAgo}小时前`;
+
+  const summaries = [
+    '今日市场迎来多重利好，政策面与基本面共振推动指数上行。分析人士认为，当前市场估值处于历史低位，后续仍有反弹空间。',
+    '行业格局正在发生深刻变化，新技术的突破性进展为产业链上下游带来新的增长机遇，多家券商上调行业评级。',
+    '最新数据显示经济复苏势头强劲，多项先行指标超出市场预期。机构普遍认为下半年经济增速有望进一步回升。',
+    '国际形势出现积极变化，外部压力有所缓解。国内市场情绪明显回暖，投资者风险偏好逐步修复。',
+  ];
+
+  return {
+    id: index + 1,
+    source,
+    sourceCls: tierInfo.cls,
+    heat,
+    title,
+    summary: randomPick(summaries),
+    sentiment: sentiment.label,
+    sentimentCls: sentiment.cls,
+    keywords: kws,
+    time: timeStr,
+    tier: tierInfo.tier,
+  };
+}
+
+// ═══════════════════════════════════════════════
+// State
+// ═══════════════════════════════════════════════
+let currentPage = 1;
+let pageSize = 50;
+let currentPreset = 'today';
+let customFrom = null;
+let customTo = null;
+const TOTAL_ITEMS = 487;
+
+function getItemCount() {
+  // Simulate different counts per preset
+  const counts = {
+    today: 487,
+    '3days': 1204,
+    week: 2847,
+    month: 6892,
+    '3months': 9847,
+    year: 12480,
+    thisYear: 10234,
+    custom: 892,
+  };
+  return counts[currentPreset] || TOTAL_ITEMS;
+}
+
+// ═══════════════════════════════════════════════
+// Render cards
+// ═══════════════════════════════════════════════
+function renderCards() {
+  const grid = document.getElementById('masonry-grid');
+  const empty = document.getElementById('empty-state');
+  const total = getItemCount();
+  const totalPages = Math.ceil(total / pageSize);
+  const start = (currentPage - 1) * pageSize;
+  const count = Math.min(pageSize, total - start);
+
+  if (total === 0) {
+    grid.innerHTML = '';
+    empty.style.display = 'block';
+    document.getElementById('pagination-bar').innerHTML = '';
+    document.querySelector('.results-count').innerHTML = '共 <strong>0</strong> 条新闻';
+    return;
+  }
+
+  empty.style.display = 'none';
+
+  let html = '';
+  for (let i = 0; i < count; i++) {
+    const card = generateCard(start + i);
+    const kwTags = card.keywords.map(k => `<span class="card-tag keyword">${k}</span>`).join('');
+    const delay = (i * 0.03).toFixed(2);
+    html += `
+      <div class="masonry-card new-card" style="animation-delay:${delay}s">
+        <div class="card-body">
+          <div class="card-meta">
+            <span class="card-source${card.sourceCls ? ' ' + card.sourceCls : ''}">${card.source}</span>
+            <span class="card-heat">🔥 ${card.heat}</span>
+          </div>
+          <a href="/news/${card.id}" class="card-title-link">${card.title}</a>
+          <div class="card-summary">${card.summary}</div>
+          <div class="card-footer">
+            <span class="card-tag ${card.sentimentCls}">${card.sentiment}</span>
+            ${kwTags}
+            <span class="card-time">${card.time}</span>
+          </div>
+        </div>
+      </div>`;
+  }
+  grid.innerHTML = html;
+
+  // Update results count
+  document.querySelector('.results-count').innerHTML = `共 <strong>${total}</strong> 条新闻`;
+
+  // Render pagination
+  renderPagination(total, totalPages);
+}
+
+// ═══════════════════════════════════════════════
+// Render pagination
+// ═══════════════════════════════════════════════
+function renderPagination(total, totalPages) {
+  const bar = document.getElementById('pagination-bar');
+  if (totalPages <= 1) {
+    bar.innerHTML = '';
+    return;
+  }
+
+  let html = '';
+
+  // Prev
+  if (currentPage > 1) {
+    html += `<a href="#" class="pg-btn arr" onclick="goPage(${currentPage - 1});return false;">‹</a>`;
+  } else {
+    html += `<span class="pg-btn arr disabled">‹</span>`;
+  }
+
+  // Page numbers
+  const pages = buildPageNumbers(currentPage, totalPages);
+  for (const p of pages) {
+    if (p === '...') {
+      html += `<span class="pg-ellipsis">…</span>`;
+    } else if (p === currentPage) {
+      html += `<span class="pg-btn active">${p}</span>`;
+    } else {
+      html += `<a href="#" class="pg-btn" onclick="goPage(${p});return false;">${p}</a>`;
+    }
+  }
+
+  // Next
+  if (currentPage < totalPages) {
+    html += `<a href="#" class="pg-btn arr" onclick="goPage(${currentPage + 1});return false;">›</a>`;
+  } else {
+    html += `<span class="pg-btn arr disabled">›</span>`;
+  }
+
+  bar.innerHTML = html;
+}
+
+function buildPageNumbers(current, total) {
+  if (total <= 7) {
+    return Array.from({ length: total }, (_, i) => i + 1);
+  }
+  const pages = [1];
+  if (current > 3) pages.push('...');
+  const start = Math.max(2, current - 1);
+  const end = Math.min(total - 1, current + 1);
+  for (let i = start; i <= end; i++) pages.push(i);
+  if (current < total - 2) pages.push('...');
+  pages.push(total);
+  return pages;
+}
+
+function goPage(page) {
+  currentPage = page;
+  document.querySelector('.content-cards')?.scrollIntoView?.({ behavior: 'smooth' });
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  renderCards();
+}
+
+function changePageSize() {
+  pageSize = parseInt(document.getElementById('page-size').value);
+  currentPage = 1;
+  renderCards();
+}
+
+// ═══════════════════════════════════════════════
+// Date filter logic
+// ═══════════════════════════════════════════════
+function setPreset(preset) {
+  currentPreset = preset;
+  customFrom = null;
+  customTo = null;
+
+  // Update preset buttons
+  document.querySelectorAll('.date-preset').forEach(el => {
+    el.classList.remove('active');
+    if (el.dataset.preset === preset) el.classList.add('active');
+  });
+
+  // Update custom inputs to match
+  const today = '2026-06-17';
+  const ranges = {
+    today: [today, today],
+    '3days': ['2026-06-15', today],
+    week: ['2026-06-11', today],
+    month: ['2026-05-17', today],
+    '3months': ['2026-03-17', today],
+    year: ['2025-06-17', today],
+    thisYear: ['2026-01-01', today],
+  };
+
+  if (ranges[preset]) {
+    document.getElementById('date-from').value = ranges[preset][0];
+    document.getElementById('date-to').value = ranges[preset][1];
+  }
+
+  // Hide custom active range
+  document.getElementById('date-active-range').style.display = 'none';
+
+  // Update active filter chips
+  updateActiveChips();
+
+  // Reload
+  currentPage = 1;
+  renderCards();
+}
+
+function applyCustomDate() {
+  const from = document.getElementById('date-from').value;
+  const to = document.getElementById('date-to').value;
+
+  if (!from || !to) return;
+  if (from > to) {
+    alert('开始日期不能晚于结束日期');
+    return;
+  }
+
+  currentPreset = 'custom';
+  customFrom = from;
+  customTo = to;
+
+  // Deselect all presets
+  document.querySelectorAll('.date-preset').forEach(el => el.classList.remove('active'));
+
+  // Show active range
+  const rangeEl = document.getElementById('date-active-range');
+  const textEl = document.getElementById('date-range-text');
+  if (from === to) {
+    textEl.textContent = from;
+  } else {
+    textEl.textContent = `${from} → ${to}`;
+  }
+  rangeEl.style.display = 'inline-flex';
+
+  updateActiveChips();
+  currentPage = 1;
+  renderCards();
+}
+
+function clearCustomDate() {
+  setPreset('today');
+}
+
+function updateActiveChips() {
+  const chipsEl = document.getElementById('active-filter-chips');
+  const presetLabels = {
+    today: '今日',
+    '3days': '近3天',
+    week: '近一周',
+    month: '近一月',
+    '3months': '近三月',
+    year: '近一年',
+    thisYear: '今年',
+  };
+
+  let label;
+  if (currentPreset === 'custom' && customFrom && customTo) {
+    label = customFrom === customTo ? customFrom : `${customFrom} → ${customTo}`;
+  } else {
+    label = presetLabels[currentPreset] || '今日';
+  }
+
+  chipsEl.innerHTML = `
+    <span class="active-chip">
+      ${label}
+      <a href="#" class="chip-remove" onclick="clearCustomDate();return false;">&times;</a>
+    </span>`;
+}
+
+// ═══════════════════════════════════════════════
+// Filter toggle
+// ═══════════════════════════════════════════════
+(function() {
+  const KEY = 'newsradar-redesign.filters-collapsed';
+  const deck = document.getElementById('control-deck');
+
+  function apply(state) {
+    if (state) {
+      deck.classList.add('filters-collapsed');
+    } else {
+      deck.classList.remove('filters-collapsed');
+    }
+  }
+
+  var collapsed = localStorage.getItem(KEY) !== 'false';
+  apply(collapsed);
+
+  window.toggleDeckFilters = function() {
+    collapsed = !deck.classList.contains('filters-collapsed');
+    localStorage.setItem(KEY, collapsed);
+    apply(collapsed);
+  };
+})();
+
+// ═══════════════════════════════════════════════
+// Preset click handlers
+// ═══════════════════════════════════════════════
+document.getElementById('date-presets').addEventListener('click', function(e) {
+  const preset = e.target.closest('.date-preset');
+  if (!preset) return;
+  e.preventDefault();
+  setPreset(preset.dataset.preset);
+});
+
+// ═══════════════════════════════════════════════
+// Initial render
+// ═══════════════════════════════════════════════
+renderCards();
+</script>
+
+</body>
+</html>
