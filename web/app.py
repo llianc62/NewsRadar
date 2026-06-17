@@ -1,5 +1,6 @@
 """NewsRadar Web Frontend — FastAPI + Jinja2 SSR."""
 
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -305,6 +306,9 @@ def create_app(db, s3_config: dict, signals: dict = None):
         article = db.get_news_by_id(article_id)
         if article is None:
             return HTMLResponse("<h1>404 Not Found</h1>", status_code=404)
+        # 正文中的 H1 标题与页面 title 重复，在渲染前移除
+        if article.get("content"):
+            article["content"] = re.sub(r"^# .+?\n\n?", "", article["content"], count=1)
         html = render_template("pages/news_detail.html", active_page="hot-news", article=article)
         return HTMLResponse(html)
 

@@ -6,7 +6,7 @@
 <div class="page-simple">
 
 <nav style="margin-bottom: 16px;">
-  <a href="/hot-news" style="font-size: 13px; color: var(--text-muted); display: flex; align-items: center; gap: 4px; width: fit-content;">
+  <a href="/hot-news" onclick="goBack(event)" style="font-size: 13px; color: var(--text-muted); display: flex; align-items: center; gap: 4px; width: fit-content;">
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
     返回热点新闻
   </a>
@@ -19,7 +19,7 @@
     <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px; font-size: 13px; color: var(--text-muted);">
       <span style="font-weight: 600; color: var(--accent);">{{ article.source_name }}</span>
       <span>·</span>
-      <span>{{ article.published_at or '' }}</span>
+      <span>{{ article.published_at.strftime('%Y-%m-%d') if article.published_at else '' }}</span>
       {% if article.source_type == 'rss' %}
       <span style="font-size: 10px; padding: 2px 8px; border-radius: 8px; background: var(--blue-light); color: var(--blue);">RSS</span>
       {% endif %}
@@ -194,4 +194,16 @@
 
 </div>
 </div>
+
+<script>
+function goBack(e) {
+  e.preventDefault();
+  if (document.referrer && document.referrer.includes('/hot-news')) {
+    history.back();
+  } else {
+    window.location.href = '/hot-news';
+  }
+}
+</script>
+
 {% endblock %}

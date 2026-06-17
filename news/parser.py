@@ -448,11 +448,23 @@ class HtmlParser:
         end_found = False
         for i in range(len(blocks) - 1, -1, -1):
             b = blocks[i]
+            # Substantial content paragraph — reliable end signal.
             if b.text_len >= 50 and b.link_density < 0.3:
                 end = i
                 end_found = True
                 break
-            if b.tag in ("h1", "h2", "h3", "h4") and b.text_len >= 4:
+            # h4/h5/h6 are almost always footer headings
+            # ("扫码下载", "关于我们"), not article content — skip them.
+            if b.tag in ("h4", "h5", "h6"):
+                continue
+            # Article section heading — likely still content.
+            if b.tag in ("h1", "h2", "h3") and b.text_len >= 4:
+                end = i
+                end_found = True
+                break
+            # Short body paragraph (but not a copyright line like
+            # "© 2024 ..." which is typically < 30 chars).
+            if b.tag == "p" and b.text_len >= 30 and b.link_density < 0.3:
                 end = i
                 end_found = True
                 break

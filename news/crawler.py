@@ -677,7 +677,7 @@ class Crawler:
             basename = key.rsplit("/", 1)[-1]  # "2026-06-10.db"
             date_str = basename.replace(".db", "")
             try:
-                key_dt = datetime.strptime(date_str, "%Y-%m-%d")
+                key_dt = datetime.strptime(date_str, "%Y-%m-%d").date()
                 if since_dt is None or key_dt >= since_dt:
                     db_keys.append(key)
             except ValueError:
