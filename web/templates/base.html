@@ -70,6 +70,11 @@
     return div.innerHTML;
   }
 
+  function escapeAttr(str) {
+    return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
   // ── Badge ──
   function updateBadge(count) {
     var badge = document.getElementById('bell-badge');
@@ -172,7 +177,7 @@
       var statusText = n.status === 'completed' ? '已完成' : n.status === 'failed' ? '失败' : '抓取中';
 
       html +=
-        '<div class="notify-item" data-id="' + n.id + '" onclick="window.location.href=\'/news/' + n.article_id + '\'">' +
+        '<div class="notify-item" data-id="' + escapeAttr(n.id) + '" onclick="window.location.href=\'/news/' + escapeAttr(n.article_id) + '\'">' +
           '<span class="notify-item-dot ' + dotClass + '"></span>' +
           '<div class="notify-item-body">' +
             '<div class="notify-item-title">' + escapeHtml(n.title) + '</div>' +
