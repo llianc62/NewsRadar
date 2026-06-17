@@ -20,7 +20,7 @@ from lxml.etree import ParseError
 # Block — extracted block-level content node
 # ═══════════════════════════════════════════════════════════════════
 
-BLOCK_TAGS = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "ul", "ol", "pre"}
+BLOCK_TAGS = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "ul", "ol", "pre", "figure"}
 
 
 @dataclass
@@ -355,7 +355,11 @@ class HtmlParser:
             text_content = el.text_content()
             text = " ".join(text_content.split())
             text_len = len(text)
-            if text_len == 0:
+
+            # Keep blocks that contain images even if they have no text
+            # (e.g. <figure><img src="..."></figure> or <p><img src="..."></p>)
+            has_image = el.find(".//img") is not None
+            if text_len == 0 and not has_image:
                 continue
 
             # calculate link density: ratio of link text to total text

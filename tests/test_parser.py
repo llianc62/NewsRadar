@@ -113,3 +113,26 @@ class TestTrimNoise:
         result = parser._trim_noise(html)
         assert result is not None
         assert "链接1" not in result
+
+    def test_preserves_figure_with_image(self):
+        """<figure> containing an <img> should be preserved in the output."""
+        body = "<p>" + "正文内容。" * 20 + "</p>"
+        body += '<figure><img src="https://example.com/photo.jpg" alt="配图"></figure>'
+        body += "<p>" + "更多内容。" * 20 + "</p>"
+        html = _make_html(body)
+        parser = HtmlParser()
+        result = parser._trim_noise(html)
+        assert result is not None
+        assert "photo.jpg" in result
+        assert "<figure>" in result
+
+    def test_preserves_image_inside_paragraph(self):
+        """<p> containing only an <img> should not be discarded as empty."""
+        body = "<p>" + "正文内容。" * 20 + "</p>"
+        body += '<p><img src="https://example.com/chart.png" alt="图表"></p>'
+        body += "<p>" + "更多内容。" * 20 + "</p>"
+        html = _make_html(body)
+        parser = HtmlParser()
+        result = parser._trim_noise(html)
+        assert result is not None
+        assert "chart.png" in result
