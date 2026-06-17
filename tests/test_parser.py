@@ -84,10 +84,20 @@ class TestTrimNoise:
         result = parser._trim_noise("not even html")
         assert result is None
 
-    def test_body_with_heading_kept(self):
-        """Body with an h2 heading should be kept — heading is a start signal."""
+    def test_body_with_h1_heading_kept(self):
+        """Body with an h1 heading should be kept — h1 has highest priority."""
         head = "<p>短导航</p>"
-        body = "<h2>重要标题</h2><p>" + "正文内容。" * 20 + "</p>"
+        body = "<h1>重要标题</h1><p>" + "正文内容。" * 20 + "</p>"
+        html = _make_html(body, head_noise=head)
+        parser = HtmlParser()
+        result = parser._trim_noise(html)
+        assert result is not None
+        assert "重要标题" in result
+
+    def test_h2_fallback_when_no_paragraph(self):
+        """h2 should be used as start signal when no h1 or long paragraph exists."""
+        head = "<p>短导航</p>"
+        body = "<h2>重要标题</h2><p>短正文。</p>"
         html = _make_html(body, head_noise=head)
         parser = HtmlParser()
         result = parser._trim_noise(html)

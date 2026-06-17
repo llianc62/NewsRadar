@@ -404,17 +404,34 @@ class HtmlParser:
             return None
 
         # ── Find start (trim head) ──────────────────────────────────
+        # Priority: h1 (article title) > long paragraph > h2/h3
+        # h1 is the most reliable content-start signal — lower-level
+        # headings (h2/h3) are often UI widgets (e.g. "大家都在搜")
         start = 0
         start_found = False
+
+        # Pass 1: h1 — the article's main title
         for i, b in enumerate(blocks):
-            if b.text_len >= 80 and b.link_density < 0.3:
+            if b.tag == "h1" and b.text_len >= 4:
                 start = i
                 start_found = True
                 break
-            if b.tag in ("h1", "h2", "h3") and b.text_len >= 4:
-                start = i
-                start_found = True
-                break
+
+        # Pass 2: first substantial paragraph
+        if not start_found:
+            for i, b in enumerate(blocks):
+                if b.text_len >= 80 and b.link_density < 0.3:
+                    start = i
+                    start_found = True
+                    break
+
+        # Pass 3: fall back to h2/h3 (only when no h1 or long paragraph found)
+        if not start_found:
+            for i, b in enumerate(blocks):
+                if b.tag in ("h2", "h3") and b.text_len >= 4:
+                    start = i
+                    start_found = True
+                    break
 
         # ── Find end (trim tail) ────────────────────────────────────
         end = len(blocks) - 1
