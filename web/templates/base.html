@@ -6,16 +6,32 @@
   <title>{% block title %}NewsRadar{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500;6..72,600;6..72,700&family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/css/app.css">
   {% block head %}{% endblock %}
 </head>
 <body>
-  <div class="app-layout">
-    {% include "components/sidebar.html" %}
-    <main class="app-content">
-      {% block content %}{% endblock %}
-    </main>
-  </div>
+
+<!-- Hidden panel toggle checkbox — must precede .app-shell for CSS sibling selector -->
+<input type="checkbox" id="panel-toggle">
+<script>
+// 恢复到上次的 panel 展开/关闭状态（仅在有面板的页面生效）
+(function() {
+  const tgl = document.getElementById('panel-toggle');
+  if (!document.querySelector('.content-list')) return;  // 当前页面没有面板，跳过
+  if (localStorage.getItem('newsradar.panel-open') === 'true') tgl.checked = true;
+  tgl.addEventListener('change', function() { localStorage.setItem('newsradar.panel-open', this.checked); });
+})();
+</script>
+
+<!-- Panel overlay (covers content when panel is open) -->
+<label class="panel-overlay" for="panel-toggle"></label>
+
+<div class="app-shell">
+  {% include "components/sidebar.html" %}
+  {% block content %}{% endblock %}
+</div>
+
 </body>
+{% block scripts %}{% endblock %}
 </html>

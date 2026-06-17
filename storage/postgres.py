@@ -399,6 +399,8 @@ class PostgreSQL:
         tier: Optional[int] = None,
         category: Optional[str] = None,
         min_confidence: Optional[int] = None,
+        sentiment: Optional[str] = None,
+        keyword: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Return recent news articles with optional filters."""
         conditions = ["TRUE"]
@@ -415,6 +417,15 @@ class PostgreSQL:
             params.append(min_confidence)
         else:
             conditions.append("(confidence IS NULL OR confidence >= 20)")
+        if sentiment == "positive":
+            conditions.append("sentiment_score >= 67")
+        elif sentiment == "negative":
+            conditions.append("sentiment_score <= 33")
+        elif sentiment == "neutral":
+            conditions.append("sentiment_score > 33 AND sentiment_score < 67")
+        if keyword is not None:
+            conditions.append("%s = ANY(tags)")
+            params.append(keyword)
 
         where = " AND ".join(conditions)
 
@@ -439,6 +450,8 @@ class PostgreSQL:
         tier: Optional[int] = None,
         category: Optional[str] = None,
         min_confidence: Optional[int] = None,
+        sentiment: Optional[str] = None,
+        keyword: Optional[str] = None,
     ) -> int:
         """Return total count of news articles matching filters."""
         conditions: List[str] = []
@@ -456,6 +469,107 @@ class PostgreSQL:
         if category is not None:
             conditions.append("category = %s")
             params.append(category)
+        if sentiment == "positive":
+            conditions.append("sentiment_score >= 67")
+        elif sentiment == "negative":
+            conditions.append("sentiment_score <= 33")
+        elif sentiment == "neutral":
+            conditions.append("sentiment_score > 33 AND sentiment_score < 67")
+        if keyword is not None:
+            conditions.append("%s = ANY(tags)")
+            params.append(keyword)
+
+        where = " AND ".join(conditions)
+
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT COUNT(*) FROM news_articles WHERE {where}",
+                    params,
+                )
+                return cur.fetchone()[0]
+
+    def get_sentiment_counts(
+        self,
+        tier: Optional[int] = None,
+        keyword: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """Return {positive, negative, neutral} counts for sentiment bar."""
+        conditions = ["(confidence IS NULL OR confidence >= 20)"]
+        params: List[Any] = []
+
+        if tier is not None:
+            conditions.append("tier = %s")
+            params.append(tier)
+        if keyword is not None:
+            conditions.append("%s = ANY(tags)")
+            params.append(keyword)
+
+        where = " AND ".join(conditions)
+
+        with self.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    f"""SELECT
+                          COUNT(*) FILTER (WHERE sentiment_score >= 67) AS positive,
+                          COUNT(*) FILTER (WHERE sentiment_score <= 33) AS negative,
+                          COUNT(*) FILTER (WHERE sentiment_score > 33 AND sentiment_score < 67) AS neutral
+                        FROM news_articles WHERE {where}""",
+                    params,
+                )
+                return dict(cur.fetchone())
+
+    def get_keyword_counts(
+        self,
+        tier: Optional[int] = None,
+        sentiment: Optional[str] = None,
+        limit: int = 30,
+    ) -> List[Dict[str, Any]]:
+        """Return [{tag, cnt}] for keyword cloud, sorted by frequency."""
+        conditions = ["(confidence IS NULL OR confidence >= 20)"]
+        params: List[Any] = []
+
+        if tier is not None:
+            conditions.append("tier = %s")
+            params.append(tier)
+        if sentiment == "positive":
+            conditions.append("sentiment_score >= 67")
+        elif sentiment == "negative":
+            conditions.append("sentiment_score <= 33")
+        elif sentiment == "neutral":
+            conditions.append("sentiment_score > 33 AND sentiment_score < 67")
+
+        where = " AND ".join(conditions)
+
+        with self.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    f"""SELECT unnest(tags) AS tag, COUNT(*) AS cnt
+                        FROM news_articles WHERE {where}
+                        GROUP BY tag ORDER BY cnt DESC LIMIT %s""",
+                    params + [limit],
+                )
+                return cur.fetchall()
+
+    def get_high_impact_count(
+        self,
+        tier: Optional[int] = None,
+        keyword: Optional[str] = None,
+    ) -> int:
+        """Return count of high-heat today articles (proxy for 'immediate impact')."""
+        conditions = [
+            "(confidence IS NULL OR confidence >= 20)",
+            "heat_score >= 80",
+            "created_at >= CURRENT_DATE",
+        ]
+        params: List[Any] = []
+
+        if tier is not None:
+            conditions.append("tier = %s")
+            params.append(tier)
+        if keyword is not None:
+            conditions.append("%s = ANY(tags)")
+            params.append(keyword)
 
         where = " AND ".join(conditions)
 

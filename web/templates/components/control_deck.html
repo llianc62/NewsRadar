@@ -1,0 +1,148 @@
+<!-- ═══════════════ CONTROL DECK (v8) ═══════════════ -->
+<div class="control-deck filters-collapsed" id="control-deck">
+
+  <!-- ── Stats Strip ── -->
+  <div class="deck-stats">
+    <div class="deck-stat">
+      <div class="deck-stat-icon fire">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 21c3.5-3.5 5-7 5-10a5 5 0 1 0-10 0c0 3 1.5 6.5 5 10z"/></svg>
+      </div>
+      <div>
+        <div class="deck-stat-value">{{ today_hot }}</div>
+        <div class="deck-stat-label">今日热点</div>
+      </div>
+    </div>
+    <div class="deck-stat">
+      <div class="deck-stat-icon up">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 18l5-6 4 4 9-10"/><path d="M16 6h5v5"/></svg>
+      </div>
+      <div>
+        <div class="deck-stat-value">{{ positive_signal }}</div>
+        <div class="deck-stat-label">利好信号</div>
+      </div>
+    </div>
+    <div class="deck-stat">
+      <div class="deck-stat-icon time">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+      </div>
+      <div>
+        <div class="deck-stat-value">{{ high_impact }}</div>
+        <div class="deck-stat-label">即时影响</div>
+      </div>
+    </div>
+    <div class="deck-sentiment">
+      <div class="deck-sentiment-header">
+        <span class="deck-sentiment-label">情绪分布</span>
+        <span class="deck-sentiment-numbers">利空 {{ sentiment_counts.negative }} · 中性 {{ sentiment_counts.neutral }} · 利好 {{ sentiment_counts.positive }}</span>
+      </div>
+      <div class="deck-sentiment-track">
+        <div class="ds-red" style="width:{{ sentiment_pct.negative_pct }}%"></div>
+        <div class="ds-neutral" style="width:{{ sentiment_pct.neutral_pct }}%"></div>
+        <div class="ds-green" style="width:{{ sentiment_pct.positive_pct }}%"></div>
+      </div>
+    </div>
+
+    <!-- Filter toggle -->
+    <button class="deck-filter-toggle" id="deck-filter-toggle-btn"
+            onclick="toggleDeckFilters()">
+      <span class="deck-filter-toggle-label" id="deck-filter-toggle-label">筛选</span>
+      <span class="deck-filter-toggle-chevron">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6l5 4 5-4"/></svg>
+      </span>
+    </button>
+  </div>
+
+  <!-- ── Filters Collapse Wrapper ── -->
+  <div class="deck-filters-collapse">
+
+    <!-- ── Filter Sections ── -->
+    <div class="deck-filters">
+
+    <!-- Tier -->
+    <div class="deck-filter-section">
+      <span class="deck-filter-label">层级</span>
+      <div class="tier-segments">
+        {% for t in tier_labels %}
+        <a href="?page=1&panel_page=1{% if t.tier > 0 %}&tier={{ t.tier }}{% endif %}{% if current_sentiment %}&sentiment={{ current_sentiment }}{% endif %}{% if current_keyword %}&keyword={{ current_keyword }}{% endif %}"
+           class="tier-seg{% if (t.tier == 0 and not current_tier) or (t.tier == current_tier) %} active{% endif %}">
+          <span class="tier-seg-name">{{ t.label }}</span>
+          <span class="tier-seg-count">{{ t.count }} 条</span>
+        </a>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- Sentiment -->
+    <div class="deck-filter-section">
+      <span class="deck-filter-label">情绪</span>
+      <div class="sentiment-toggles">
+        {% for s in sentiment_toggles %}
+        <a href="?page=1&panel_page=1{% if current_tier %}&tier={{ current_tier }}{% endif %}{% if s.value != current_sentiment %}&sentiment={{ s.value }}{% endif %}{% if current_keyword %}&keyword={{ current_keyword }}{% endif %}"
+           class="sent-toggle {{ s.css_class }}{% if s.value == current_sentiment %} active{% endif %}">
+          <span class="sent-dot"></span> {{ s.label }} <span class="sent-count">{{ s.count }}</span>
+        </a>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- Keywords -->
+    <div class="deck-filter-section">
+      <span class="deck-filter-label">主题</span>
+      <div class="keyword-scroll-wrap">
+        <div class="keyword-scroll">
+          {% for kw in keyword_list %}
+          <a href="?page=1&panel_page=1{% if current_tier %}&tier={{ current_tier }}{% endif %}{% if current_sentiment %}&sentiment={{ current_sentiment }}{% endif %}{% if current_keyword != kw.tag %}&keyword={{ kw.tag }}{% endif %}"
+             class="keyword-tag{% if kw.tag == current_keyword %} active{% endif %}">{{ kw.tag }}</a>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Active Filter Bar ── -->
+  {% if active_filters %}
+  <div class="deck-active-filters">
+    <span class="active-filters-label">当前筛选</span>
+    <div class="active-filter-chips">
+      {% for f in active_filters %}
+      <span class="active-chip">
+        {{ f.label }}
+        <a href="{{ f.remove_url }}" class="chip-remove">&times;</a>
+      </span>
+      {% endfor %}
+    </div>
+    <a href="?page=1&panel_page=1" class="active-filters-clear">清除全部</a>
+  </div>
+  {% endif %}
+
+  </div><!-- /deck-filters-collapse -->
+
+</div><!-- /control-deck -->
+
+<script>
+(function() {
+  const KEY = 'newsradar.filters-collapsed';
+  const deck = document.getElementById('control-deck');
+  const btn = document.getElementById('deck-filter-toggle-btn');
+
+  function apply(state) {
+    if (state) {
+      deck.classList.add('filters-collapsed');
+    } else {
+      deck.classList.remove('filters-collapsed');
+    }
+    btn.title = state ? '展开筛选' : '收起筛选';
+  }
+
+  // 初始化：读取 localStorage，默认收起
+  var collapsed = localStorage.getItem(KEY) !== 'false';
+  apply(collapsed);
+
+  // 暴露全局函数给 onclick
+  window.toggleDeckFilters = function() {
+    collapsed = !deck.classList.contains('filters-collapsed');
+    localStorage.setItem(KEY, collapsed);
+    apply(collapsed);
+  };
+})();
+</script>

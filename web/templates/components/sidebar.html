@@ -1,42 +1,50 @@
-<aside class="app-sidebar">
+<aside class="app-sidebar expanded">
   <!-- Logo -->
-  <div style="padding: 18px; border-bottom: 1px solid hsl(var(--border)); display: flex; align-items: center; gap: 10px;">
-    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="hsl(var(--primary))" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M6 20V8"/><path d="M10 20V4"/><path d="M14 20V12"/><path d="M18 20V16"/>
-    </svg>
-    <span style="font-weight: 700; font-size: 14px; color: hsl(var(--foreground));">NewsRadar</span>
+  <div class="sidebar-logo">
+    <div class="logo-icon">
+      <svg viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <defs><linearGradient id="lg" x1="2" y1="2" x2="26" y2="26"><stop offset="0%" stop-color="#f25f0f"/><stop offset="100%" stop-color="#e6a817"/></linearGradient></defs>
+        <circle cx="14" cy="14" r="12" stroke="url(#lg)" stroke-width="1" opacity="0.25"/>
+        <circle cx="14" cy="14" r="8" stroke="url(#lg)" stroke-width="1" opacity="0.4"/>
+        <circle cx="14" cy="14" r="4" stroke="url(#lg)" stroke-width="1" opacity="0.6"/>
+        <circle cx="14" cy="14" r="1.8" fill="url(#lg)"/>
+        <line x1="14" y1="14" x2="14" y2="2" stroke="url(#lg)" stroke-width="1.5" stroke-linecap="round"/>
+        <circle cx="18.5" cy="8.5" r="1.3" fill="#f25f0f" opacity="0.75"/>
+        <circle cx="20" cy="18" r="0.9" fill="#e6a817" opacity="0.55"/>
+        <circle cx="9" cy="19.5" r="1.1" fill="#f25f0f" opacity="0.45"/>
+      </svg>
+    </div>
+    <span class="logo-text">NewsRadar</span>
   </div>
 
   <!-- Navigation -->
-  <nav style="flex: 1; padding: 12px 10px; display: flex; flex-direction: column; gap: 1px;">
+  <nav class="sidebar-nav">
     {% set nav_items = [
-      ('home', '/', 'chart-column', 'Home'),
+      ('home', '/', 'home', '首页'),
       ('hot-news', '/hot-news', 'flame', '热点新闻'),
-      ('positions', '/positions', 'briefcase-business', '持仓分析'),
+      ('positions', '/positions', 'chart-column', '持仓分析'),
       ('stocks', '/stocks', 'trending-up', '个股分析'),
       ('reports', '/reports', 'file-text', '行业报告'),
-      ('trading', '/trading', 'clock', '交易决策'),
-      ('settings', '/settings', 'sliders-horizontal', '系统配置'),
+      ('trading', '/trading', 'compass', '交易决策'),
+      ('settings', '/settings', 'sliders', '系统配置'),
     ] %}
     {% for id, url, icon, label in nav_items %}
-    <a href="{{ url }}"
-       class="nav-item{% if active_page == id %} active{% endif %}"
-       style="display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 500;">
-      {{ icon_svg(icon)|safe }}
-      {{ label }}
+    <a href="{{ url }}" class="nav-item{% if active_page == id %} active{% endif %}">
+      <span class="nav-icon">{{ icon_svg(icon)|safe }}</span>
+      <span class="nav-label">{{ label }}</span>
     </a>
     {% endfor %}
   </nav>
-</aside>
 
-<style>
-.nav-item {
-  color: hsl(var(--muted-foreground));
-  transition: color 0.15s;
-}
-.nav-item:hover { color: hsl(var(--foreground)); }
-.nav-item.active {
-  color: hsl(var(--primary));
-  font-weight: 600;
-}
-</style>
+  <!-- Toggle -->
+  <div class="sidebar-toggle">
+    <button class="sidebar-toggle-btn" title="收起侧栏" onclick="document.querySelector('.app-sidebar').classList.toggle('expanded')">
+      <span class="sidebar-toggle-icon">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M7 4l6 6-6 6"/><path d="M13 4l6 6-6 6"/>
+        </svg>
+      </span>
+      <span class="sidebar-toggle-label">收起</span>
+    </button>
+  </div>
+</aside>

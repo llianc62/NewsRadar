@@ -11,7 +11,10 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
 from storage.files import S3Storage
-from news.constants import TIER_LABELS, TIER_COLORS, TIER_BG
+from news.constants import (
+    TIER_LABELS, TIER_COLORS, TIER_BG,
+    SENTIMENT_POSITIVE_THRESHOLD, SENTIMENT_NEGATIVE_THRESHOLD,
+)
 
 WEB_DIR = Path(__file__).parent
 TEMPLATES_DIR = WEB_DIR / "templates"
@@ -24,18 +27,23 @@ env = Environment(
     autoescape=select_autoescape(["html"]),
 )
 
-# Lucide icon SVG map (16x16, stroke-width 2)
+# SVG icon map (v8 editorial — stroke-width 1.5, 22x22 nav, 24x24 others)
 ICONS = {
-    "chart-column": '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 20V8"/><path d="M10 20V4"/><path d="M14 20V12"/><path d="M18 20V16"/></svg>',
-    "flame": '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a3.5 3.5 0 0 0 2.5 2.5z"/></svg>',
-    "briefcase-business": '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 12h.01"/><path d="M16 6V4a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/><path d="M22 13a19 19 0 0 0-20 0"/><rect x="2" y="6" width="20" height="14" rx="2"/><rect x="6" y="12" width="12" height="6"/></svg>',
-    "trending-up": '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>',
-    "file-text": '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>',
-    "clock": '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>',
-    "sliders-horizontal": '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="2" y1="14" x2="6" y2="14"/><line x1="10" y1="8" x2="14" y2="8"/><line x1="18" y1="16" x2="22" y2="16"/></svg>',
-    "newspaper": '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="9" x2="15" y2="9"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="12" y2="17"/></svg>',
-    "star": '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>',
-    "trending-up-lg": '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg>',
+    # ── Navigation (22x22, stroke-width 1.5) ──
+    "home": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10l8-7 8 7"/><path d="M6 9v10h4v-5h4v5h4V9"/></svg>',
+    "flame": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/></svg>',
+    "chart-column": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="14" width="3" height="6" rx="0.5"/><rect x="8" y="10" width="3" height="10" rx="0.5"/><rect x="13" y="6" width="3" height="14" rx="0.5"/><rect x="18" y="12" width="3" height="8" rx="0.5"/><path d="M4.5 13l4.5-5 4.5 3 5-8" opacity="0.35"/></svg>',
+    "trending-up": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18l5-6 4 4 9-10"/><path d="M16 6h5v5"/></svg>',
+    "file-text": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h10l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M16 3v5h5"/><path d="M8 12h5"/><path d="M8 16h8"/></svg>',
+    "compass": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/><line x1="12" y1="2" x2="12" y2="8"/><line x1="12" y1="16" x2="12" y2="22"/><line x1="2" y1="12" x2="8" y2="12"/><line x1="16" y1="12" x2="22" y2="12"/></svg>',
+    "sliders": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/><line x1="4" y1="5" x2="10.5" y2="5"/><line x1="13.5" y1="5" x2="20" y2="5"/><line x1="4" y1="12" x2="10.5" y2="12"/><line x1="13.5" y1="12" x2="20" y2="12"/><line x1="4" y1="19" x2="10.5" y2="19"/><line x1="13.5" y1="19" x2="20" y2="19"/></svg>',
+
+    # ── Content / utility ──
+    "fire": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 21c3.5-3.5 5-7 5-10a5 5 0 1 0-10 0c0 3 1.5 6.5 5 10z"/></svg>',
+    "trending-up-lg": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 18l5-6 4 4 9-10"/><path d="M16 6h5v5"/></svg>',
+    "clock": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>',
+    "list": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/></svg>',
+    "x": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18"/><path d="M6 6l12 12"/></svg>',
 }
 # Markdown-to-HTML converter (GitHub Flavoured Markdown)
 _md_renderer = mistune.create_markdown(
@@ -134,78 +142,177 @@ def create_app(db, s3_config: dict, signals: dict = None):
         request: Request,
         page: int = Query(1, ge=1),
         tier: int = Query(None, ge=0, le=4),
+        sentiment: str = Query(None),
+        keyword: str = Query(None),
+        panel_page: int = Query(1, ge=1),
+        panel_size: int = Query(30),
     ):
-        """Hot news page with real data from PostgreSQL."""
-        per_page = 10
+        """Hot news page — editorial masonry layout with control deck."""
+        per_page = 20
         offset = (page - 1) * per_page
+        tier_filter = tier if tier and tier > 0 else None
 
+        # ── Data ──
         articles = db.get_recent_news(
             limit=per_page, offset=offset,
-            tier=tier if tier and tier > 0 else None,
+            tier=tier_filter, sentiment=sentiment, keyword=keyword,
         )
-        total = db.get_news_count(tier=tier if tier and tier > 0 else None)
+        total = db.get_news_count(
+            tier=tier_filter, sentiment=sentiment, keyword=keyword,
+        )
         total_pages = max(1, (total + per_page - 1) // per_page)
         stats_data = db.get_stats()
+        sentiment_counts = db.get_sentiment_counts(tier=tier_filter, keyword=keyword)
+        keyword_list = db.get_keyword_counts(tier=tier_filter, sentiment=sentiment)
+        high_impact = db.get_high_impact_count(tier=tier_filter, keyword=keyword)
 
-        stats = [
-            {"label": "今日新增", "value": str(stats_data["today_count"]), "icon": "flame",
-             "bg": "hsl(var(--primary) / 0.1)", "color": "hsl(var(--foreground))"},
-            {"label": "新闻来源", "value": str(len(stats_data["by_source"])), "icon": "newspaper",
-             "bg": "hsl(var(--info) / 0.1)", "color": "hsl(var(--foreground))"},
-            {"label": "总计", "value": str(stats_data["total_count"]), "icon": "star",
-             "bg": "hsl(var(--warning) / 0.1)", "color": "hsl(var(--foreground))"},
-            {"label": "T1·官媒", "value": str(stats_data["t1_count"]), "icon": "trending-up-lg",
-             "bg": "hsl(var(--danger) / 0.1)", "color": "hsl(var(--danger))"},
+        # ── Panel (separate pagination) ──
+        panel_offset = (panel_page - 1) * panel_size
+        panel_articles = db.get_recent_news(
+            limit=panel_size, offset=panel_offset,
+            tier=tier_filter, sentiment=sentiment, keyword=keyword,
+        )
+        panel_total = max(1, (total + panel_size - 1) // panel_size)
+
+        # ── Tier labels with counts ──
+        tier_labels_with_counts = [
+            {"tier": 0, "label": "全部", "count": stats_data["total_count"]},
+            {"tier": 1, "label": "T1·核心", "count": stats_data["t1_count"]},
+            {"tier": 2, "label": "T2·重要", "count": stats_data["t2_count"]},
+            {"tier": 3, "label": "T3·关注", "count": stats_data["t3_count"]},
+            {"tier": 4, "label": "T4·参考", "count": stats_data["t4_count"]},
         ]
 
-        tier_labels = [
-            {"tier": t, "label": f"T{t}·{TIER_LABELS[t].split('·')[1]}", "color": c, "bg": TIER_BG[t]}
-            for t, c in TIER_COLORS.items()
+        # ── Sentiment toggles with counts ──
+        sentiment_toggles = [
+            {"value": "positive", "label": "利好", "css_class": "positive",
+             "count": sentiment_counts["positive"]},
+            {"value": "negative", "label": "利空", "css_class": "negative",
+             "count": sentiment_counts["negative"]},
+            {"value": "neutral", "label": "中性", "css_class": "neutral",
+             "count": sentiment_counts["neutral"]},
         ]
 
+        # ── Sentiment bar percentages ──
+        sent_total = sum(sentiment_counts.values()) or 1
+        sentiment_pct = {
+            "negative_pct": round(sentiment_counts["negative"] / sent_total * 100, 1),
+            "neutral_pct": round(sentiment_counts["neutral"] / sent_total * 100, 1),
+            "positive_pct": round(sentiment_counts["positive"] / sent_total * 100, 1),
+        }
+
+        # ── Active filters ──
+        active_filters = []
+        if tier_filter:
+            active_filters.append({
+                "label": tier_labels_with_counts[tier_filter]["label"],
+                "type": "tier",
+                "remove_url": _remove_filter(request, "tier"),
+            })
+        if sentiment:
+            label_map = {"positive": "利好", "negative": "利空", "neutral": "中性"}
+            active_filters.append({
+                "label": label_map.get(sentiment, sentiment),
+                "type": "sentiment",
+                "remove_url": _remove_filter(request, "sentiment"),
+            })
+        if keyword:
+            active_filters.append({
+                "label": keyword,
+                "type": "keyword",
+                "remove_url": _remove_filter(request, "keyword"),
+            })
+
+        # ── Card transform ──
         def _to_card(article: dict) -> dict:
             score = article.get("sentiment_score")
-            if score is not None and score >= 67:
-                sentiment, s_bg, s_color = "利好", "hsl(var(--danger) / 0.1)", "hsl(var(--danger))"
-            elif score is not None and score <= 33:
-                sentiment, s_bg, s_color = "利空", "hsl(var(--success) / 0.1)", "hsl(var(--success))"
+            if score is not None and score >= SENTIMENT_POSITIVE_THRESHOLD:
+                sentiment_label, sentiment_class = "利好", "positive"
+            elif score is not None and score <= SENTIMENT_NEGATIVE_THRESHOLD:
+                sentiment_label, sentiment_class = "利空", "negative"
             else:
-                sentiment, s_bg, s_color = "中性", "hsl(var(--warning) / 0.1)", "hsl(var(--warning))"
+                sentiment_label, sentiment_class = "中性", "neutral"
+            article_tier = article.get("tier") or 4
+            tier_class = f"t{article_tier}" if article_tier >= 2 else ""
             return {
                 "id": article.get("id"),
-                "sentiment": sentiment,
-                "sentiment_bg": s_bg,
-                "sentiment_color": s_color,
                 "source": article.get("source_name", ""),
-                "time": _relative_time(article.get("published_at")),
-                "heat": str(article.get("heat_score") or 0),
+                "tier_class": tier_class,
+                "heat": article.get("heat_score") or 0,
                 "title": article.get("title", ""),
                 "summary": article.get("summary", ""),
-                "keywords": [{"text": t, "primary": i == 0} for i, t in enumerate(article.get("tags") or [])],
+                "sentiment": sentiment_label,
+                "sentiment_class": sentiment_class,
+                "keywords": article.get("tags") or [],
+                "time": _relative_time(article.get("published_at")),
             }
 
-        def _to_list_item(article: dict, seq: int) -> dict:
-            return {"id": article.get("id"), "seq": seq, "title": article.get("title", ""), "source": article.get("source_name", "")}
-
-        tier1_cards = [_to_card(a) for a in articles]
-        list_items = [_to_list_item(a, offset + i + 1) for i, a in enumerate(articles)]
+        masonry_cards = [_to_card(a) for a in articles]
         page_numbers = _build_page_numbers(page, total_pages)
+
+        # ── Panel item transform ──
+        def _to_panel_item(article: dict, seq: int) -> dict:
+            score = article.get("sentiment_score")
+            if score is not None and score >= SENTIMENT_POSITIVE_THRESHOLD:
+                sentiment_class = "positive"
+                sentiment_label = "利好"
+            elif score is not None and score <= SENTIMENT_NEGATIVE_THRESHOLD:
+                sentiment_class = "negative"
+                sentiment_label = "利空"
+            else:
+                sentiment_class = "neutral"
+                sentiment_label = "中性"
+            return {
+                "id": article.get("id"),
+                "seq": seq,
+                "title": article.get("title", ""),
+                "source": article.get("source_name", ""),
+                "time": _relative_time(article.get("published_at")),
+                "sentiment": sentiment_label,
+                "sentiment_class": sentiment_class,
+            }
+
+        panel_items = [
+            _to_panel_item(a, panel_offset + i + 1)
+            for i, a in enumerate(panel_articles)
+        ]
+        panel_page_numbers = _build_page_numbers(panel_page, panel_total)
+
+        # ── Today date ──
+        from datetime import datetime
+        today_date = datetime.now().strftime("%Y-%m-%d")
 
         html = render_template(
             "pages/hot_news.html",
             active_page="hot-news",
-            stats=stats,
-            tier_labels=tier_labels,
-            keywords=["央行", "AI", "港股", "外资", "芯片", "新能源"],
-            tier1_cards=tier1_cards,
-            list_items=list_items,
+            # Stats
+            today_hot=stats_data["today_count"],
+            positive_signal=sentiment_counts["positive"],
+            high_impact=high_impact,
+            sentiment_counts=sentiment_counts,
+            sentiment_pct=sentiment_pct,
+            # Filters
+            tier_labels=tier_labels_with_counts,
+            sentiment_toggles=sentiment_toggles,
+            keyword_list=keyword_list,
+            active_filters=active_filters,
+            current_tier=tier_filter,
+            current_sentiment=sentiment,
+            current_keyword=keyword,
+            # Content
+            masonry_cards=masonry_cards,
             total_count=total,
             total_pages=total_pages,
-            page_start=offset + 1,
-            page_end=min(offset + per_page, total),
             current_page=page,
-            tier_filter=tier if tier and tier > 0 else None,
             page_numbers=page_numbers,
+            # Panel
+            panel_items=panel_items,
+            panel_page=panel_page,
+            panel_size=panel_size,
+            panel_total_pages=panel_total,
+            panel_page_numbers=panel_page_numbers,
+            # Misc
+            today_date=today_date,
         )
         return HTMLResponse(html)
 
@@ -258,6 +365,24 @@ def create_app(db, s3_config: dict, signals: dict = None):
 
 
 # ── Helpers ──────────────────────────────────────────────────────
+
+def _remove_filter(request, key: str) -> str:
+    """Return a URL with the given query param removed, preserving others."""
+    from urllib.parse import urlencode
+    params = dict(request.query_params)
+    params.pop(key, None)
+    params["page"] = "1"
+    params["panel_page"] = "1"
+    if not params.get("tier"):
+        params.pop("tier", None)
+    if not params.get("sentiment"):
+        params.pop("sentiment", None)
+    if not params.get("keyword"):
+        params.pop("keyword", None)
+    qs = urlencode(params) if params else ""
+    base = str(request.url).split("?")[0]
+    return f"{base}?{qs}" if qs else base
+
 
 def _relative_time(dt) -> str:
     """Convert datetime to relative time string like '2h前'."""

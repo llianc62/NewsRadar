@@ -278,6 +278,9 @@ class HtmlParser:
         and passing it as explicit parameters — there is no implicit
         override logic inside this method.
         """
+        if tags:
+            tags = [t.lstrip("#") for t in tags if t]
+            tags = [t for t in tags if t]  # remove empty strings after stripping
         return {
             "markdown": markdown,
             "title": title,

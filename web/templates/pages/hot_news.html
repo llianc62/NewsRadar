@@ -2,46 +2,33 @@
 {% block title %}NewsRadar · 热点新闻{% endblock %}
 
 {% block content %}
+<div class="app-main">
 
-<!-- Two-Level Global Filter -->
-<div style="display: flex; flex-direction: column; gap: 8px; padding: 12px 16px; background: hsl(var(--card)); border-radius: var(--radius); border: 1px solid hsl(var(--border)); flex-shrink: 0;">
-  <div style="font-size: 12px; font-weight: 700; color: hsl(var(--foreground));">筛选：</div>
+  <!-- Cards area (scrollable) -->
+  <div class="content-cards">
 
-  <!-- Level 1: Tier -->
-  <div style="display: flex; align-items: center; gap: 10px;">
-    <span style="font-size: 11px; font-weight: 600; color: hsl(var(--foreground)); min-width: 56px; white-space: nowrap;">级别</span>
-    <a href="?page=1" class="filter-pill" style="font-size: 11px; padding: 5px 14px; border-radius: 14px; background: {{ 'hsl(var(--primary))' if not tier_filter else 'hsl(var(--muted))' }}; color: {{ 'white' if not tier_filter else 'hsl(var(--muted-foreground))' }}; font-weight: {{ 600 if not tier_filter else 500 }}; white-space: nowrap; text-decoration: none;">全部</a>
-    {% for t in tier_labels %}
-    <a href="?page=1&amp;tier={{ t['tier'] }}" class="filter-pill" style="font-size: 11px; padding: 5px 14px; border-radius: 14px; background: {{ t['bg'] if tier_filter != t['tier'] else t['color'] }}; color: {{ t['color'] if tier_filter != t['tier'] else 'white' }}; font-weight: {{ 600 if tier_filter == t['tier'] else 500 }}; white-space: nowrap; text-decoration: none;">{{ t['label'] }}</a>
-    {% endfor %}
+    <!-- Section Header -->
+    <div class="section-header">
+      <div class="section-header-line"></div>
+      <h1>热点新闻</h1>
+      <span class="date">{{ today_date }}</span>
+      <!-- Panel toggle button -->
+      <label for="panel-toggle" class="panel-toggle-btn" style="margin-left:12px;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/></svg>
+        全部新闻
+      </label>
+    </div>
+
+    <!-- Control Deck -->
+    {% include "components/control_deck.html" %}
+
+    <!-- Masonry Cards -->
+    {% include "components/news_cards.html" %}
+
   </div>
 
-  <!-- Level 2: Tags -->
-  <div style="display: flex; align-items: center; gap: 10px;">
-    <span style="font-size: 11px; font-weight: 600; color: hsl(var(--foreground)); min-width: 56px; white-space: nowrap;">标签</span>
-    <span style="font-size: 11px; padding: 5px 14px; border-radius: 14px; background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); font-weight: 500; white-space: nowrap;">全部</span>
-    <span style="font-size: 11px; padding: 5px 14px; border-radius: 14px; background: hsl(var(--danger) / 0.08); color: hsl(var(--danger)); font-weight: 500; white-space: nowrap;">利好</span>
-    <span style="font-size: 11px; padding: 5px 14px; border-radius: 14px; background: hsl(var(--success) / 0.08); color: hsl(var(--success)); font-weight: 500; white-space: nowrap;">利空</span>
-    {% for kw in keywords %}
-    <span style="font-size: 11px; padding: 5px 14px; border-radius: 14px; background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); font-weight: 500; white-space: nowrap;">{{ kw }}</span>
-    {% endfor %}
-  </div>
-</div>
-
-<!-- Stats Bar -->
-{% include "components/stats_bar.html" %}
-
-<!-- Content Area: Waterfall Cards + News List -->
-<div style="display: flex; gap: 16px; align-items: flex-start; flex: 1; min-height: 0;">
-  {# These components will be created in Tasks 6 and 7 #}
-  {% include "components/news_cards.html" %}
+  <!-- Right Panel (slide-in) -->
   {% include "components/news_list.html" %}
+
 </div>
-
-{% endblock %}
-
-{% block head %}
-<style>
-.filter-pill:hover { opacity: 0.85; }
-</style>
 {% endblock %}
