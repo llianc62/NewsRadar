@@ -1,7 +1,10 @@
 """NewsRadar Web Frontend — FastAPI + Jinja2 SSR."""
 
 import re
+import time
+import threading
 from contextlib import asynccontextmanager
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import mistune
@@ -54,10 +57,6 @@ ICONS = {
 }
 # ── Refetch state (in-memory) ─────────────────────────────────────
 
-import time
-import threading
-from concurrent.futures import ThreadPoolExecutor
-
 _refetch_tasks: dict[int, dict] = {}       # key=article_id, 去重+状态跟踪
 _notifications: list[dict] = []            # 通知列表，最多 50 条
 _notification_counter: int = 0             # 自增 ID
@@ -96,19 +95,23 @@ def _run_refetch(article_id: int, url: str, title: str, crawler,
     """Execute refetch in background thread, update status on completion."""
     try:
         notif["status"] = "running"
-        from news.crawler import OutputStyle
-        crawler.fetch(
-            url,
-            output_style=OutputStyle.POSTGRESQL,
-            with_content=True,
-            with_image=True,
-        )
+        # Download HTML
+        resp = crawler.session().get(url, timeout=crawler.timeout)
+        resp.raise_for_status()
+        # Parse to Markdown
+        parsed = crawler.parser.parse(resp.text, url)
+        if parsed is None:
+            raise Exception("无法提取页面正文内容")
+        content = parsed.get("markdown", "")
+        if not content:
+            raise Exception("提取的正文内容为空")
+        # Update article in DB
+        db.update_article_content(article_id, content)
         notif["status"] = "completed"
     except Exception as e:
         notif["status"] = "failed"
-        notif["error_message"] = str(e)
+        notif["error_message"] = str(e)[:500]
     finally:
-        # Remove from dedup dict so re-fetch is allowed again
         _refetch_tasks.pop(article_id, None)
 
 
@@ -438,16 +441,18 @@ def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
         if not url:
             return {"ok": False, "error": "该文章没有原文链接"}
 
-        # Dedup
-        existing = _refetch_tasks.get(article_id)
-        if existing and existing["status"] in ("pending", "running"):
-            return {"ok": False, "error": "该文章正在抓取中"}
-
         # Create notification + task
         notif = _add_notification(article_id, title, status="pending")
         task = {"article_id": article_id, "title": title,
                 "status": "pending", "created_at": notif["created_at"]}
-        _refetch_tasks[article_id] = task
+
+        # Dedup (under lock)
+        with _notification_lock:
+            existing = _refetch_tasks.get(article_id)
+            if existing and existing["status"] in ("pending", "running"):
+                return {"ok": False, "error": "该文章正在抓取中"}
+            # Reserve slot
+            _refetch_tasks[article_id] = task
 
         c = app.state.crawler
         if c is None:

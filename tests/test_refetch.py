@@ -1,4 +1,5 @@
 """Tests for news refetch API endpoints."""
+import time
 import pytest
 from fastapi.testclient import TestClient
 from web.app import create_app
@@ -18,13 +19,31 @@ def mock_db():
         "source_name": "测试来源",
         "content": "",
     }
+    db.update_article_content.return_value = True
     return db
 
 
 @pytest.fixture
 def mock_crawler():
-    """Mock Crawler."""
-    return MagicMock()
+    """Mock Crawler with session, parser, and timeout."""
+    c = MagicMock()
+    c.timeout = 30
+    # Make session().get() take long enough for duplicate-dedup test
+    mock_response = MagicMock()
+    mock_response.text = "<html><body><p>新闻正文内容</p></body></html>"
+
+    def delayed_get(*args, **kwargs):
+        time.sleep(0.3)
+        return mock_response
+
+    mock_session = MagicMock()
+    mock_session.get.side_effect = delayed_get
+    c.session.return_value = mock_session
+
+    mock_parser = MagicMock()
+    mock_parser.parse.return_value = {"markdown": "新闻正文内容"}
+    c.parser = mock_parser
+    return c
 
 
 @pytest.fixture(autouse=True)
