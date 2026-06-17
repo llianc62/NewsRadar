@@ -100,6 +100,14 @@
           </div>
         </div><!-- /date-popover -->
       </div><!-- /date-filter-trigger -->
+
+        <!-- Notification bell -->
+        <div class="bell-btn-wrap">
+          <button class="bell-btn" id="bell-btn" onclick="toggleDrawer()" title="消息通知">
+            {{ icon_svg("bell") | safe }}
+          </button>
+          <span class="bell-badge" id="bell-badge" data-count="0"></span>
+        </div>
     </div><!-- /section-header -->
 
     <!-- Control Deck -->
@@ -170,6 +178,17 @@
 
   </div><!-- /content-cards -->
 </div><!-- /app-main -->
+
+<!-- Notification Drawer -->
+<div class="notify-overlay" id="notify-overlay" onclick="closeDrawer()"></div>
+<div class="notify-drawer" id="notify-drawer">
+  <div class="notify-drawer-list" id="notify-list">
+    <div class="notify-empty">
+      {{ icon_svg("bell") | safe }}
+      <span>暂无未读消息</span>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
