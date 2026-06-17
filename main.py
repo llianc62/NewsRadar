@@ -161,7 +161,8 @@ class NewsRadarDaemon:
             "sync": self._sync_signal,
         }
         s3_config = self.config.get("storage", {}).get("resource", {})
-        app = create_app(self.db, s3_config, signals=signals)
+        web_crawler = Crawler(self.config, pg_db=self.db)
+        app = create_app(self.db, s3_config, signals=signals, crawler=web_crawler)
         web_task = asyncio.create_task(self._serve_web(app), name="web")
 
         # 4. Launch Workers (wait for signal → execute job → loop)
