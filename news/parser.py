@@ -11,7 +11,7 @@ import trafilatura
 import html as _html
 
 from typing import Any, Dict, List, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from lxml import html as lxml_html
 from lxml.etree import ParseError
@@ -25,13 +25,18 @@ BLOCK_TAGS = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "ul", "ol",
 
 @dataclass
 class Block:
-    """A block-level content node extracted from DOM for boundary detection."""
+    """A block-level content node extracted from DOM for boundary detection.
+
+    ``element`` holds the live lxml element reference so the pruning
+    phase can locate this block in the parsed tree.
+    """
 
     tag: str
     text: str
     text_len: int
     link_density: float
-    html: str  # original inner HTML, preserved for trafilatura
+    html: str  # serialized HTML of this element
+    element: Any = field(default=None, repr=False, compare=False)  # lxml element
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -380,6 +385,7 @@ class HtmlParser:
                 text_len=text_len,
                 link_density=link_density,
                 html=element_html,
+                element=el,
             ))
         return blocks
 
@@ -387,11 +393,11 @@ class HtmlParser:
     def _trim_noise(html: str) -> Optional[str]:
         """Trim head/tail noise from HTML before feeding to trafilatura.
 
-        Extracts block-level content nodes, finds the first "real content"
-        block (the head boundary) and the last (the tail boundary), and
-        returns the reassembled HTML wrapped in a minimal container
-        (``<html><body><article>``) so trafilatura can recognize headings
-        and document structure correctly.
+        Uses block-level content nodes to detect the article body
+        boundaries, then prunes the original DOM tree — removing elements
+        before the start boundary and after the end boundary.  This
+        preserves ALL original content between the boundaries (images,
+        tables, formatting, etc.), not just the block-level elements.
 
         Returns None when boundaries cannot be reliably detected — callers
         should fall back to the original HTML.
@@ -459,11 +465,66 @@ class HtmlParser:
         if start > end:
             return None
 
-        # ── Reassemble ──────────────────────────────────────────────
-        # Wrap in a minimal container so trafilatura can recognize
-        # headings and document structure correctly.
-        body_html = "".join(b.html for b in blocks[start:end + 1])
+        # ── Prune the original DOM tree ─────────────────────────────
+        # Locate the boundary elements in the lxml tree and remove
+        # everything outside the [start_el, end_el] range.
+        start_el = blocks[start].element
+        end_el = blocks[end].element
+
+        body = tree.find(".//body")
+        container = body if body is not None else tree
+
+        HtmlParser._remove_before(container, start_el)
+        HtmlParser._remove_after(container, end_el)
+
+        # trafilatura needs an <article> wrapper to recognise headings
+        # (bare <h1> inside <body> is treated as plain text).  Wrap the
+        # body's remaining children so trafilatura can see the structure.
+        body_html = (body.text or "") + "".join(
+            lxml_html.tostring(child, encoding="unicode")
+            for child in body
+        )
         return f"<html><body><article>{body_html}</article></body></html>"
+
+    # ── Tree-pruning helpers ────────────────────────────────────────
+
+    @staticmethod
+    def _contains_or_is(ancestor, descendant):
+        """Return True if *ancestor* is *descendant* or contains it."""
+        if ancestor is descendant:
+            return True
+        parent = descendant.getparent()
+        while parent is not None:
+            if parent is ancestor:
+                return True
+            parent = parent.getparent()
+        return False
+
+    @staticmethod
+    def _remove_before(parent, target):
+        """Remove children of *parent* that come before the child
+        containing *target* in document order.  Recurse into nested
+        containers to prune predecessors at every depth."""
+        for child in list(parent):
+            if HtmlParser._contains_or_is(child, target):
+                # *target* lives inside this child — recurse if nested
+                if child is not target:
+                    HtmlParser._remove_before(child, target)
+                return  # everything after this child is >= target
+            parent.remove(child)
+
+    @staticmethod
+    def _remove_after(parent, target):
+        """Remove children of *parent* that come after the child
+        containing *target* in document order.  Iterates in reverse so
+        removals don't shift earlier positions."""
+        for child in reversed(list(parent)):
+            if HtmlParser._contains_or_is(child, target):
+                # *target* lives inside this child — recurse if nested
+                if child is not target:
+                    HtmlParser._remove_after(child, target)
+                return  # everything before this child is <= target
+            parent.remove(child)
 
     # ── SPA data extraction ────────────────────────────────────────
 
