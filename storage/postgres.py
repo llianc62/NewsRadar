@@ -713,14 +713,15 @@ class PostgreSQL:
                 )
                 return cur.fetchall()
 
-    def update_article_content(self, article_id: int, content: str) -> None:
-        """Set the content (Markdown) for an article."""
+    def update_article_content(self, article_id: int, content: str) -> bool:
+        """Update an article's content field directly. Returns True if a row was updated."""
         with self.get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE news_articles SET content = %s WHERE id = %s",
+                    "UPDATE news_articles SET content = %s, updated_at = NOW() WHERE id = %s",
                     (content, article_id),
                 )
+                return cur.rowcount > 0
 
     def save_article_image(
         self,
