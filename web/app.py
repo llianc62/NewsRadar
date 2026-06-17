@@ -177,7 +177,7 @@ def create_app(db, s3_config: dict, signals: dict = None):
             date_from=date_from, date_to=date_to,
         )
         total_pages = max(1, (total + per_page - 1) // per_page)
-        stats_data = db.get_stats()
+        stats_data = db.get_stats(date_from=date_from, date_to=date_to)
         sentiment_counts = db.get_sentiment_counts(
             tier=tier_filter, keyword=keyword,
             date_from=date_from, date_to=date_to,

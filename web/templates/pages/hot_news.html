@@ -25,11 +25,22 @@
             {%- if current_date_from == current_date_to and current_date_from == today_date -%}
               今日
             {%- elif current_date_from and current_date_to -%}
-              {{ current_date_from }} → {{ current_date_to }}
+              自定义
             {%- elif current_date_from -%}
               {{ current_date_from }}
             {%- else -%}
               全部
+            {%- endif -%}
+          </span>
+          <span class="date-trigger-range" id="date-trigger-range">
+            {%- if current_date_from == current_date_to and current_date_from == today_date -%}
+              {{ today_date }}
+            {%- elif current_date_from and current_date_to -%}
+              {{ current_date_from }} → {{ current_date_to }}
+            {%- elif current_date_from -%}
+              {{ current_date_from }}
+            {%- else -%}
+              不限时间范围
             {%- endif -%}
           </span>
           <span class="date-trigger-chevron">
@@ -57,7 +68,7 @@
                   ('all',     '全部'),
                 ] %}
                 {% for pid, plabel in presets %}
-                <button class="date-preset-btn" data-preset="{{ pid }}"
+                <button class="date-preset-btn{% if pid == 'today' %} today-btn{% endif %}" data-preset="{{ pid }}"
                         onclick="selectPreset('{{ pid }}')">
                   <span class="date-preset-btn-name">{{ plabel }}</span>
                   <span class="date-preset-btn-range" id="preset-range-{{ pid }}"></span>
@@ -302,6 +313,12 @@ function highlightActivePreset() {
       if (label) {
         var nameEl = btn.querySelector('.date-preset-btn-name');
         label.textContent = nameEl ? nameEl.textContent : pid;
+      }
+      // Update trigger range
+      var range = document.getElementById('date-trigger-range');
+      if (range) {
+        var rangeEl = btn.querySelector('.date-preset-btn-range');
+        range.textContent = rangeEl ? rangeEl.textContent : p.from;
       }
       found = true;
     } else {

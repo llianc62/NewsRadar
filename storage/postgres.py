@@ -661,25 +661,38 @@ class PostgreSQL:
                     article["images"] = cur.fetchall()
                 return article
 
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self, date_from: Optional[str] = None, date_to: Optional[str] = None) -> Dict[str, Any]:
         """Return dashboard stats: counts by tier, source, and today's new."""
+        conditions = ["(confidence IS NULL OR confidence >= 20)"]
+        params: list = []
+        if date_from:
+            conditions.append("published_at >= %s::date")
+            params.append(date_from)
+        if date_to:
+            conditions.append("published_at < %s::date + interval '1 day'")
+            params.append(date_to)
+        where_clause = " WHERE " + " AND ".join(conditions)
+
         with self.get_conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(
-                    """SELECT
+                    f"""SELECT
                          COUNT(*) FILTER (WHERE tier = 1) AS t1_count,
                          COUNT(*) FILTER (WHERE tier = 2) AS t2_count,
                          COUNT(*) FILTER (WHERE tier = 3) AS t3_count,
                          COUNT(*) FILTER (WHERE tier = 4) AS t4_count,
                          COUNT(*) AS total_count,
-                         COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE) AS today_count
-                       FROM news_articles
-                       WHERE confidence IS NULL OR confidence >= 20"""
+                         COUNT(*) FILTER (WHERE published_at >= CURRENT_DATE
+                                          AND published_at < CURRENT_DATE + interval '1 day')
+                           AS today_count
+                       FROM news_articles{where_clause}""",
+                    params,
                 )
                 stats = dict(cur.fetchone())
 
                 cur.execute(
-                    "SELECT source_name, COUNT(*) AS cnt FROM news_articles GROUP BY source_name ORDER BY cnt DESC"
+                    f"SELECT source_name, COUNT(*) AS cnt FROM news_articles{where_clause} GROUP BY source_name ORDER BY cnt DESC",
+                    params,
                 )
                 stats["by_source"] = cur.fetchall()
 
