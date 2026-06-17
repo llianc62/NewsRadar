@@ -126,3 +126,57 @@ class TestNotificationsEndpoint:
         resp = client.get("/api/notifications/unread-count")
         assert resp.status_code == 200
         assert resp.json() == {"count": 0}
+
+    def test_notifications_unread_only_filter(self, client):
+        """unread_only=true should only return unread notifications."""
+        resp = client.post("/api/news/1/refetch")
+        assert resp.status_code == 200
+        resp = client.get("/api/notifications?unread_only=true")
+        data = resp.json()
+        assert len(data) >= 0
+        for n in data:
+            assert n.get("is_read") is False
+
+    def test_mark_notification_read_success(self, client):
+        """Should mark a notification as read."""
+        client.post("/api/news/1/refetch")
+        resp = client.post("/api/notifications/1/read")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True}
+
+    def test_mark_notification_read_404(self, client):
+        """Should return 404 for non-existent notification."""
+        resp = client.post("/api/notifications/99999/read")
+        assert resp.status_code == 404
+        assert resp.json()["ok"] is False
+
+    def test_refetch_when_crawler_not_ready(self, client):
+        """Should return error when crawler is None."""
+        from web.app import create_app
+        from unittest.mock import patch
+        mock_db2 = MagicMock()
+        mock_db2.get_news_by_id.return_value = {
+            "id": 1, "title": "Test", "url": "https://example.com",
+            "source_name": "Test", "content": "",
+        }
+        s3_config = {
+            "endpoint_url": "http://localhost:9000",
+            "bucket_name": "test", "access_key_id": "test",
+            "secret_access_key": "test", "region": "us-east-1",
+        }
+        with patch("web.app.S3Storage") as mock_s3:
+            mock_s3.return_value = MagicMock()
+            app2 = create_app(mock_db2, s3_config, crawler=None)
+        client2 = TestClient(app2)
+        resp = client2.post("/api/news/1/refetch")
+        assert resp.json()["ok"] is False
+        assert "未就绪" in resp.json().get("error", "")
+
+    def test_unread_count_decrements_after_mark_read(self, client):
+        """Unread count should decrement after marking a notification as read."""
+        client.post("/api/news/1/refetch")
+        resp = client.get("/api/notifications/unread-count")
+        assert resp.json()["count"] == 1
+        client.post("/api/notifications/1/read")
+        resp = client.get("/api/notifications/unread-count")
+        assert resp.json()["count"] == 0
