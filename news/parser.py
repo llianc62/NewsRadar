@@ -381,7 +381,9 @@ class HtmlParser:
 
         Extracts block-level content nodes, finds the first "real content"
         block (the head boundary) and the last (the tail boundary), and
-        returns only the HTML between them.
+        returns the reassembled HTML wrapped in a minimal container
+        (``<html><body><article>``) so trafilatura can recognize headings
+        and document structure correctly.
 
         Returns None when boundaries cannot be reliably detected — callers
         should fall back to the original HTML.
