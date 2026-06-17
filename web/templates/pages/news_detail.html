@@ -193,6 +193,16 @@
 </style>
 
 </div>
+
+  <!-- Tool Bar -->
+  <div class="tool-bar">
+    <button class="tool-btn"
+            onclick="fetch('/api/news/{{ article.id }}/refetch', {method:'POST'})"
+            title="重新抓取">
+      {{ icon_svg("refresh") | safe }}
+    </button>
+  </div>
+
 </div>
 
 <script>
