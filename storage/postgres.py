@@ -401,6 +401,8 @@ class PostgreSQL:
         min_confidence: Optional[int] = None,
         sentiment: Optional[str] = None,
         keyword: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Return recent news articles with optional filters."""
         conditions = ["TRUE"]
@@ -426,6 +428,13 @@ class PostgreSQL:
         if keyword is not None:
             conditions.append("%s = ANY(tags)")
             params.append(keyword)
+        # Date filtering: published_at within [date_from, date_to] inclusive full days
+        if date_from is not None:
+            conditions.append("published_at >= %s::date")
+            params.append(date_from)
+        if date_to is not None:
+            conditions.append("published_at < %s::date + interval '1 day'")
+            params.append(date_to)
 
         where = " AND ".join(conditions)
 
@@ -452,6 +461,8 @@ class PostgreSQL:
         min_confidence: Optional[int] = None,
         sentiment: Optional[str] = None,
         keyword: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
     ) -> int:
         """Return total count of news articles matching filters."""
         conditions: List[str] = []
@@ -478,6 +489,12 @@ class PostgreSQL:
         if keyword is not None:
             conditions.append("%s = ANY(tags)")
             params.append(keyword)
+        if date_from is not None:
+            conditions.append("published_at >= %s::date")
+            params.append(date_from)
+        if date_to is not None:
+            conditions.append("published_at < %s::date + interval '1 day'")
+            params.append(date_to)
 
         where = " AND ".join(conditions)
 
@@ -493,6 +510,8 @@ class PostgreSQL:
         self,
         tier: Optional[int] = None,
         keyword: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
     ) -> Dict[str, int]:
         """Return {positive, negative, neutral} counts for sentiment bar."""
         conditions = ["(confidence IS NULL OR confidence >= 20)"]
@@ -504,6 +523,12 @@ class PostgreSQL:
         if keyword is not None:
             conditions.append("%s = ANY(tags)")
             params.append(keyword)
+        if date_from is not None:
+            conditions.append("published_at >= %s::date")
+            params.append(date_from)
+        if date_to is not None:
+            conditions.append("published_at < %s::date + interval '1 day'")
+            params.append(date_to)
 
         where = " AND ".join(conditions)
 
@@ -524,6 +549,8 @@ class PostgreSQL:
         tier: Optional[int] = None,
         sentiment: Optional[str] = None,
         limit: int = 30,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Return [{tag, cnt}] for keyword cloud, sorted by frequency."""
         conditions = ["(confidence IS NULL OR confidence >= 20)"]
@@ -538,6 +565,12 @@ class PostgreSQL:
             conditions.append("sentiment_score <= 33")
         elif sentiment == "neutral":
             conditions.append("sentiment_score > 33 AND sentiment_score < 67")
+        if date_from is not None:
+            conditions.append("published_at >= %s::date")
+            params.append(date_from)
+        if date_to is not None:
+            conditions.append("published_at < %s::date + interval '1 day'")
+            params.append(date_to)
 
         where = " AND ".join(conditions)
 
@@ -555,12 +588,13 @@ class PostgreSQL:
         self,
         tier: Optional[int] = None,
         keyword: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
     ) -> int:
-        """Return count of high-heat today articles (proxy for 'immediate impact')."""
+        """Return count of high-heat articles (proxy for 'immediate impact')."""
         conditions = [
             "(confidence IS NULL OR confidence >= 20)",
             "heat_score >= 80",
-            "created_at >= CURRENT_DATE",
         ]
         params: List[Any] = []
 
@@ -570,6 +604,16 @@ class PostgreSQL:
         if keyword is not None:
             conditions.append("%s = ANY(tags)")
             params.append(keyword)
+        # Use date parameters instead of hardcoded CURRENT_DATE
+        if date_from is not None:
+            conditions.append("published_at >= %s::date")
+            params.append(date_from)
+        if date_to is not None:
+            conditions.append("published_at < %s::date + interval '1 day'")
+            params.append(date_to)
+        # Fall back to today when no date params given (backward compatible)
+        if date_from is None and date_to is None:
+            conditions.append("published_at >= CURRENT_DATE")
 
         where = " AND ".join(conditions)
 
