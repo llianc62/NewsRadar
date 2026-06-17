@@ -11,6 +11,28 @@ import trafilatura
 import html as _html
 
 from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+
+from lxml import html as lxml_html
+from lxml.etree import ParseError
+
+# ═══════════════════════════════════════════════════════════════════
+# Block — extracted block-level content node
+# ═══════════════════════════════════════════════════════════════════
+
+BLOCK_TAGS = {"p", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "ul", "ol", "pre"}
+
+
+@dataclass
+class Block:
+    """A block-level content node extracted from DOM for boundary detection."""
+
+    tag: str
+    text: str
+    text_len: int
+    link_density: float
+    html: str  # original inner HTML, preserved for trafilatura
+
 
 # ═══════════════════════════════════════════════════════════════════
 # HtmlParser
@@ -290,6 +312,119 @@ class HtmlParser:
             "category": category,
             "tags": tags or [],
         }
+
+    # ── Block extraction & noise trimming ──────────────────────────
+
+    @staticmethod
+    def _extract_blocks(tree) -> List["Block"]:
+        """Extract block-level content nodes from lxml tree in document order.
+
+        Only outermost block nodes are included — nested blocks (e.g.
+        ``<blockquote><p>...</p></blockquote>``) yield only the parent,
+        avoiding duplicate content.
+
+        Each block's ``html`` is the full serialized element including its
+        tag, so the reassembled fragment is valid HTML for trafilatura.
+        """
+        blocks: List[Block] = []
+        for el in tree.iter():
+            tag = el.tag if isinstance(el.tag, str) else ""
+            if tag not in BLOCK_TAGS:
+                continue
+
+            # skip nested blocks — only keep the outermost block ancestor
+            parent = el.getparent()
+            if parent is not None:
+                parent_tag = parent.tag if isinstance(parent.tag, str) else ""
+                if parent_tag in BLOCK_TAGS:
+                    continue
+
+            text_content = el.text_content()
+            text = " ".join(text_content.split())
+            text_len = len(text)
+            if text_len == 0:
+                continue
+
+            # calculate link density: ratio of link text to total text
+            link_text = " ".join(
+                a.text_content() for a in el.iter("a")
+                if a.text_content()
+            )
+            link_text = " ".join(link_text.split())
+            link_len = len(link_text)
+            link_density = link_len / text_len if text_len > 0 else 0.0
+
+            # serialize the full element (including its tag) for reassembly
+            element_html = lxml_html.tostring(el, encoding="unicode")
+
+            blocks.append(Block(
+                tag=tag,
+                text=text,
+                text_len=text_len,
+                link_density=link_density,
+                html=element_html,
+            ))
+        return blocks
+
+    @staticmethod
+    def _trim_noise(html: str) -> Optional[str]:
+        """Trim head/tail noise from HTML before feeding to trafilatura.
+
+        Extracts block-level content nodes, finds the first "real content"
+        block (the head boundary) and the last (the tail boundary), and
+        returns only the HTML between them.
+
+        Returns None when boundaries cannot be reliably detected — callers
+        should fall back to the original HTML.
+        """
+        try:
+            tree = lxml_html.fromstring(html)
+        except ParseError:
+            return None
+
+        blocks = HtmlParser._extract_blocks(tree)
+
+        # no blocks — nothing to work with
+        if not blocks:
+            return None
+
+        # ── Find start (trim head) ──────────────────────────────────
+        start = 0
+        start_found = False
+        for i, b in enumerate(blocks):
+            if b.text_len >= 80 and b.link_density < 0.3:
+                start = i
+                start_found = True
+                break
+            if b.tag in ("h1", "h2", "h3") and b.text_len >= 2:
+                start = i
+                start_found = True
+                break
+
+        # ── Find end (trim tail) ────────────────────────────────────
+        end = len(blocks) - 1
+        end_found = False
+        for i in range(len(blocks) - 1, -1, -1):
+            b = blocks[i]
+            if b.text_len >= 50 and b.link_density < 0.3:
+                end = i
+                end_found = True
+                break
+            if b.tag in ("h1", "h2", "h3", "h4") and b.text_len >= 2:
+                end = i
+                end_found = True
+                break
+
+        # No boundaries detected — degrade
+        if not start_found and not end_found:
+            return None
+
+        # Overlap — degrade
+        if start > end:
+            return None
+
+        # ── Reassemble ──────────────────────────────────────────────
+        return "".join(b.html for b in blocks[start:end + 1])
 
     # ── SPA data extraction ────────────────────────────────────────
 
