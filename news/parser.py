@@ -541,37 +541,67 @@ class HtmlParser:
 
     @staticmethod
     def _remove_meta_between(before_el, after_el):
-        """Remove non-content wrapper elements (div, span, etc.) that sit
-        between *before_el* and *after_el* at the sibling level.
+        """Remove non-content wrapper elements between *before_el* and
+        *after_el* in the DOM tree.
 
-        Only removes elements that are NOT in BLOCK_TAGS and do NOT
-        contain visual media (img, video, iframe) — this strips
-        metadata wrappers (author, date, share buttons) while keeping
-        legitimate visual content like hero images.
+        Handles two cases:
+
+        1. Both elements share the same parent — cleans siblings
+           directly between them.
+        2. *after_el* is nested inside a later sibling of *before_el*
+           (e.g. content div wrapping body paragraphs) — walks siblings
+           after *before_el*, removing noise wrappers until the
+           container that holds *after_el* is reached.
         """
         parent = before_el.getparent()
-        if parent is None or parent is not after_el.getparent():
+        if parent is None:
             return
 
-        between = False
+        # Case 1: same parent — clean siblings between them
+        if parent is after_el.getparent():
+            between = False
+            for child in list(parent):
+                if child is before_el:
+                    between = True
+                    continue
+                if child is after_el:
+                    break
+                if between and HtmlParser._is_noise_wrapper(child):
+                    parent.remove(child)
+            return
+
+        # Case 2: different parents — walk siblings after before_el,
+        # removing noise wrappers until we hit the container that
+        # holds after_el
+        after = False
         for child in list(parent):
             if child is before_el:
-                between = True
+                after = True
                 continue
-            if child is after_el:
-                break
-            if not between:
+            if not after:
                 continue
-            child_tag = child.tag if isinstance(child.tag, str) else ""
-            if child_tag in BLOCK_TAGS:
-                continue
-            if child.find(".//img") is not None:
-                continue
-            if child.find(".//video") is not None:
-                continue
-            if child.find(".//iframe") is not None:
-                continue
-            parent.remove(child)
+            if HtmlParser._contains_or_is(child, after_el):
+                break  # content container — stop
+            if HtmlParser._is_noise_wrapper(child):
+                parent.remove(child)
+
+    @staticmethod
+    def _is_noise_wrapper(el):
+        """Return True if *el* is a metadata/noise wrapper, not content."""
+        tag = el.tag if isinstance(el.tag, str) else ""
+        if tag in BLOCK_TAGS:
+            return False
+        if el.find(".//img") is not None:
+            return False
+        if el.find(".//video") is not None:
+            return False
+        if el.find(".//iframe") is not None:
+            return False
+        # Contains nested block-level content → content container
+        for t in BLOCK_TAGS:
+            if el.find(f".//{t}") is not None:
+                return False
+        return True
 
     # ── SPA data extraction ────────────────────────────────────────
 
