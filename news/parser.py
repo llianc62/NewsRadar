@@ -477,12 +477,25 @@ class HtmlParser:
         HtmlParser._remove_before(container, start_el)
         HtmlParser._remove_after(container, end_el)
 
+        # ── Clean metadata wrappers between heading and body ─────────
+        # div/span wrappers for author, date, share buttons sitting
+        # between h1 and the first body paragraph survive the range
+        # prune above — remove them while keeping visual content
+        # (figures, images, videos).
+        body_anchor = start
+        for i in range(start + 1, len(blocks)):
+            if blocks[i].tag not in ("h1", "h2", "h3", "h4", "h5", "h6"):
+                body_anchor = i
+                break
+        if body_anchor != start:
+            HtmlParser._remove_meta_between(start_el, blocks[body_anchor].element)
+
         # trafilatura needs an <article> wrapper to recognise headings
         # (bare <h1> inside <body> is treated as plain text).  Wrap the
-        # body's remaining children so trafilatura can see the structure.
-        body_html = (body.text or "") + "".join(
+        # remaining children so trafilatura can see the structure.
+        body_html = (container.text or "") + "".join(
             lxml_html.tostring(child, encoding="unicode")
-            for child in body
+            for child in container
         )
         return f"<html><body><article>{body_html}</article></body></html>"
 
@@ -524,6 +537,40 @@ class HtmlParser:
                 if child is not target:
                     HtmlParser._remove_after(child, target)
                 return  # everything before this child is <= target
+            parent.remove(child)
+
+    @staticmethod
+    def _remove_meta_between(before_el, after_el):
+        """Remove non-content wrapper elements (div, span, etc.) that sit
+        between *before_el* and *after_el* at the sibling level.
+
+        Only removes elements that are NOT in BLOCK_TAGS and do NOT
+        contain visual media (img, video, iframe) — this strips
+        metadata wrappers (author, date, share buttons) while keeping
+        legitimate visual content like hero images.
+        """
+        parent = before_el.getparent()
+        if parent is None or parent is not after_el.getparent():
+            return
+
+        between = False
+        for child in list(parent):
+            if child is before_el:
+                between = True
+                continue
+            if child is after_el:
+                break
+            if not between:
+                continue
+            child_tag = child.tag if isinstance(child.tag, str) else ""
+            if child_tag in BLOCK_TAGS:
+                continue
+            if child.find(".//img") is not None:
+                continue
+            if child.find(".//video") is not None:
+                continue
+            if child.find(".//iframe") is not None:
+                continue
             parent.remove(child)
 
     # ── SPA data extraction ────────────────────────────────────────
