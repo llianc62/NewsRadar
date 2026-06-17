@@ -946,7 +946,7 @@ a { color: inherit; text-decoration: none; }
   border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--surface); cursor: pointer;
   color: var(--text-muted); padding: 0;
-  transition: all var(--duration-fast); box-shadow: var(--shadow-xs);
+  transition: color var(--duration-fast), border-color var(--duration-fast), box-shadow var(--duration-fast); box-shadow: var(--shadow-xs);
 }
 
 .bell-btn:hover { border-color: var(--accent); color: var(--accent); box-shadow: var(--shadow-sm); }
