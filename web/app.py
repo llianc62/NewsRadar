@@ -144,37 +144,45 @@ def create_app(db, s3_config: dict, signals: dict = None):
         tier: int = Query(None, ge=0, le=4),
         sentiment: str = Query(None),
         keyword: str = Query(None),
-        panel_page: int = Query(1, ge=1),
-        panel_size: int = Query(30),
+        date_from: str = Query(None),
+        date_to: str = Query(None),
+        page_size: int = Query(50, ge=10, le=100),
     ):
-        """Hot news page — editorial masonry layout with control deck."""
-        per_page = 20
+        """Hot news page — editorial masonry layout with date-first filtering."""
+        per_page = page_size  # 使用用户选择的每页条数
         offset = (page - 1) * per_page
         tier_filter = tier if tier and tier > 0 else None
+
+        # ── Date range defaults ──
+        from datetime import date as date_type
+        today_str = date_type.today().isoformat()
+        if date_from is None and date_to is None:
+            date_from = today_str
+            date_to = today_str
 
         # ── Data ──
         articles = db.get_recent_news(
             limit=per_page, offset=offset,
             tier=tier_filter, sentiment=sentiment, keyword=keyword,
+            date_from=date_from, date_to=date_to,
         )
         total = db.get_news_count(
             tier=tier_filter, sentiment=sentiment, keyword=keyword,
+            date_from=date_from, date_to=date_to,
         )
         total_pages = max(1, (total + per_page - 1) // per_page)
         stats_data = db.get_stats()
-        sentiment_counts = db.get_sentiment_counts(tier=tier_filter, keyword=keyword)
-        keyword_list = db.get_keyword_counts(tier=tier_filter, sentiment=sentiment)
-        high_impact = db.get_high_impact_count(tier=tier_filter, keyword=keyword)
-
-        # ── Panel (separate pagination) ──
-        panel_offset = (panel_page - 1) * panel_size
-        panel_articles = db.get_recent_news(
-            limit=panel_size, offset=panel_offset,
-            tier=tier_filter, sentiment=sentiment, keyword=keyword,
+        sentiment_counts = db.get_sentiment_counts(
+            tier=tier_filter, keyword=keyword,
+            date_from=date_from, date_to=date_to,
         )
-        panel_total = max(1, (total + panel_size - 1) // panel_size)
+        keyword_list = db.get_keyword_counts(tier=tier_filter, sentiment=sentiment)
+        high_impact = db.get_high_impact_count(
+            tier=tier_filter, keyword=keyword,
+            date_from=date_from, date_to=date_to,
+        )
 
-        # ── Tier labels with counts ──
+
         tier_labels_with_counts = [
             {"tier": 0, "label": "全部", "count": stats_data["total_count"]},
             {"tier": 1, "label": "T1·核心", "count": stats_data["t1_count"]},
@@ -250,38 +258,6 @@ def create_app(db, s3_config: dict, signals: dict = None):
         masonry_cards = [_to_card(a) for a in articles]
         page_numbers = _build_page_numbers(page, total_pages)
 
-        # ── Panel item transform ──
-        def _to_panel_item(article: dict, seq: int) -> dict:
-            score = article.get("sentiment_score")
-            if score is not None and score >= SENTIMENT_POSITIVE_THRESHOLD:
-                sentiment_class = "positive"
-                sentiment_label = "利好"
-            elif score is not None and score <= SENTIMENT_NEGATIVE_THRESHOLD:
-                sentiment_class = "negative"
-                sentiment_label = "利空"
-            else:
-                sentiment_class = "neutral"
-                sentiment_label = "中性"
-            return {
-                "id": article.get("id"),
-                "seq": seq,
-                "title": article.get("title", ""),
-                "source": article.get("source_name", ""),
-                "time": _relative_time(article.get("published_at")),
-                "sentiment": sentiment_label,
-                "sentiment_class": sentiment_class,
-            }
-
-        panel_items = [
-            _to_panel_item(a, panel_offset + i + 1)
-            for i, a in enumerate(panel_articles)
-        ]
-        panel_page_numbers = _build_page_numbers(panel_page, panel_total)
-
-        # ── Today date ──
-        from datetime import datetime
-        today_date = datetime.now().strftime("%Y-%m-%d")
-
         html = render_template(
             "pages/hot_news.html",
             active_page="hot-news",
@@ -305,14 +281,12 @@ def create_app(db, s3_config: dict, signals: dict = None):
             total_pages=total_pages,
             current_page=page,
             page_numbers=page_numbers,
-            # Panel
-            panel_items=panel_items,
-            panel_page=panel_page,
-            panel_size=panel_size,
-            panel_total_pages=panel_total,
-            panel_page_numbers=panel_page_numbers,
-            # Misc
-            today_date=today_date,
+            # Date
+            current_date_from=date_from,
+            current_date_to=date_to,
+            today_date=today_str,
+            # Pagination
+            current_page_size=per_page,
         )
         return HTMLResponse(html)
 
@@ -372,13 +346,10 @@ def _remove_filter(request, key: str) -> str:
     params = dict(request.query_params)
     params.pop(key, None)
     params["page"] = "1"
-    params["panel_page"] = "1"
-    if not params.get("tier"):
-        params.pop("tier", None)
-    if not params.get("sentiment"):
-        params.pop("sentiment", None)
-    if not params.get("keyword"):
-        params.pop("keyword", None)
+    # Clean up empty params
+    for k in ("tier", "sentiment", "keyword", "date_from", "date_to"):
+        if not params.get(k):
+            params.pop(k, None)
     qs = urlencode(params) if params else ""
     base = str(request.url).split("?")[0]
     return f"{base}?{qs}" if qs else base
