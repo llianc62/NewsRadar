@@ -1,0 +1,15 @@
+<div class="card-body">
+  <div class="card-meta">
+    <span class="card-source{% if card.tier_class %} {{ card.tier_class }}{% endif %}">{{ card.source }}</span>
+    <span class="card-heat">&#x1F525; {{ card.heat }}</span>
+  </div>
+  <a href="/news/{{ card.id }}" class="card-title-link">{{ card.title }}</a>
+  <div class="card-summary">{{ card.summary }}</div>
+  <div class="card-footer">
+    <span class="card-tag {{ card.sentiment_class }}">{{ card.sentiment }}</span>
+    {% for kw in card.keywords[:2] %}
+    <span class="card-tag keyword">{{ kw }}</span>
+    {% endfor %}
+    <span class="card-time">{{ card.time }}</span>
+  </div>
+</div>

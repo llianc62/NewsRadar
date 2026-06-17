@@ -1,34 +1,314 @@
 {% extends "base.html" %}
-{% block title %}NewsRadar · 热点新闻{% endblock %}
+{% block title %}NewsRadar &middot; 热点新闻{% endblock %}
 
 {% block content %}
 <div class="app-main">
-
-  <!-- Cards area (scrollable) -->
   <div class="content-cards">
 
-    <!-- Section Header -->
+    <!-- Section Header with Date Filter Trigger -->
     <div class="section-header">
       <div class="section-header-line"></div>
       <h1>热点新闻</h1>
-      <span class="date">{{ today_date }}</span>
-      <!-- Panel toggle button -->
-      <label for="panel-toggle" class="panel-toggle-btn" style="margin-left:12px;">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h10"/></svg>
-        全部新闻
-      </label>
-    </div>
+
+      <div class="date-filter-trigger" id="date-filter-trigger">
+        <button class="date-trigger-btn" id="date-trigger-btn"
+                onclick="toggleDatePopover()" aria-label="选择日期范围">
+          <span class="date-trigger-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="4" width="18" height="18" rx="3"/>
+              <path d="M3 10h18"/><path d="M8 2v4"/><path d="M16 2v4"/>
+            </svg>
+          </span>
+          <span class="date-trigger-dot"></span>
+          <span class="date-trigger-label" id="date-trigger-label">
+            {%- if current_date_from == current_date_to and current_date_from == today_date -%}
+              今日
+            {%- elif current_date_from and current_date_to -%}
+              {{ current_date_from }} → {{ current_date_to }}
+            {%- elif current_date_from -%}
+              {{ current_date_from }}
+            {%- else -%}
+              全部
+            {%- endif -%}
+          </span>
+          <span class="date-trigger-chevron">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round"><path d="M3 6l5 4 5-4"/></svg>
+          </span>
+        </button>
+
+        <!-- Date Popover -->
+        <div class="date-popover" id="date-popover">
+          <div class="date-popover-arrow"></div>
+          <div class="date-popover-inner">
+            <!-- Quick presets: 4x2 grid -->
+            <div class="date-popover-section">
+              <span class="date-popover-section-label">快捷筛选</span>
+              <div class="date-preset-grid">
+                {% set presets = [
+                  ('today',   '今日'),
+                  ('3days',   '近3天'),
+                  ('week',    '近一周'),
+                  ('month',   '近一月'),
+                  ('3months', '近三月'),
+                  ('year',    '近一年'),
+                  ('thisYear','今年'),
+                  ('all',     '全部'),
+                ] %}
+                {% for pid, plabel in presets %}
+                <button class="date-preset-btn" data-preset="{{ pid }}"
+                        onclick="selectPreset('{{ pid }}')">
+                  <span class="date-preset-btn-name">{{ plabel }}</span>
+                  <span class="date-preset-btn-range" id="preset-range-{{ pid }}"></span>
+                </button>
+                {% endfor %}
+              </div>
+            </div>
+
+            <!-- Custom range -->
+            <div class="date-popover-section">
+              <span class="date-popover-section-label">自定义范围</span>
+              <div class="date-custom-row">
+                <div class="date-field">
+                  <span class="date-field-label">开始日期</span>
+                  <input type="date" id="date-from" value="{{ current_date_from or '' }}">
+                </div>
+                <span class="date-custom-range-sep">&rarr;</span>
+                <div class="date-field">
+                  <span class="date-field-label">结束日期</span>
+                  <input type="date" id="date-to" value="{{ current_date_to or '' }}">
+                </div>
+              </div>
+            </div>
+
+            <div class="date-popover-actions">
+              <button class="date-reset-btn" onclick="resetToToday()">重置为今日</button>
+              <button class="date-apply-btn" onclick="applyCustomDate()">应用自定义范围</button>
+            </div>
+          </div>
+        </div><!-- /date-popover -->
+      </div><!-- /date-filter-trigger -->
+    </div><!-- /section-header -->
 
     <!-- Control Deck -->
     {% include "components/control_deck.html" %}
 
+    <!-- Results Bar -->
+    <div class="results-bar">
+      <div class="results-count">共 <strong>{{ total_count }}</strong> 条新闻</div>
+      <div class="results-controls">
+        <label for="page-size">每页显示</label>
+        <select class="page-size-select" id="page-size"
+                onchange="changePageSize(this.value)">
+          {% for ps in [20, 30, 50, 100] %}
+          <option value="{{ ps }}"{% if ps == current_page_size %} selected{% endif %}>{{ ps }} 条</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
     <!-- Masonry Cards -->
-    {% include "components/news_cards.html" %}
+    {% if masonry_cards %}
+    <div class="masonry">
+      {% for card in masonry_cards %}
+      <div class="masonry-card" style="animation-delay:{{ '%.2f' % (loop.index0 * 0.025) }}s">
+        {% include "components/news_card_item.html" %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round">
+        <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+      </svg>
+      <h3>该时间范围内暂无新闻</h3>
+      <p>尝试调整日期筛选条件或切换其他预设范围</p>
+    </div>
+    {% endif %}
 
-  </div>
+    <!-- Pagination -->
+    {% if total_pages > 1 %}
+    <div class="pagination-bar">
+      {% if current_page > 1 %}
+      <a href="?page={{ current_page - 1 }}&amp;page_size={{ current_page_size }}{% if current_tier %}&amp;tier={{ current_tier }}{% endif %}{% if current_sentiment %}&amp;sentiment={{ current_sentiment }}{% endif %}{% if current_keyword %}&amp;keyword={{ current_keyword }}{% endif %}{% if current_date_from %}&amp;date_from={{ current_date_from }}{% endif %}{% if current_date_to %}&amp;date_to={{ current_date_to }}{% endif %}"
+         class="pg-btn arr">&lsaquo;</a>
+      {% else %}
+      <span class="pg-btn arr disabled">&lsaquo;</span>
+      {% endif %}
 
-  <!-- Right Panel (slide-in) -->
-  {% include "components/news_list.html" %}
+      {% for pn in page_numbers %}
+        {% if pn == '...' %}
+        <span class="pg-ellipsis">&hellip;</span>
+        {% elif pn == current_page %}
+        <span class="pg-btn active">{{ pn }}</span>
+        {% else %}
+        <a href="?page={{ pn }}&amp;page_size={{ current_page_size }}{% if current_tier %}&amp;tier={{ current_tier }}{% endif %}{% if current_sentiment %}&amp;sentiment={{ current_sentiment }}{% endif %}{% if current_keyword %}&amp;keyword={{ current_keyword }}{% endif %}{% if current_date_from %}&amp;date_from={{ current_date_from }}{% endif %}{% if current_date_to %}&amp;date_to={{ current_date_to }}{% endif %}"
+           class="pg-btn">{{ pn }}</a>
+        {% endif %}
+      {% endfor %}
 
-</div>
+      {% if current_page < total_pages %}
+      <a href="?page={{ current_page + 1 }}&amp;page_size={{ current_page_size }}{% if current_tier %}&amp;tier={{ current_tier }}{% endif %}{% if current_sentiment %}&amp;sentiment={{ current_sentiment }}{% endif %}{% if current_keyword %}&amp;keyword={{ current_keyword }}{% endif %}{% if current_date_from %}&amp;date_from={{ current_date_from }}{% endif %}{% if current_date_to %}&amp;date_to={{ current_date_to }}{% endif %}"
+         class="pg-btn arr">&rsaquo;</a>
+      {% else %}
+      <span class="pg-btn arr disabled">&rsaquo;</span>
+      {% endif %}
+    </div>
+    {% endif %}
+
+  </div><!-- /content-cards -->
+</div><!-- /app-main -->
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ── Date helpers ──
+const TODAY = '{{ today_date }}';
+
+function dateToStr(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return y + '-' + m + '-' + day;
+}
+
+function getToday() { return new Date(TODAY + 'T00:00:00'); }
+
+function addDays(date, n) {
+  var r = new Date(date);
+  r.setDate(r.getDate() + n);
+  return r;
+}
+
+// ── Preset definitions (computed from TODAY) ──
+var PRESETS = {};
+
+function initPresets() {
+  var t = getToday();
+  var todayStr = TODAY;
+  PRESETS = {
+    today:    { from: todayStr,               to: todayStr },
+    '3days':  { from: dateToStr(addDays(t, -2)),  to: todayStr },
+    week:     { from: dateToStr(addDays(t, -6)),  to: todayStr },
+    month:    { from: dateToStr(addDays(t, -29)), to: todayStr },
+    '3months':{ from: dateToStr(addDays(t, -89)), to: todayStr },
+    year:     { from: dateToStr(addDays(t, -364)), to: todayStr },
+    thisYear: { from: todayStr.slice(0, 4) + '-01-01', to: todayStr },
+    all:      { from: '',                      to: '' },
+  };
+
+  // Show preset ranges in the popover
+  Object.keys(PRESETS).forEach(function(pid) {
+    var el = document.getElementById('preset-range-' + pid);
+    if (!el) return;
+    var p = PRESETS[pid];
+    if (pid === 'all') {
+      el.textContent = '不限';
+    } else if (p.from === p.to) {
+      el.textContent = p.from;
+    } else {
+      el.textContent = p.from + ' → ' + p.to;
+    }
+  });
+}
+
+// ── Navigation ──
+function navigateDate(from, to) {
+  var params = new URLSearchParams(window.location.search);
+  if (from) params.set('date_from', from); else params.delete('date_from');
+  if (to) params.set('date_to', to);       else params.delete('date_to');
+  params.set('page', '1');
+  window.location.search = params.toString();
+}
+
+function selectPreset(preset) {
+  if (preset === 'all') {
+    var params = new URLSearchParams(window.location.search);
+    params.delete('date_from');
+    params.delete('date_to');
+    params.set('page', '1');
+    window.location.search = params.toString();
+  } else {
+    var p = PRESETS[preset];
+    if (p) navigateDate(p.from, p.to);
+  }
+}
+
+function applyCustomDate() {
+  var from = document.getElementById('date-from').value;
+  var to = document.getElementById('date-to').value;
+  if (!from || !to) return;
+  if (from > to) { alert('开始日期不能晚于结束日期'); return; }
+  navigateDate(from, to);
+}
+
+function resetToToday() {
+  navigateDate(TODAY, TODAY);
+}
+
+function changePageSize(size) {
+  var params = new URLSearchParams(window.location.search);
+  params.set('page_size', size);
+  params.set('page', '1');
+  window.location.search = params.toString();
+}
+
+// ── Popover toggle ──
+function toggleDatePopover() {
+  var popover = document.getElementById('date-popover');
+  var btn = document.getElementById('date-trigger-btn');
+  popover.classList.toggle('is-visible');
+  btn.classList.toggle('is-open');
+}
+
+document.addEventListener('click', function(e) {
+  var trigger = document.getElementById('date-filter-trigger');
+  if (trigger && !trigger.contains(e.target)) {
+    var popover = document.getElementById('date-popover');
+    var btn = document.getElementById('date-trigger-btn');
+    if (popover) popover.classList.remove('is-visible');
+    if (btn) btn.classList.remove('is-open');
+  }
+});
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    var popover = document.getElementById('date-popover');
+    var btn = document.getElementById('date-trigger-btn');
+    if (popover) popover.classList.remove('is-visible');
+    if (btn) btn.classList.remove('is-open');
+  }
+});
+
+// ── Highlight active preset on load ──
+function highlightActivePreset() {
+  var curFrom = '{{ current_date_from }}';
+  var curTo = '{{ current_date_to }}';
+  var btns = document.querySelectorAll('.date-preset-btn');
+  var found = false;
+  btns.forEach(function(btn) {
+    var pid = btn.getAttribute('data-preset');
+    if (!pid) return;
+    var p = PRESETS[pid];
+    if (!p) return;
+    if (p.from === curFrom && p.to === curTo) {
+      btn.classList.add('active');
+      // Update trigger label
+      var label = document.getElementById('date-trigger-label');
+      if (label) {
+        var nameEl = btn.querySelector('.date-preset-btn-name');
+        label.textContent = nameEl ? nameEl.textContent : pid;
+      }
+      found = true;
+    } else {
+      btn.classList.remove('active');
+    }
+  });
+}
+
+// ── Init ──
+initPresets();
+highlightActivePreset();
+</script>
 {% endblock %}
