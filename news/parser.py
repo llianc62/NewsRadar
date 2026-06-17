@@ -103,12 +103,21 @@ class HtmlParser:
     # ── trafilatura path ───────────────────────────────────────────
 
     def _extract_with_trafilatura(self, html: str, url: str) -> Optional[Dict[str, Any]]:
-        """Use trafilatura for content + metadata extraction."""
+        """Use trafilatura for content + metadata extraction.
+
+        HTML is first preprocessed by :meth:`_trim_noise` to remove
+        head/tail UI noise (nav, footer, share buttons, etc.) before
+        extraction.
+        """
 
         title = self._extract_title_from_html(html)
 
+        # ── Preprocess: trim head/tail noise ──────────────────────────
+        clean_html = self._trim_noise(html)
+        source_html = clean_html if clean_html is not None else html
+
         markdown = trafilatura.extract(
-            html,
+            source_html,
             url=url,
             output_format="markdown",
             include_tables=True,
@@ -424,7 +433,10 @@ class HtmlParser:
             return None
 
         # ── Reassemble ──────────────────────────────────────────────
-        return "".join(b.html for b in blocks[start:end + 1])
+        # Wrap in a minimal container so trafilatura can recognize
+        # headings and document structure correctly.
+        body_html = "".join(b.html for b in blocks[start:end + 1])
+        return f"<html><body><article>{body_html}</article></body></html>"
 
     # ── SPA data extraction ────────────────────────────────────────
 
