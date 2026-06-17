@@ -441,22 +441,22 @@ def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
         if not url:
             return {"ok": False, "error": "该文章没有原文链接"}
 
-        # Create notification + task
-        notif = _add_notification(article_id, title, status="pending")
-        task = {"article_id": article_id, "title": title,
-                "status": "pending", "created_at": notif["created_at"]}
-
         # Dedup (under lock)
         with _notification_lock:
             existing = _refetch_tasks.get(article_id)
             if existing and existing["status"] in ("pending", "running"):
                 return {"ok": False, "error": "该文章正在抓取中"}
-            # Reserve slot
-            _refetch_tasks[article_id] = task
 
         c = app.state.crawler
         if c is None:
             return {"ok": False, "error": "抓取服务未就绪"}
+
+        # All validations passed — create notification + task
+        notif = _add_notification(article_id, title, status="pending")
+        task = {"article_id": article_id, "title": title,
+                "status": "pending", "created_at": notif["created_at"]}
+        with _notification_lock:
+            _refetch_tasks[article_id] = task
 
         _refetch_executor.submit(_run_refetch, article_id, url, title,
                                  c, db, notif)

@@ -172,7 +172,7 @@
 
     var html = '';
     data.forEach(function(n) {
-      var dotClass = n.status === 'completed' ? 'done' : 'fail';
+      var dotClass = n.status === 'completed' ? 'done' : n.status === 'failed' ? 'fail' : 'running';
       var statusClass = n.status === 'completed' ? 'done' : n.status === 'failed' ? 'fail' : 'running';
       var statusText = n.status === 'completed' ? '已完成' : n.status === 'failed' ? '失败' : '抓取中';
 
