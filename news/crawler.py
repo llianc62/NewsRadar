@@ -40,6 +40,16 @@ class OutputStyle(Enum):
     POSTGRESQL = "postgresql"
 
 
+class StorageTarget(Enum):
+    """Public enum for selecting the image storage backend.
+
+    Used by :meth:`Crawler.fetch` so callers never access private members.
+    """
+
+    LOCAL = "local"
+    RESOURCE = "resource"
+
+
 class Crawler:
     """News crawler — fetch, enrich, persist.
 
@@ -94,6 +104,19 @@ class Crawler:
 
     # ── HTTP session ─────────────────────────────────────────────────
 
+    @staticmethod
+    def _fix_response_encoding(response, *args, **kwargs):
+        """Response hook: correct encoding when the server omits charset.
+
+        RFC 2616 §3.7.1 defaults to ISO-8859-1 when no charset is
+        specified, but many sites serve UTF-8 content.  chardet (via
+        ``apparent_encoding``) detects the real encoding and we apply it
+        before ``resp.text`` is ever accessed.
+        """
+        if response.encoding == "ISO-8859-1" and response.apparent_encoding == "utf-8":
+            response.encoding = response.apparent_encoding
+        return response
+
     def session(self) -> requests.Session:
         if self._session is None:
             self._session = requests.Session()
@@ -105,6 +128,7 @@ class Crawler:
                 "Accept": "text/html,application/xhtml+xml",
                 "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             })
+            self._session.hooks["response"].append(self._fix_response_encoding)
         return self._session
 
     # ── Lazy resources ───────────────────────────────────────────────
@@ -148,6 +172,7 @@ class Crawler:
         output_style: OutputStyle,
         with_content: bool = True,
         with_image: bool = False,
+        target_storage: StorageTarget | None = None,
     ) -> None:
         """Grab a single URL — download, parse, optionally download images, save.
 
@@ -156,12 +181,16 @@ class Crawler:
             output_style: Persistence target.
             with_content: If False, save metadata only (no HTTP request).
             with_image: If True, download article images after parsing.
+            image_storage: Which storage backend to use for images.
+                :attr:`StorageTarget.LOCAL` — local filesystem.
+                :attr:`StorageTarget.RESOURCE` — S3/MinIO.
+                ``None`` (default) — resource if available, else local.
         """
         tiers = {"manual": {"tier": 4, "priority": 0}}
         item: Dict[str, Any] = {
             "title": "",
             "source_id": "manual",
-            "source_name": "Manual Grab",
+            "source_name": "人工添加",
             "source_type": "manual",
             "url": url,
             "rank": 0,
@@ -172,17 +201,15 @@ class Crawler:
         try:
             resp = self.session().get(url, timeout=self.timeout)
             resp.raise_for_status()
-            if resp.encoding == "ISO-8859-1" and resp.apparent_encoding == "utf-8":
-                resp.encoding = resp.apparent_encoding
         except requests.RequestException as e:
-            print(f"[Crawler] HTTP error for {url}: {e}")
-            return
+            raise requests.RequestException(
+                f"HTTP 请求失败: {e}"
+            ) from e
 
         # ── Parse to Markdown ──────────────────────────────────────
         parsed = self.parser.parse(resp.text, url)
         if not parsed:
-            print(f"[Crawler] No content extracted: {url}")
-            return
+            raise Exception(f"无法提取页面正文内容: {url}")
 
         item["title"] = parsed.get("title")
         item["author"] = parsed.get("author", "")
@@ -202,7 +229,13 @@ class Crawler:
 
             # Phase 2: batch image download (if requested)
             if with_image:
-                self._run_batch_image_download([item], self._local_storage)
+                if target_storage is StorageTarget.LOCAL:
+                    storage = self._local_storage
+                elif target_storage is StorageTarget.RESOURCE:
+                    storage = self._resource_storage
+                else:
+                    storage = self._resource_storage or self._local_storage
+                self._run_batch_image_download([item], storage)
 
         self._persist(output_style, item, source_tiers=tiers)
 
@@ -344,8 +377,6 @@ class Crawler:
         try:
             resp = self.session().get(url, timeout=self.timeout)
             resp.raise_for_status()
-            if resp.encoding == "ISO-8859-1" and resp.apparent_encoding == "utf-8":
-                resp.encoding = resp.apparent_encoding
         except requests.RequestException as e:
             print(f"[Crawler] HTTP error for {url}: {e}")
             return False
@@ -356,7 +387,6 @@ class Crawler:
             print(f"[Crawler] No content extracted: {url}")
             return False
 
-        item["title"] = parsed.get("title") or item.get("title", "")
         item["content"] = parsed["markdown"]
         item["author"] = parsed.get("author", "")
         item["published_at"] = parsed.get("published_at", "")

@@ -25,24 +25,14 @@ def mock_db():
 
 @pytest.fixture
 def mock_crawler():
-    """Mock Crawler with session, parser, and timeout."""
+    """Mock Crawler with fetch() that delays for duplicate-dedup test."""
     c = MagicMock()
     c.timeout = 30
-    # Make session().get() take long enough for duplicate-dedup test
-    mock_response = MagicMock()
-    mock_response.text = "<html><body><p>新闻正文内容</p></body></html>"
 
-    def delayed_get(*args, **kwargs):
+    def delayed_fetch(*args, **kwargs):
         time.sleep(0.3)
-        return mock_response
 
-    mock_session = MagicMock()
-    mock_session.get.side_effect = delayed_get
-    c.session.return_value = mock_session
-
-    mock_parser = MagicMock()
-    mock_parser.parse.return_value = {"markdown": "新闻正文内容"}
-    c.parser = mock_parser
+    c.fetch.side_effect = delayed_fetch
     return c
 
 

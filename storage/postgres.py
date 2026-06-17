@@ -51,6 +51,18 @@ _UPDATE_SET = """title = EXCLUDED.title,
             ELSE news_articles.content
         END"""
 
+_UPDATE_SET_OVERWRITE = """title = EXCLUDED.title,
+        rank = EXCLUDED.rank,
+        mobile_url = EXCLUDED.mobile_url,
+        crawled_at = EXCLUDED.crawled_at,
+        updated_at = NOW(),
+        priority = EXCLUDED.priority,
+        tier = EXCLUDED.tier,
+        summary = EXCLUDED.summary,
+        category = EXCLUDED.category,
+        tags = EXCLUDED.tags,
+        content = EXCLUDED.content"""
+
 _HOTLIST_INSERT_SQL = f"""{_INSERT_PREFIX}
 ON CONFLICT (source_id, url)
 WHERE source_type = 'hotlist' AND url != ''
@@ -69,6 +81,16 @@ DO UPDATE SET {_UPDATE_SET}"""
 _RSS_INSERT_SKIP_SQL = f"""{_INSERT_PREFIX}
 ON CONFLICT (source_id, guid)
 WHERE source_type = 'rss' AND guid != ''
+DO NOTHING"""
+
+_MANUAL_INSERT_SQL = f"""{_INSERT_PREFIX}
+ON CONFLICT (source_id, url)
+WHERE source_type = 'manual' AND url != ''
+DO UPDATE SET {_UPDATE_SET_OVERWRITE}"""
+
+_MANUAL_INSERT_SKIP_SQL = f"""{_INSERT_PREFIX}
+ON CONFLICT (source_id, url)
+WHERE source_type = 'manual' AND url != ''
 DO NOTHING"""
 
 _FALLBACK_INSERT_SQL = f"{_INSERT_PREFIX}"
@@ -211,11 +233,13 @@ class PostgreSQL:
         """Save NewsData to PostgreSQL with batch UPSERT logic.
 
         Items are partitioned by ON CONFLICT target (hotlist / rss /
-        fallback) and inserted in batches of up to 100 rows per
-        round-trip using ``execute_values``.
+        manual / fallback) and inserted in batches using
+        ``execute_values``.
 
-        Dedup: hotlist on (source_id, url), rss on (source_id, guid).
-        Content is preserved via CASE WHEN on conflict.
+        Dedup: hotlist on (source_id, url), rss on (source_id, guid),
+        manual on (source_id, url).
+        Content is preserved via CASE WHEN on conflict for hotlist/rss;
+        manual always overwrites content.
         """
         if source_tiers is None:
             source_tiers = {}
@@ -223,6 +247,7 @@ class PostgreSQL:
         # Partition items by conflict-target type
         hotlist_rows: List[Tuple] = []
         rss_rows: List[Tuple] = []
+        manual_rows: List[Tuple] = []
         fallback_rows: List[Tuple] = []
 
         for source_id, news_list in news_data.items.items():
@@ -239,6 +264,8 @@ class PostgreSQL:
                     hotlist_rows.append(row)
                 elif item.source_type == "rss" and item.guid:
                     rss_rows.append(row)
+                elif item.source_type == "manual" and item.url:
+                    manual_rows.append(row)
                 else:
                     fallback_rows.append(row)
 
@@ -263,6 +290,15 @@ class PostgreSQL:
                         else _RSS_INSERT_SQL
                     )
                     n, s = self._execute_batch(cur, sql, rss_rows)
+                    processed += n
+                    skipped += s
+
+                if manual_rows:
+                    sql = (
+                        _MANUAL_INSERT_SKIP_SQL if skip_existing
+                        else _MANUAL_INSERT_SQL
+                    )
+                    n, s = self._execute_batch(cur, sql, manual_rows)
                     processed += n
                     skipped += s
 
@@ -401,6 +437,7 @@ class PostgreSQL:
         min_confidence: Optional[int] = None,
         sentiment: Optional[str] = None,
         keyword: Optional[str] = None,
+        search: Optional[str] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
@@ -428,6 +465,12 @@ class PostgreSQL:
         if keyword is not None:
             conditions.append("%s = ANY(tags)")
             params.append(keyword)
+        if search is not None:
+            conditions.append(
+                "to_tsvector('simple', title || ' ' || COALESCE(summary, '')) "
+                "@@ plainto_tsquery('simple', %s)"
+            )
+            params.append(search)
         # Date filtering: published_at within [date_from, date_to] inclusive full days
         if date_from is not None:
             conditions.append("published_at >= %s::date")
@@ -461,6 +504,7 @@ class PostgreSQL:
         min_confidence: Optional[int] = None,
         sentiment: Optional[str] = None,
         keyword: Optional[str] = None,
+        search: Optional[str] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
     ) -> int:
@@ -489,6 +533,12 @@ class PostgreSQL:
         if keyword is not None:
             conditions.append("%s = ANY(tags)")
             params.append(keyword)
+        if search is not None:
+            conditions.append(
+                "to_tsvector('simple', title || ' ' || COALESCE(summary, '')) "
+                "@@ plainto_tsquery('simple', %s)"
+            )
+            params.append(search)
         if date_from is not None:
             conditions.append("published_at >= %s::date")
             params.append(date_from)
@@ -510,6 +560,7 @@ class PostgreSQL:
         self,
         tier: Optional[int] = None,
         keyword: Optional[str] = None,
+        search: Optional[str] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
     ) -> Dict[str, int]:
@@ -523,6 +574,12 @@ class PostgreSQL:
         if keyword is not None:
             conditions.append("%s = ANY(tags)")
             params.append(keyword)
+        if search is not None:
+            conditions.append(
+                "to_tsvector('simple', title || ' ' || COALESCE(summary, '')) "
+                "@@ plainto_tsquery('simple', %s)"
+            )
+            params.append(search)
         if date_from is not None:
             conditions.append("published_at >= %s::date")
             params.append(date_from)
@@ -548,6 +605,7 @@ class PostgreSQL:
         self,
         tier: Optional[int] = None,
         sentiment: Optional[str] = None,
+        search: Optional[str] = None,
         limit: int = 30,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
@@ -565,6 +623,12 @@ class PostgreSQL:
             conditions.append("sentiment_score <= 33")
         elif sentiment == "neutral":
             conditions.append("sentiment_score > 33 AND sentiment_score < 67")
+        if search is not None:
+            conditions.append(
+                "to_tsvector('simple', title || ' ' || COALESCE(summary, '')) "
+                "@@ plainto_tsquery('simple', %s)"
+            )
+            params.append(search)
         if date_from is not None:
             conditions.append("published_at >= %s::date")
             params.append(date_from)
@@ -588,6 +652,7 @@ class PostgreSQL:
         self,
         tier: Optional[int] = None,
         keyword: Optional[str] = None,
+        search: Optional[str] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
     ) -> int:
@@ -604,6 +669,12 @@ class PostgreSQL:
         if keyword is not None:
             conditions.append("%s = ANY(tags)")
             params.append(keyword)
+        if search is not None:
+            conditions.append(
+                "to_tsvector('simple', title || ' ' || COALESCE(summary, '')) "
+                "@@ plainto_tsquery('simple', %s)"
+            )
+            params.append(search)
         # Use date parameters instead of hardcoded CURRENT_DATE
         if date_from is not None:
             conditions.append("published_at >= %s::date")
@@ -661,7 +732,8 @@ class PostgreSQL:
                     article["images"] = cur.fetchall()
                 return article
 
-    def get_stats(self, date_from: Optional[str] = None, date_to: Optional[str] = None) -> Dict[str, Any]:
+    def get_stats(self, date_from: Optional[str] = None, date_to: Optional[str] = None,
+                  search: Optional[str] = None) -> Dict[str, Any]:
         """Return dashboard stats: counts by tier, source, and today's new."""
         conditions = ["(confidence IS NULL OR confidence >= 20)"]
         params: list = []
@@ -671,6 +743,12 @@ class PostgreSQL:
         if date_to:
             conditions.append("published_at < %s::date + interval '1 day'")
             params.append(date_to)
+        if search is not None:
+            conditions.append(
+                "to_tsvector('simple', title || ' ' || COALESCE(summary, '')) "
+                "@@ plainto_tsquery('simple', %s)"
+            )
+            params.append(search)
         where_clause = " WHERE " + " AND ".join(conditions)
 
         with self.get_conn() as conn:
@@ -697,6 +775,16 @@ class PostgreSQL:
                 stats["by_source"] = cur.fetchall()
 
                 return stats
+
+    def get_article_by_url(self, url: str) -> Optional[Dict[str, Any]]:
+        """Return the first article matching *url*, or None."""
+        with self.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT id, title, url FROM news_articles WHERE url = %s ORDER BY id LIMIT 1",
+                    (url,),
+                )
+                return cur.fetchone()
 
     def get_articles_without_content(self, limit: int = 10) -> List[Dict[str, Any]]:
         """Return articles where content is NULL/empty, ordered by priority."""

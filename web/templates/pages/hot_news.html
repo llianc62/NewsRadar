@@ -113,6 +113,68 @@
     <!-- Control Deck -->
     {% include "components/control_deck.html" %}
 
+    <!-- Action Bar — search + submit URL -->
+    <div class="action-bar">
+      <div class="search-wrap" id="search-wrap">
+        <span class="search-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
+          </svg>
+        </span>
+        <input
+          type="text"
+          class="search-input"
+          id="search-input"
+          placeholder="搜索标题、摘要…"
+          value="{{ current_search or '' }}"
+          autocomplete="off"
+        >
+        <button class="search-clear" id="search-clear" title="清除搜索"
+                {% if not current_search %}style="display:none"{% endif %}
+                onclick="clearSearch()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+        </button>
+        <div class="search-spinner" id="search-spinner"></div>
+      </div>
+
+      <button class="submit-btn" id="submit-btn" onclick="openSubmitModal()">
+        <span class="submit-btn-plus">+</span>
+        <span class="submit-btn-label">提交新闻</span>
+      </button>
+    </div>
+
+    <!-- Submit URL Modal -->
+    <div class="modal-overlay" id="submit-modal-overlay" onclick="closeSubmitModal()">
+      <div class="submit-modal" onclick="event.stopPropagation()">
+        <div class="submit-modal-header">
+          <button class="submit-modal-back" onclick="closeSubmitModal()" title="返回">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+          </button>
+          <div class="submit-modal-title">提交新闻链接</div>
+        </div>
+
+        <div class="submit-modal-body">
+          <label class="submit-modal-label">新闻链接</label>
+          <input
+            type="url"
+            class="submit-modal-input"
+            id="submit-url-input"
+            placeholder="https://example.com/news/article"
+            autocomplete="off"
+          >
+          <div class="submit-modal-hint">
+            系统将自动抓取标题、正文，分析情感关键词并存入数据库。抓取完成后通知栏会收到提醒。
+          </div>
+          <div class="submit-modal-error" id="submit-modal-error"></div>
+        </div>
+
+        <div class="submit-modal-footer">
+          <button class="submit-modal-cancel" onclick="closeSubmitModal()">取消</button>
+          <button class="submit-modal-confirm" id="submit-modal-confirm" onclick="submitFetchUrl()">开始抓取</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Results Bar -->
     <div class="results-bar">
       <div class="results-count">共 <strong>{{ total_count }}</strong> 条新闻</div>
@@ -150,7 +212,7 @@
     {% if total_pages > 1 %}
     <div class="pagination-bar">
       {% if current_page > 1 %}
-      <a href="?page={{ current_page - 1 }}&amp;page_size={{ current_page_size }}{% if current_tier %}&amp;tier={{ current_tier }}{% endif %}{% if current_sentiment %}&amp;sentiment={{ current_sentiment }}{% endif %}{% if current_keyword %}&amp;keyword={{ current_keyword }}{% endif %}{% if current_date_from %}&amp;date_from={{ current_date_from }}{% endif %}{% if current_date_to %}&amp;date_to={{ current_date_to }}{% endif %}"
+      <a href="?page={{ current_page - 1 }}&amp;page_size={{ current_page_size }}{% if current_tier %}&amp;tier={{ current_tier }}{% endif %}{% if current_sentiment %}&amp;sentiment={{ current_sentiment }}{% endif %}{% if current_keyword %}&amp;keyword={{ current_keyword }}{% endif %}{% if current_search %}&amp;search={{ current_search }}{% endif %}{% if current_date_from %}&amp;date_from={{ current_date_from }}{% endif %}{% if current_date_to %}&amp;date_to={{ current_date_to }}{% endif %}"
          class="pg-btn arr">&lsaquo;</a>
       {% else %}
       <span class="pg-btn arr disabled">&lsaquo;</span>
@@ -162,13 +224,13 @@
         {% elif pn == current_page %}
         <span class="pg-btn active">{{ pn }}</span>
         {% else %}
-        <a href="?page={{ pn }}&amp;page_size={{ current_page_size }}{% if current_tier %}&amp;tier={{ current_tier }}{% endif %}{% if current_sentiment %}&amp;sentiment={{ current_sentiment }}{% endif %}{% if current_keyword %}&amp;keyword={{ current_keyword }}{% endif %}{% if current_date_from %}&amp;date_from={{ current_date_from }}{% endif %}{% if current_date_to %}&amp;date_to={{ current_date_to }}{% endif %}"
+        <a href="?page={{ pn }}&amp;page_size={{ current_page_size }}{% if current_tier %}&amp;tier={{ current_tier }}{% endif %}{% if current_sentiment %}&amp;sentiment={{ current_sentiment }}{% endif %}{% if current_keyword %}&amp;keyword={{ current_keyword }}{% endif %}{% if current_search %}&amp;search={{ current_search }}{% endif %}{% if current_date_from %}&amp;date_from={{ current_date_from }}{% endif %}{% if current_date_to %}&amp;date_to={{ current_date_to }}{% endif %}"
            class="pg-btn">{{ pn }}</a>
         {% endif %}
       {% endfor %}
 
       {% if current_page < total_pages %}
-      <a href="?page={{ current_page + 1 }}&amp;page_size={{ current_page_size }}{% if current_tier %}&amp;tier={{ current_tier }}{% endif %}{% if current_sentiment %}&amp;sentiment={{ current_sentiment }}{% endif %}{% if current_keyword %}&amp;keyword={{ current_keyword }}{% endif %}{% if current_date_from %}&amp;date_from={{ current_date_from }}{% endif %}{% if current_date_to %}&amp;date_to={{ current_date_to }}{% endif %}"
+      <a href="?page={{ current_page + 1 }}&amp;page_size={{ current_page_size }}{% if current_tier %}&amp;tier={{ current_tier }}{% endif %}{% if current_sentiment %}&amp;sentiment={{ current_sentiment }}{% endif %}{% if current_keyword %}&amp;keyword={{ current_keyword }}{% endif %}{% if current_search %}&amp;search={{ current_search }}{% endif %}{% if current_date_from %}&amp;date_from={{ current_date_from }}{% endif %}{% if current_date_to %}&amp;date_to={{ current_date_to }}{% endif %}"
          class="pg-btn arr">&rsaquo;</a>
       {% else %}
       <span class="pg-btn arr disabled">&rsaquo;</span>
@@ -345,6 +407,175 @@ function highlightActivePreset() {
     }
   });
 }
+
+// ── Search with debounce ──
+(function() {
+  var input = document.getElementById('search-input');
+  var clear = document.getElementById('search-clear');
+  var spinner = document.getElementById('search-spinner');
+  var timer = null;
+  var lastValue = input.value;
+
+  function doSearch(value) {
+    // Avoid duplicate navigation for same value
+    var params = new URLSearchParams(window.location.search);
+    var current = params.get('search') || '';
+    if (value === current) return;
+
+    if (value) {
+      params.set('search', value);
+    } else {
+      params.delete('search');
+    }
+    params.set('page', '1');
+    window.location.search = params.toString();
+  }
+
+  function scheduleSearch(val) {
+    clearTimeout(timer);
+    if (spinner) spinner.style.display = 'block';
+    if (clear) clear.style.display = 'none';
+    timer = setTimeout(function() {
+      lastValue = val;
+      if (spinner) spinner.style.display = 'none';
+      if (clear) clear.style.display = 'flex';
+      doSearch(val);
+    }, 5000);
+  }
+
+  input.addEventListener('input', function() {
+    var val = this.value;
+    if (clear) clear.style.display = val.length > 0 ? 'flex' : 'none';
+
+    if (val === '') {
+      // Clear immediately — no need to wait
+      clearTimeout(timer);
+      lastValue = '';
+      if (spinner) spinner.style.display = 'none';
+      if (clear) clear.style.display = 'none';
+      doSearch('');
+      return;
+    }
+
+    if (val === lastValue) return;
+    scheduleSearch(val);
+  });
+
+  window.clearSearch = function() {
+    input.value = '';
+    lastValue = '';
+    if (clear) clear.style.display = 'none';
+    if (spinner) spinner.style.display = 'none';
+    clearTimeout(timer);
+    doSearch('');
+  };
+
+  input.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      var val = this.value;
+      clearTimeout(timer);
+      lastValue = val;
+      if (spinner) spinner.style.display = 'none';
+      if (val.length > 0 && clear) clear.style.display = 'flex';
+      doSearch(val);
+    }
+    if (e.key === 'Escape' && this.value) {
+      e.preventDefault();
+      clearSearch();
+    }
+  });
+})();
+
+// ── Submit URL Modal ──
+function openSubmitModal() {
+  var overlay = document.getElementById('submit-modal-overlay');
+  if (overlay) overlay.classList.add('is-open');
+  document.body.style.overflow = 'hidden';
+  setTimeout(function() {
+    var urlInput = document.getElementById('submit-url-input');
+    if (urlInput) urlInput.focus();
+  }, 350);
+}
+
+function closeSubmitModal() {
+  var overlay = document.getElementById('submit-modal-overlay');
+  if (overlay) overlay.classList.remove('is-open');
+  document.body.style.overflow = '';
+  var errorEl = document.getElementById('submit-modal-error');
+  if (errorEl) errorEl.textContent = '';
+  var input = document.getElementById('submit-url-input');
+  if (input) {
+    input.classList.remove('has-error');
+    input.value = '';
+  }
+}
+
+function submitFetchUrl() {
+  var input = document.getElementById('submit-url-input');
+  var btn = document.getElementById('submit-modal-confirm');
+  var errorEl = document.getElementById('submit-modal-error');
+  var url = (input.value || '').trim();
+
+  if (!url) {
+    input.classList.add('has-error');
+    errorEl.textContent = '请输入新闻链接';
+    input.focus();
+    return;
+  }
+  if (!/^https?:\/\//.test(url)) {
+    input.classList.add('has-error');
+    errorEl.textContent = '链接必须以 http:// 或 https:// 开头';
+    input.focus();
+    return;
+  }
+
+  input.classList.remove('has-error');
+  errorEl.textContent = '';
+  btn.disabled = true;
+  btn.textContent = '提交中…';
+
+  fetch('/api/news/fetch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: url }),
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.ok) {
+        closeSubmitModal();
+      } else {
+        errorEl.textContent = data.error || '提交失败，请重试';
+      }
+    })
+    .catch(function() {
+      errorEl.textContent = '网络错误，请检查连接后重试';
+    })
+    .finally(function() {
+      btn.disabled = false;
+      btn.textContent = '开始抓取';
+    });
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') {
+    var overlay = document.getElementById('submit-modal-overlay');
+    if (overlay && overlay.classList.contains('is-open')) {
+      closeSubmitModal();
+    }
+  }
+});
+
+document.addEventListener('DOMContentLoaded', function() {
+  var urlInput = document.getElementById('submit-url-input');
+  if (urlInput) {
+    urlInput.addEventListener('input', function() {
+      this.classList.remove('has-error');
+      var errorEl = document.getElementById('submit-modal-error');
+      if (errorEl) errorEl.textContent = '';
+    });
+  }
+});
 
 // ── Init ──
 initPresets();

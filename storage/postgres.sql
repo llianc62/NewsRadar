@@ -53,6 +53,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_dedup_rss
     ON news_articles (source_id, guid)
     WHERE source_type = 'rss' AND guid != '';
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_dedup_manual
+    ON news_articles (source_id, url)
+    WHERE source_type = 'manual' AND url != '';
+
 -- Query indexes
 CREATE INDEX IF NOT EXISTS idx_published_at   ON news_articles (published_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tier_priority  ON news_articles (tier, priority DESC);

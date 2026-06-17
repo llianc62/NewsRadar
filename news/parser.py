@@ -62,19 +62,14 @@ class HtmlParser:
         crawler_cfg = cfg.get("crawler", {})
         self.max_content_length = crawler_cfg.get("max_content_length", 100000)
 
-        self._has_trafilatura = False
-        try:
-            import trafilatura  # noqa: F401
-            self._has_trafilatura = True
-        except ImportError:
-            pass
-
     # ── Public API ─────────────────────────────────────────────────
 
     def parse(self, html: str, url: str = "") -> Optional[Dict[str, Any]]:
         """Extract Markdown + metadata from HTML.
 
-        Uses trafilatura when available, falling back to HTML-stripping.
+        Priority: SPA embedded data (clean structured JSON) →
+        trafilatura (full-page extraction) → HTML-stripping fallback.
+
         Does **not** download or process images — callers should use
         :class:`ImageProcessor` separately when image handling is needed.
 
@@ -89,14 +84,17 @@ class HtmlParser:
         """
         result = None
 
-        if self._has_trafilatura:
+        # 1. SPA embedded data first — __NEXT_DATA__ / __SSR__ / JSON-LD
+        #    These carry clean article HTML without nav/footer/sidebar noise.
+        result = self._extract_spa_data(html, url)
+
+        # 2. trafilatura — full-page extraction with noise trimming
+        if result is None:
             result = self._extract_with_trafilatura(html, url)
 
+        # 3. HTML-stripping fallback
         if result is None:
             result = self._fallback(html, url)
-
-        if result is None:
-            result = self._extract_spa_data(html, url)
 
         if result is not None:
             md = result.get("markdown", "")
@@ -105,21 +103,79 @@ class HtmlParser:
 
         return result
 
+    # ── Image-heavy content builder ──────────────────────────────────
+
+    @staticmethod
+    def _build_image_markdown(html: str) -> str:
+        """Build markdown from image-heavy HTML when trafilatura fails.
+
+        Extracts ``<img src>`` URLs and remaining text, producing
+        markdown that preserves images even when there's very little
+        body text (e.g. infographic / 一图看懂 articles).
+        """
+        # Extract image URLs from <img> tags
+        imgs = re.findall(
+            r'<img[^>]+src=["\']([^"\']+)["\'][^>]*>',
+            html, re.IGNORECASE,
+        )
+        # Strip tags for remaining text
+        text = re.sub(r'<[^>]+>', '', html)
+        text = _html.unescape(text)
+        text = re.sub(r'\s+', ' ', text).strip()
+
+        parts = [f'![]({url})' for url in imgs]
+        if text:
+            parts.append(text)
+        return '\n\n'.join(parts)
+
+    # ── Lazy-image fix ─────────────────────────────────────────────
+
+    @staticmethod
+    def _fix_lazy_images(html: str) -> str:
+        """Convert lazy-loaded ``data-src`` / ``data-original`` to ``src``.
+
+        Many sites (thepaper.cn, WeChat, etc.) set ``src`` to a 1×1
+        placeholder and put the real URL in ``data-src``.  trafilatura
+        sees only the placeholder.  This rewrites those ``<img>`` tags
+        so the real image is visible to downstream extraction.
+        """
+        # data-src with data-URI placeholder
+        html = re.sub(
+            r'<img([^>]*)\s+data-src="([^"]+)"([^>]*)\s+src="data:image/[^"]*"',
+            r'<img\1 src="\2"\3',
+            html,
+        )
+        # data-original (older lazy-load libraries)
+        html = re.sub(
+            r'<img([^>]*)\s+data-original="([^"]+)"([^>]*)\s+src="data:image/[^"]*"',
+            r'<img\1 src="\2"\3',
+            html,
+        )
+        return html
+
     # ── trafilatura path ───────────────────────────────────────────
 
-    def _extract_with_trafilatura(self, html: str, url: str) -> Optional[Dict[str, Any]]:
+    def _extract_with_trafilatura(
+        self, html: str, url: str, skip_trim: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         """Use trafilatura for content + metadata extraction.
 
         HTML is first preprocessed by :meth:`_trim_noise` to remove
         head/tail UI noise (nav, footer, share buttons, etc.) before
         extraction.
+
+        Set *skip_trim* to True when *html* is already clean article
+        body content (e.g. from SPA JSON) that doesn't need head/tail
+        noise trimming.
         """
 
-        title = self._extract_title_from_html(html)
-
-        # ── Preprocess: trim head/tail noise ──────────────────────────
-        clean_html = self._trim_noise(html)
-        source_html = clean_html if clean_html is not None else html
+        # ── Preprocess: fix lazy images, then trim head/tail noise ────
+        html = self._fix_lazy_images(html)
+        if skip_trim:
+            source_html = html
+        else:
+            clean_html = self._trim_noise(html)
+            source_html = clean_html if clean_html is not None else html
 
         markdown = trafilatura.extract(
             source_html,
@@ -137,7 +193,10 @@ class HtmlParser:
             return None
 
         # 标题来源：正文 H1（干净无后缀） > HTML <title>/og:title
-        title =  self._extract_markdown_heading(markdown) or title
+        title =  self._extract_markdown_heading(markdown)
+
+        if not title:
+            title = self._extract_title_from_html(html)
 
         # 优化 markdown 文本
         markdown = self._beautify_markdown_formatting(markdown)
@@ -636,22 +695,37 @@ class HtmlParser:
             content = article.get("content", "")
             if not content or not isinstance(content, str) or len(content) < 50:
                 continue
+            # 剥离 <blockquote> 标签以免 trafilatura 丢弃其中的 <img>
+            # （华尔街见闻等站点用 <blockquote> 包裹后半段数据罗列内容）
+            content = re.sub(r'</?blockquote[^>]*>', '', content)
             # content is HTML — convert to Markdown
             markdown = None
-            if self._has_trafilatura:
-                extracted = self._extract_with_trafilatura(content, url)
-                if extracted is not None:
-                    markdown = extracted["markdown"]
+            extracted = self._extract_with_trafilatura(content, url, skip_trim=True)
+            if extracted is not None:
+                markdown = extracted["markdown"]
             if markdown is None:
-                markdown = self._fallback(content, url)
-                if markdown is not None:
-                    markdown = markdown["markdown"]
+                fallback_result = self._fallback(content, url)
+                if fallback_result is not None:
+                    markdown = fallback_result["markdown"]
+
+            # Image-heavy content: trafilatura + fallback both fail
+            # because there's too little text.  Build markdown from
+            # <img> tags + any remaining text so the images are preserved.
+            if not markdown or len(markdown.strip()) <= 50:
+                markdown = self._build_image_markdown(content)
+
             if markdown and len(markdown.strip()) > 50:
                 # 从 SPA JSON / JSON-LD 中提取元数据
                 title = article.get("title") or article.get("headline", "")
                 author_val = ""
                 pub_at = article.get("datePublished") or article.get("date", "")
                 summary_val = article.get("description") or article.get("abstract", "")
+                # JSON 里没有 description 时，回退到原始完整 HTML 的 <meta> 标签
+                if not summary_val:
+                    summary_val = (
+                        self._extract_meta(html_text, r'name=["\']description["\']')
+                        or self._extract_meta(html_text, r'property=["\']og:description["\']')
+                    )
                 category_val = ""
                 tags_val: List[str] = []
                 # JSON-LD keywords
@@ -681,26 +755,34 @@ class HtmlParser:
 
         Patterns tried:
         1. ``__SSR__ = {...}`` (Vite SSR, e.g. wallstreetcn.com)
-        2. ``__NEXT_DATA__ = {...}`` (Next.js)
-        3. ``__NUXT__ = {...}`` (Nuxt)
-        4. ``<script type="application/ld+json">`` (JSON-LD / Schema.org)
+        2. ``__NEXT_DATA__ = {...}`` (Next.js JS assignment)
+        3. ``<script id="__NEXT_DATA__" ...>`` (Next.js script tag, e.g. thepaper.cn)
+        4. ``__NUXT__ = {...}`` (Nuxt)
+        5. ``<script type="application/ld+json">`` (JSON-LD / Schema.org)
         """
         # 1. Vite SSR: __SSR__ = {...}
         for data in self._extract_bracketed_json(html_text, r'__SSR__\s*=\s*(\{)'):
             if data:
                 yield data
 
-        # 2. Next.js: __NEXT_DATA__ = {...}
+        # 2. Next.js (JS assignment): __NEXT_DATA__ = {...}
         for data in self._extract_bracketed_json(html_text, r'__NEXT_DATA__\s*=\s*(\{)'):
             if data:
                 yield data
 
-        # 3. Nuxt: __NUXT__ = {...}
+        # 3. Next.js (script tag): <script id="__NEXT_DATA__" ...>{...}</script>
+        for data in self._extract_bracketed_json(
+            html_text, r'<script[^>]*\bid=["\']__NEXT_DATA__["\'][^>]*>\s*(\{)'
+        ):
+            if data:
+                yield data
+
+        # 4. Nuxt: __NUXT__ = {...}
         for data in self._extract_bracketed_json(html_text, r'__NUXT__\s*=\s*(\{)'):
             if data:
                 yield data
 
-        # 4. JSON-LD
+        # 5. JSON-LD
         for data in self._extract_json_ld(html_text):
             if data:
                 yield data
@@ -813,8 +895,8 @@ class HtmlParser:
                                 "articleSection": obj.get("articleSection", ""),
                             }
 
-                # Generic SPA embedded article: title + content
-                title = obj.get("title")
+                # Generic SPA embedded article: title/name + content
+                title = obj.get("title") or obj.get("name", "")
                 content = obj.get("content")
                 if (isinstance(title, str) and isinstance(content, str)
                         and len(title) > 0):

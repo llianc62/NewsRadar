@@ -15,6 +15,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
 from storage.files import S3Storage
+from news.crawler import Crawler, OutputStyle
 from news.constants import (
     TIER_LABELS, TIER_COLORS, TIER_BG,
     SENTIMENT_POSITIVE_THRESHOLD, SENTIMENT_NEGATIVE_THRESHOLD,
@@ -54,6 +55,7 @@ ICONS = {
     "refresh": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>',
     "check-circle": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>',
     "x-circle": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>',
+    "arrow-up": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 20h8"/><path d="M8 17v-4H3l9-9 9 9h-5v4H8z"/></svg>',
 }
 # ── Refetch state (in-memory) ─────────────────────────────────────
 
@@ -90,23 +92,23 @@ def _add_notification(article_id: int, title: str, status: str = "pending",
         return notif
 
 
-def _run_refetch(article_id: int, url: str, title: str, crawler,
-                 db, notif: dict) -> None:
-    """Execute refetch in background thread, update status on completion."""
+def _run_fetch_url(url: str, crawler, notif: dict) -> None:
+    """Execute URL fetch in background — thin wrapper around crawler.fetch()."""
     try:
         notif["status"] = "running"
-        # Download HTML
-        resp = crawler.session().get(url, timeout=crawler.timeout)
-        resp.raise_for_status()
-        # Parse to Markdown
-        parsed = crawler.parser.parse(resp.text, url)
-        if parsed is None:
-            raise Exception("无法提取页面正文内容")
-        content = parsed.get("markdown", "")
-        if not content:
-            raise Exception("提取的正文内容为空")
-        # Update article in DB
-        db.update_article_content(article_id, content)
+        crawler.fetch(url, OutputStyle.POSTGRESQL, True, True)
+        notif["status"] = "completed"
+    except Exception as e:
+        notif["status"] = "failed"
+        notif["error_message"] = str(e)[:500]
+
+
+def _run_refetch(article_id: int, url: str, title: str, crawler,
+                 notif: dict) -> None:
+    """Execute refetch in background thread — thin wrapper around crawler.fetch()."""
+    try:
+        notif["status"] = "running"
+        crawler.fetch(url, OutputStyle.POSTGRESQL, True, True)
         notif["status"] = "completed"
     except Exception as e:
         notif["status"] = "failed"
@@ -225,6 +227,7 @@ def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
         tier: int = Query(None, ge=0, le=4),
         sentiment: str = Query(None),
         keyword: str = Query(None),
+        search: str = Query(None),
         date_from: str = Query(None),
         date_to: str = Query(None),
         page_size: int = Query(20, ge=10, le=50),
@@ -251,24 +254,29 @@ def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
         articles = db.get_recent_news(
             limit=per_page, offset=offset,
             tier=tier_filter, sentiment=sentiment, keyword=keyword,
+            search=search,
             date_from=date_from, date_to=date_to,
         )
         total = db.get_news_count(
             tier=tier_filter, sentiment=sentiment, keyword=keyword,
+            search=search,
             date_from=date_from, date_to=date_to,
         )
         total_pages = max(1, (total + per_page - 1) // per_page)
-        stats_data = db.get_stats(date_from=date_from, date_to=date_to)
+        stats_data = db.get_stats(date_from=date_from, date_to=date_to, search=search)
         sentiment_counts = db.get_sentiment_counts(
             tier=tier_filter, keyword=keyword,
+            search=search,
             date_from=date_from, date_to=date_to,
         )
         keyword_list = db.get_keyword_counts(
             tier=tier_filter, sentiment=sentiment,
+            search=search,
             date_from=date_from, date_to=date_to,
         )
         high_impact = db.get_high_impact_count(
             tier=tier_filter, keyword=keyword,
+            search=search,
             date_from=date_from, date_to=date_to,
         )
 
@@ -320,6 +328,12 @@ def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
                 "type": "keyword",
                 "remove_url": _remove_filter(request, "keyword"),
             })
+        if search:
+            active_filters.append({
+                "label": f"搜索: {search}",
+                "type": "search",
+                "remove_url": _remove_filter(request, "search"),
+            })
 
         # ── Card transform ──
         def _to_card(article: dict) -> dict:
@@ -365,6 +379,7 @@ def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
             current_tier=tier_filter,
             current_sentiment=sentiment,
             current_keyword=keyword,
+            current_search=search,
             # Content
             masonry_cards=masonry_cards,
             total_count=total,
@@ -428,6 +443,58 @@ def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
         signal.set()
         return {"ok": True, "task": "sync"}
 
+    # ── Manual Fetch API ───────────────────────────────────────
+
+    @app.post("/api/news/fetch")
+    async def fetch_news_by_url(request: Request):
+        """Submit a URL for background fetch — dedup by URL, refetch if exists."""
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                {"ok": False, "error": "请求体必须为 JSON"}, status_code=400
+            )
+        url = (body.get("url") or "").strip()
+        if not url:
+            return JSONResponse(
+                {"ok": False, "error": "URL 不能为空"}, status_code=400
+            )
+        if not (url.startswith("http://") or url.startswith("https://")):
+            return JSONResponse(
+                {"ok": False, "error": "URL 必须以 http:// 或 https:// 开头"},
+                status_code=400,
+            )
+
+        crawler = app.state.crawler
+        if crawler is None:
+            return JSONResponse(
+                {"ok": False, "error": "抓取服务未就绪"}, status_code=503
+            )
+
+        # ── Dedup: if URL already exists, refetch instead ──
+        existing = db.get_article_by_url(url)
+        if existing:
+            article_id = existing["id"]
+            title = existing.get("title") or url
+            with _notification_lock:
+                dup = _refetch_tasks.get(article_id)
+                if dup and dup["status"] in ("pending", "running"):
+                    return {"ok": False, "error": "该文章正在抓取中"}
+            notif = _add_notification(article_id, title, status="pending")
+            task = {"article_id": article_id, "title": title,
+                    "status": "pending", "created_at": notif["created_at"]}
+            with _notification_lock:
+                _refetch_tasks[article_id] = task
+            _refetch_executor.submit(_run_refetch, article_id, url, title,
+                                     crawler, notif)
+            return {"ok": True, "refetch": True, "article_id": article_id}
+
+        # ── New URL: fetch and insert ──
+        notif = _add_notification(0, url, status="pending")
+        _refetch_executor.submit(_run_fetch_url, url, crawler, notif)
+
+        return {"ok": True, "message": "已提交抓取任务"}
+
     # ── Refetch API ────────────────────────────────────────────
 
     @app.post("/api/news/{article_id}/refetch")
@@ -447,8 +514,8 @@ def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
             if existing and existing["status"] in ("pending", "running"):
                 return {"ok": False, "error": "该文章正在抓取中"}
 
-        c = app.state.crawler
-        if c is None:
+        crawler = app.state.crawler
+        if crawler is None:
             return {"ok": False, "error": "抓取服务未就绪"}
 
         # All validations passed — create notification + task
@@ -459,7 +526,7 @@ def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
             _refetch_tasks[article_id] = task
 
         _refetch_executor.submit(_run_refetch, article_id, url, title,
-                                 c, db, notif)
+                                 crawler, notif)
         return {"ok": True, "task": task}
 
     @app.get("/api/notifications")
@@ -500,7 +567,7 @@ def _remove_filter(request, key: str) -> str:
     params.pop(key, None)
     params["page"] = "1"
     # Clean up empty params
-    for k in ("tier", "sentiment", "keyword", "date_from", "date_to"):
+    for k in ("tier", "sentiment", "keyword", "search", "date_from", "date_to"):
         if not params.get(k):
             params.pop(k, None)
     qs = urlencode(params) if params else ""

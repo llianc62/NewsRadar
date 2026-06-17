@@ -5,11 +5,13 @@ Use ``grab-one`` to test downloading, parsing, and image extraction
 against a single URL before running the full cloud ``crawl`` pipeline.
 """
 
+import sys
+
 import typer
 
 from cli import app
 from config.loader import load_config
-from news.crawler import Crawler, OutputStyle
+from news.crawler import Crawler, OutputStyle, StorageTarget
 
 
 @app.command()
@@ -34,6 +36,12 @@ def grab_one(
     """
     config = load_config("config.yaml")
     crawler = Crawler(config=config)
-    crawler.fetch(url, output_style,
-                  with_content=with_content, with_image=with_image)
+    try:
+        crawler.fetch(url, output_style,
+                      with_content=with_content, with_image=with_image,
+                      target_storage=StorageTarget.LOCAL)
+    except Exception as e:
+        print(f"抓取失败: {e}", file=sys.stderr)
+        crawler.close()
+        raise typer.Exit(code=1)
     crawler.close()
