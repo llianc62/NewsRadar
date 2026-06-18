@@ -56,6 +56,8 @@ ICONS = {
     "check-circle": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>',
     "x-circle": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>',
     "arrow-up": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 20h8"/><path d="M8 17v-4H3l9-9 9 9h-5v4H8z"/></svg>',
+    "trash": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>',
+    "alert-triangle": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
 }
 # ── Refetch state (in-memory) ─────────────────────────────────────
 
@@ -528,6 +530,24 @@ def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
         _refetch_executor.submit(_run_refetch, article_id, url, title,
                                  crawler, notif)
         return {"ok": True, "task": task}
+
+    @app.delete("/api/news/{article_id}")
+    async def delete_article(article_id: int):
+        """Delete an article and its images (cascade).
+
+        Returns 404 if no article has that ID; 200 with ``{ok: True}`` on
+        success. In-memory refetch state for the article is also cleared.
+        """
+        article = db.get_news_by_id(article_id)
+        if article is None:
+            return JSONResponse({"ok": False, "error": "文章不存在"}, status_code=404)
+        deleted = db.delete_news(article_id)
+        if not deleted:
+            return JSONResponse({"ok": False, "error": "文章不存在"}, status_code=404)
+        # Drop any lingering refetch task so it cannot fire against a gone row
+        with _notification_lock:
+            _refetch_tasks.pop(article_id, None)
+        return {"ok": True}
 
     @app.get("/api/notifications")
     async def list_notifications(unread_only: bool = Query(False)):

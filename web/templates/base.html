@@ -28,31 +28,36 @@
   var shownIds = {};   // track which notifs already toasted
 
   // ── Toast ──
-  function showToast(notif) {
+  // Builds a toast node from a normalized descriptor:
+  //   { title, sub, kind: 'done'|'fail'|'info', onClick: fn|null }
+  function buildToast(opts) {
     var container = document.getElementById('toast-container');
-    if (!container) return;
+    if (!container) return null;
 
     var toast = document.createElement('div');
-    toast.className = 'toast ' + (notif.status === 'completed' ? 'done' : 'fail');
+    toast.className = 'toast ' + (opts.kind === 'fail' ? 'fail' : 'done');
 
     var body = document.createElement('div');
     body.className = 'toast-body';
 
     var title = document.createElement('div');
     title.className = 'toast-title';
-    title.innerHTML = '<span class="dot"></span>' + escapeHtml(notif.title);
+    title.innerHTML = '<span class="dot"></span>' + escapeHtml(opts.title);
 
     var sub = document.createElement('div');
     sub.className = 'toast-sub';
-    sub.textContent = notif.status === 'completed' ? '抓取完成' : '抓取失败';
+    sub.textContent = opts.sub;
 
     body.appendChild(title);
     body.appendChild(sub);
     toast.appendChild(body);
 
-    toast.addEventListener('click', function() {
-      window.location.href = '/news/' + notif.article_id;
-    });
+    if (opts.onClick) {
+      toast.style.cursor = 'pointer';
+      toast.addEventListener('click', opts.onClick);
+    } else {
+      toast.style.cursor = 'default';
+    }
 
     container.appendChild(toast);
 
@@ -61,8 +66,26 @@
       setTimeout(function() {
         if (toast.parentNode) toast.parentNode.removeChild(toast);
       }, 300);
-    }, TOAST_DURATION);
+    }, opts.duration || TOAST_DURATION);
+    return toast;
   }
+
+  function showToast(notif) {
+    buildToast({
+      title: notif.title,
+      sub: notif.status === 'completed' ? '抓取完成' : '抓取失败',
+      kind: notif.status === 'completed' ? 'done' : 'fail',
+      onClick: function() { window.location.href = '/news/' + notif.article_id; },
+    });
+  }
+
+  // Generic toast for ad-hoc UI flows (e.g. delete). Exposed globally so
+  // page scripts injected via the per-page scripts block can reuse the
+  // shared visual system without a second toast implementation.
+  window.showAppToast = function(title, sub, kind, onClick) {
+    buildToast({ title: title, sub: sub || '', kind: kind || 'done',
+                 onClick: onClick || null });
+  };
 
   function escapeHtml(str) {
     var div = document.createElement('div');

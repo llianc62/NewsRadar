@@ -811,6 +811,17 @@ class PostgreSQL:
                 )
                 return cur.rowcount > 0
 
+    def delete_news(self, article_id: int) -> bool:
+        """Delete an article by ID. Associated images are removed via the
+        ``news_images.article_id`` ``ON DELETE CASCADE`` foreign key.
+
+        Returns True if a row was deleted, False if no article had that ID.
+        """
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM news_articles WHERE id = %s", (article_id,))
+                return cur.rowcount > 0
+
     def save_article_image(
         self,
         article_id: int,
