@@ -94,12 +94,16 @@ def _add_notification(article_id: int, title: str, status: str = "pending",
         return notif
 
 
-def _run_fetch_url(url: str, crawler, notif: dict) -> None:
+def _run_fetch_url(url: str, crawler, notif: dict, db) -> None:
     """Execute URL fetch in background — thin wrapper around crawler.fetch()."""
     try:
         notif["status"] = "running"
         crawler.fetch(url, OutputStyle.POSTGRESQL, True, True)
         notif["status"] = "completed"
+        # 回填 article_id，使前端通知可跳转到文章详情页
+        article = db.get_article_by_url(url)
+        if article:
+            notif["article_id"] = article["id"]
     except Exception as e:
         notif["status"] = "failed"
         notif["error_message"] = str(e)[:500]
@@ -493,7 +497,7 @@ def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
 
         # ── New URL: fetch and insert ──
         notif = _add_notification(0, url, status="pending")
-        _refetch_executor.submit(_run_fetch_url, url, crawler, notif)
+        _refetch_executor.submit(_run_fetch_url, url, crawler, notif, db)
 
         return {"ok": True, "message": "已提交抓取任务"}
 
