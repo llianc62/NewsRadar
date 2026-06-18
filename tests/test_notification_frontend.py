@@ -45,25 +45,30 @@ class TestListNotifications:
 class TestMarkNotificationRead:
     def test_mark_single_notification_as_read(self, client):
         """POST /api/notifications/{id}/read marks the notification as read."""
-        # First list to find an existing notification
-        response = client.get("/api/notifications")
-        data = response.json()
-
-        if len(data) == 0:
-            pytest.skip("No notifications in memory to test with")
-
-        notif = data[0]
-        notif_id = notif["id"]
+        import web.app as app_module
+        # Seed a notification directly
+        app_module._notifications.append({
+            "id": 1,
+            "article_id": 1,
+            "title": "Test Article",
+            "status": "completed",
+            "error_message": "",
+            "is_read": False,
+            "created_at": 1700000000.0,
+        })
+        notif_id = 1
 
         response = client.post(f"/api/notifications/{notif_id}/read")
         assert response.status_code == 200
         assert response.json() == {"ok": True}
 
-        # Verify it's now marked read
-        response = client.get("/api/notifications")
-        updated = [n for n in response.json() if n["id"] == notif_id]
-        assert len(updated) == 1
-        assert updated[0]["is_read"] is True
+        # Verify is_read flipped in the in-memory list
+        notif = next(
+            (n for n in app_module._notifications if n["id"] == notif_id),
+            None,
+        )
+        assert notif is not None
+        assert notif["is_read"] is True
 
     def test_mark_nonexistent_notification_returns_404(self, client):
         """POST /api/notifications/99999/read returns 404."""
