@@ -467,10 +467,10 @@ class PostgreSQL:
             params.append(keyword)
         if search is not None:
             conditions.append(
-                "to_tsvector('simple', title || ' ' || COALESCE(summary, '')) "
-                "@@ plainto_tsquery('simple', %s)"
+                "(title || ' ' || COALESCE(summary, '') || ' ' || COALESCE(content, '')"
+                " || ' ' || COALESCE(array_to_string(tags, ' '), '')) ILIKE %s"
             )
-            params.append(search)
+            params.append(f"%{search}%")
         # Date filtering: published_at within [date_from, date_to] inclusive full days
         if date_from is not None:
             conditions.append("published_at >= %s::date")
@@ -535,10 +535,10 @@ class PostgreSQL:
             params.append(keyword)
         if search is not None:
             conditions.append(
-                "to_tsvector('simple', title || ' ' || COALESCE(summary, '')) "
-                "@@ plainto_tsquery('simple', %s)"
+                "(title || ' ' || COALESCE(summary, '') || ' ' || COALESCE(content, '')"
+                " || ' ' || COALESCE(array_to_string(tags, ' '), '')) ILIKE %s"
             )
-            params.append(search)
+            params.append(f"%{search}%")
         if date_from is not None:
             conditions.append("published_at >= %s::date")
             params.append(date_from)
@@ -576,10 +576,10 @@ class PostgreSQL:
             params.append(keyword)
         if search is not None:
             conditions.append(
-                "to_tsvector('simple', title || ' ' || COALESCE(summary, '')) "
-                "@@ plainto_tsquery('simple', %s)"
+                "(title || ' ' || COALESCE(summary, '') || ' ' || COALESCE(content, '')"
+                " || ' ' || COALESCE(array_to_string(tags, ' '), '')) ILIKE %s"
             )
-            params.append(search)
+            params.append(f"%{search}%")
         if date_from is not None:
             conditions.append("published_at >= %s::date")
             params.append(date_from)
@@ -625,10 +625,10 @@ class PostgreSQL:
             conditions.append("sentiment_score > 33 AND sentiment_score < 67")
         if search is not None:
             conditions.append(
-                "to_tsvector('simple', title || ' ' || COALESCE(summary, '')) "
-                "@@ plainto_tsquery('simple', %s)"
+                "(title || ' ' || COALESCE(summary, '') || ' ' || COALESCE(content, '')"
+                " || ' ' || COALESCE(array_to_string(tags, ' '), '')) ILIKE %s"
             )
-            params.append(search)
+            params.append(f"%{search}%")
         if date_from is not None:
             conditions.append("published_at >= %s::date")
             params.append(date_from)
@@ -671,10 +671,10 @@ class PostgreSQL:
             params.append(keyword)
         if search is not None:
             conditions.append(
-                "to_tsvector('simple', title || ' ' || COALESCE(summary, '')) "
-                "@@ plainto_tsquery('simple', %s)"
+                "(title || ' ' || COALESCE(summary, '') || ' ' || COALESCE(content, '')"
+                " || ' ' || COALESCE(array_to_string(tags, ' '), '')) ILIKE %s"
             )
-            params.append(search)
+            params.append(f"%{search}%")
         # Use date parameters instead of hardcoded CURRENT_DATE
         if date_from is not None:
             conditions.append("published_at >= %s::date")
@@ -745,10 +745,10 @@ class PostgreSQL:
             params.append(date_to)
         if search is not None:
             conditions.append(
-                "to_tsvector('simple', title || ' ' || COALESCE(summary, '')) "
-                "@@ plainto_tsquery('simple', %s)"
+                "(title || ' ' || COALESCE(summary, '') || ' ' || COALESCE(content, '')"
+                " || ' ' || COALESCE(array_to_string(tags, ' '), '')) ILIKE %s"
             )
-            params.append(search)
+            params.append(f"%{search}%")
         where_clause = " WHERE " + " AND ".join(conditions)
 
         with self.get_conn() as conn:

@@ -99,12 +99,12 @@
       .replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
-  function markAndGo(notifId, articleId, status) {
+  window.markAndGo = function(notifId, articleId, status) {
     fetch('/api/notifications/' + notifId + '/read', { method: 'POST' });
     if (status === 'completed' && articleId > 0) {
       window.location.href = '/news/' + articleId;
     }
-  }
+  };
 
   function formatRelativeTime(ts) {
     if (!ts) return '';

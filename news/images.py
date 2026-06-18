@@ -25,9 +25,8 @@ Usage::
 import re
 import requests
 
-from urllib.parse import unquote, urlparse
-
 from typing import Dict, Optional
+from urllib.parse import unquote, urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from storage import FileStorage

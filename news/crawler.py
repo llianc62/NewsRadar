@@ -17,21 +17,19 @@ import json
 import os
 import re
 import time
+import requests
 
 from enum import Enum
+from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
-
-import requests
-from urllib.parse import urlparse
 
 from news.fetcher import NewsnowFetcher, RssFetcher
 from news.parser import HtmlParser
 from news.images import ImageProcessor
+from news.models import NewsData, NewsItem
 from storage.files import LocalStorage, S3Storage
 from utils import format_date_folder, format_datetime_now, format_time_display, sanitize_filename
-
-from news.models import NewsData, NewsItem
 
 class OutputStyle(Enum):
     MARKDOWN = "markdown"
@@ -48,6 +46,8 @@ class StorageTarget(Enum):
 
     LOCAL = "local"
     RESOURCE = "resource"
+
+MAX_IMAGE_PROCESSOR_WORKERS = 10  # Limit for concurrent image downloads
 
 
 class Crawler:
@@ -76,18 +76,17 @@ class Crawler:
 
         self.parser = parser or HtmlParser(config)
 
+        # Source tiers — built once from config, rarely changes
+        self._source_tiers = self._build_source_tiers()
+
         # File storage — always local (markdown/html file output)
-        sc = config.get("storage", {})
-        data_dir = sc.get("local", {}).get("data_dir", "output")
+        storage_conf = config.get("storage", {})
+        data_dir = storage_conf.get("local", {}).get("data_dir", "output")
         self._local_storage = LocalStorage(data_dir)
 
-        # Resource storage — local MinIO/S3 for project files/images
-        # None means "skip image download" (fetch_all)
-        self._resource_storage = None
-        resource_cfg = sc.get("resource", {})
-        required_keys = ["endpoint_url", "bucket_name", "access_key_id", "secret_access_key"]
-        if all(resource_cfg.get(k) for k in required_keys):
-            self._resource_storage = S3Storage(resource_cfg)
+        # Resource storage — local MinIO/S3 for project files/images (required)
+        resource_cfg = storage_conf.get("resource", {})
+        self._resource_storage = S3Storage(resource_cfg)
 
         # Thread pool (lazy)
         self._executor: Optional[ThreadPoolExecutor] = None
@@ -105,7 +104,7 @@ class Crawler:
     # ── HTTP session ─────────────────────────────────────────────────
 
     @staticmethod
-    def _fix_response_encoding(response, *args, **kwargs):
+    def _hook_response_encoding(response, *args, **kwargs):
         """Response hook: correct encoding when the server omits charset.
 
         RFC 2616 §3.7.1 defaults to ISO-8859-1 when no charset is
@@ -128,7 +127,7 @@ class Crawler:
                 "Accept": "text/html,application/xhtml+xml",
                 "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             })
-            self._session.hooks["response"].append(self._fix_response_encoding)
+            self._session.hooks["response"].append(self._hook_response_encoding)
         return self._session
 
     # ── Lazy resources ───────────────────────────────────────────────
@@ -144,8 +143,8 @@ class Crawler:
     def _get_sqlite_db(self):
         if self._sqlite is None:
             from storage.sqlite import Sqlite
-            sc = self._config.get("storage", {})
-            data_dir = sc.get("local", {}).get("data_dir", "output")
+            storage_conf = self._config.get("storage", {})
+            data_dir = storage_conf.get("local", {}).get("data_dir", "output")
             self._sqlite = Sqlite(
                 data_dir=data_dir,
                 timezone=self._config.get("app", {}).get("timezone", "Asia/Shanghai"),
@@ -159,8 +158,21 @@ class Crawler:
 
     def _get_image_processor(self) -> ImageProcessor:
         if self._image_processor is None:
-            self._image_processor = ImageProcessor(max_workers=10)
+            self._image_processor = ImageProcessor(
+                max_workers=MAX_IMAGE_PROCESSOR_WORKERS
+                )
         return self._image_processor
+
+    def _build_source_tiers(self) -> dict:
+        """Build ``{source_id: {tier, priority}}`` mapping from config."""
+        tiers = {}
+        for s in self._config.get("crawler", {}).get("newsnow", {}).get("sources", []):
+            tiers[s["id"]] = {"tier": s.get("tier", 4), "priority": s.get("priority", 0)}
+        for rss in self._config.get("crawler", {}).get("rss", {}).get("feeds", []):
+            if rss.get("enabled", True):
+                tiers[rss["id"]] = {"tier": rss.get("tier", 3), "priority": rss.get("priority", 0)}
+        tiers["manual"] = {"tier": 4, "priority": 0}
+        return tiers
 
     # ═══════════════════════════════════════════════════════════════════
     # Public API
@@ -181,17 +193,16 @@ class Crawler:
             output_style: Persistence target.
             with_content: If False, save metadata only (no HTTP request).
             with_image: If True, download article images after parsing.
-            image_storage: Which storage backend to use for images.
+            target_storage: Which storage backend to use for images.
                 :attr:`StorageTarget.LOCAL` — local filesystem.
                 :attr:`StorageTarget.RESOURCE` — S3/MinIO.
                 ``None`` (default) — resource if available, else local.
         """
-        tiers = {"manual": {"tier": 4, "priority": 0}}
         item: Dict[str, Any] = {
             "title": "",
             "source_id": "manual",
-            "source_name": "人工添加",
             "source_type": "manual",
+            "source_name": "人工添加",
             "url": url,
             "rank": 0,
             "content": "",
@@ -219,7 +230,7 @@ class Crawler:
         item["tags"] = parsed.get("tags", [])
 
         if not with_content:
-            self._persist(output_style, item, source_tiers=tiers)
+            self.persist(item, output_style)
             return
 
         # ── Persistence ────────────────────────────────────────────
@@ -229,15 +240,12 @@ class Crawler:
 
             # Phase 2: batch image download (if requested)
             if with_image:
-                if target_storage is StorageTarget.LOCAL:
-                    storage = self._local_storage
-                elif target_storage is StorageTarget.RESOURCE:
-                    storage = self._resource_storage
-                else:
-                    storage = self._resource_storage or self._local_storage
+                storage = self._resource_storage
+                if target_storage:
+                    storage = target_storage
                 self._run_batch_image_download([item], storage)
 
-        self._persist(output_style, item, source_tiers=tiers)
+        self.persist(item, output_style)
 
     def fetch_all(
         self,
@@ -259,8 +267,6 @@ class Crawler:
         time_str = format_time_display(timezone)
 
         print(f"=== Crawler === {date} {time_str}")
-
-        source_tiers = self.build_source_tiers()
         all_items: List[Dict[str, Any]] = []
 
         # ── Hot-list ───────────────────────────────────────────────
@@ -283,30 +289,20 @@ class Crawler:
 
         # ── Enrichment ─────────────────────────────────────────────
         if with_content:
-            self._enrich_content(all_items, with_image=with_image)
+            self.enrich_content(*all_items, with_image=with_image)
 
         # ── Persistence ────────────────────────────────────────────
-        self._persist(output_style, *all_items, source_tiers=source_tiers)
+        self.persist(*all_items, output_style=output_style)
 
         print(f"=== Fetch complete: {len(all_items)} items ===")
-
-    def build_source_tiers(self) -> dict:
-        """Build ``{source_id: {tier, priority}}`` mapping from config."""
-        tiers = {}
-        for s in self._config.get("crawler", {}).get("newsnow", {}).get("sources", []):
-            tiers[s["id"]] = {"tier": s.get("tier", 4), "priority": s.get("priority", 0)}
-        for f in self._config.get("crawler", {}).get("rss", {}).get("feeds", []):
-            if f.get("enabled", True):
-                tiers[f["id"]] = {"tier": f.get("tier", 3), "priority": f.get("priority", 0)}
-        return tiers
 
     # ═══════════════════════════════════════════════════════════════════
     # Internal — content enrichment (shared by fetch_all + cloud sync)
     # ═══════════════════════════════════════════════════════════════════
 
-    def _enrich_content(
+    def enrich_content(
         self,
-        items: List[Dict[str, Any]],
+        *items: Dict[str, Any],
         with_image: bool = False,
     ) -> None:
         """Enrich items with parsed Markdown content and optionally images.
@@ -317,14 +313,14 @@ class Crawler:
         Each item dict is mutated in-place — ``content``, ``title``,
         ``author``, ``published_at``, ``summary``, ``category``, ``tags``
         are set or updated.  Items without a URL are silently skipped.
-
-        Args:
-            image_storage: Optional :class:`FileStorage` override for images.
-                When None, defaults to ``self._image_storage``.
         """
-        self._run_batch_parse(items)
+        batch_list = list(items)
+        self._run_batch_parse(batch_list)
         if with_image:
-            self._run_batch_image_download(items, image_storage=self._resource_storage)
+            self._run_batch_image_download(
+                batch_list,
+                image_storage=self._resource_storage
+            )
 
     # ═══════════════════════════════════════════════════════════════════
     # Internal — batch content fetch
@@ -468,17 +464,14 @@ class Crawler:
     # Internal — persistence (single entry point)
     # ═══════════════════════════════════════════════════════════════════
 
-    def _persist(
+    def persist(
         self,
+        *items: Dict[str, Any],
         output_style: OutputStyle,
-        *items: dict,
-        source_tiers: dict | None = None,
     ) -> None:
         """Persist item dicts via the backend matching *output_style*."""
-        if source_tiers is None:
-            source_tiers = {}
 
-        data = self._to_newsdata(list(items), source_tiers)
+        data = self._to_newsdata(list(items))
 
         match output_style:
             case OutputStyle.MARKDOWN:
@@ -486,14 +479,13 @@ class Crawler:
             case OutputStyle.HTML:
                 self._persist_html(data)
             case OutputStyle.SQLITE:
-                self._persist_sqlite(data, source_tiers=source_tiers)
+                self._persist_sqlite(data)
             case OutputStyle.POSTGRESQL:
-                self._persist_postgresql(data, source_tiers=source_tiers)
+                self._persist_postgresql(data)
 
     def _to_newsdata(
         self,
         items: List[Dict[str, Any]],
-        source_tiers: dict,
     ) -> NewsData:
         """Build a :class:`NewsData` from a list of item dicts."""
         tz = self._config.get("app", {}).get("timezone", "Asia/Shanghai")
@@ -502,7 +494,7 @@ class Crawler:
         by_source: Dict[str, List[NewsItem]] = {}
         for d in items:
             sid = d.get("source_id", "manual")
-            ti = source_tiers.get(sid, {})
+            ti = self._source_tiers.get(sid, {})
             by_source.setdefault(sid, []).append(NewsItem(
                 title=d.get("title", ""),
                 source_id=sid,
@@ -549,6 +541,30 @@ class Crawler:
         escaped = value.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{escaped}"'
 
+    @staticmethod
+    def _build_frontmatter(item: NewsItem) -> str:
+        """Build YAML frontmatter block from a :class:`NewsItem`."""
+        hostname = ""
+        if item.url:
+            try:
+                hostname = urlparse(item.url).hostname or ""
+            except Exception:
+                pass
+
+        lines = ["---"]
+        if item.title:
+            lines.append(f"title: {Crawler._yaml_str(item.title)}")
+        if item.url:
+            lines.append(f"url: {Crawler._yaml_str(item.url)}")
+        if hostname:
+            lines.append(f"hostname: {Crawler._yaml_str(hostname)}")
+        if item.summary:
+            lines.append(f"description: {Crawler._yaml_str(item.summary)}")
+        if item.published_at:
+            lines.append(f"date: {item.published_at[:10]}")
+        lines.append("---\n")
+        return "\n".join(lines)
+
     def _persist_md(self, data: NewsData) -> None:
         """Write each article to a Markdown file via the storage layer.
 
@@ -569,36 +585,7 @@ class Crawler:
                 else:
                     seen[safe_title] = 1
 
-                # ── Build YAML frontmatter from item fields ──────────
-                hostname = ""
-                if item.url:
-                    try:
-                        hostname = urlparse(item.url).hostname or ""
-                    except Exception:
-                        pass
-
-                frontmatter_lines = ["---"]
-                if item.title:
-                    frontmatter_lines.append(
-                        f"title: {self._yaml_str(item.title)}"
-                    )
-                if item.url:
-                    frontmatter_lines.append(f"url: {self._yaml_str(item.url)}")
-                if hostname:
-                    frontmatter_lines.append(
-                        f"hostname: {self._yaml_str(hostname)}"
-                    )
-                if item.summary:
-                    frontmatter_lines.append(
-                        f"description: {self._yaml_str(item.summary)}"
-                    )
-                if item.published_at:
-                    date = item.published_at[:10]  # YYYY-MM-DD
-                    frontmatter_lines.append(f"date: {date}")
-                frontmatter_lines.append("---\n")
-                frontmatter = "\n".join(frontmatter_lines)
-
-                full_content = frontmatter + (item.content or "")
+                full_content = self._build_frontmatter(item) + (item.content or "")
 
                 path = f"news/{data.date}/{safe_title}.md"
                 saved = self._local_storage.save(
@@ -629,17 +616,13 @@ class Crawler:
                 )
                 print(f"[Crawler] Saved: {saved}")
 
-    def _persist_sqlite(
-        self, data: NewsData, source_tiers: dict
-    ) -> None:
+    def _persist_sqlite(self, data: NewsData) -> None:
         """Save to SQLite database."""
         db = self._get_sqlite_db()
-        db.save_news_data(data, source_tiers)
+        db.save_news_data(data, self._source_tiers)
         db.cleanup()
 
-    def _persist_postgresql(
-        self, data: NewsData, source_tiers: dict
-    ) -> None:
+    def _persist_postgresql(self, data: NewsData) -> None:
         """Save to PostgreSQL.
 
         Transforms relative image paths (``images/xxx.png``) to
@@ -655,7 +638,7 @@ class Crawler:
                     item.content = item.content.replace("images/", media_prefix)
 
         db = self._get_pg_db()
-        result = db.save_news_data(data, source_tiers, crawled_from="local")
+        result = db.save_news_data(data, self._source_tiers, crawled_from="local")
         print(f"[Crawler] PG save result: {result}")
 
     # ═══════════════════════════════════════════════════════════════════
@@ -754,11 +737,11 @@ class Crawler:
                         )
 
                 if rows:
-                    self._enrich_content(rows, with_image=True)
+                    self.enrich_content(*rows, with_image=True)
 
                     news_data = Crawler._rows_to_newsdata(rows, date_str)
                     result = pg_db.save_news_data(
-                        news_data, crawled_from="cloud", skip_existing=False,
+                        news_data, self._source_tiers, crawled_from="cloud", skip_existing=False,
                     )
                     day_new = result.get("processed", 0)
                     day_skipped = result.get("skipped", 0)

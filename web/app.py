@@ -109,12 +109,15 @@ def _run_fetch_url(url: str, crawler, notif: dict, db) -> None:
         notif["error_message"] = str(e)[:500]
 
 
-def _run_refetch(article_id: int, url: str, title: str, crawler,
-                 notif: dict) -> None:
-    """Execute refetch in background thread — thin wrapper around crawler.fetch()."""
+def _run_refetch(article_id: int, crawler, notif: dict, db) -> None:
+    """Execute refetch in background — re-download content and persist."""
     try:
         notif["status"] = "running"
-        crawler.fetch(url, OutputStyle.POSTGRESQL, True, True)
+        article = db.get_news_by_id(article_id)
+        if article is None:
+            raise ValueError("文章不存在")
+        crawler.enrich_content(article, with_image=True)
+        crawler.persist(OutputStyle.POSTGRESQL, article)
         notif["status"] = "completed"
     except Exception as e:
         notif["status"] = "failed"
@@ -269,20 +272,18 @@ def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
             date_from=date_from, date_to=date_to,
         )
         total_pages = max(1, (total + per_page - 1) // per_page)
-        stats_data = db.get_stats(date_from=date_from, date_to=date_to, search=search)
+        # 统计类查询不传 search 参数，保持筛选组件数值稳定
+        stats_data = db.get_stats(date_from=date_from, date_to=date_to)
         sentiment_counts = db.get_sentiment_counts(
             tier=tier_filter, keyword=keyword,
-            search=search,
             date_from=date_from, date_to=date_to,
         )
         keyword_list = db.get_keyword_counts(
             tier=tier_filter, sentiment=sentiment,
-            search=search,
             date_from=date_from, date_to=date_to,
         )
         high_impact = db.get_high_impact_count(
             tier=tier_filter, keyword=keyword,
-            search=search,
             date_from=date_from, date_to=date_to,
         )
 
@@ -491,8 +492,7 @@ def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
                     "status": "pending", "created_at": notif["created_at"]}
             with _notification_lock:
                 _refetch_tasks[article_id] = task
-            _refetch_executor.submit(_run_refetch, article_id, url, title,
-                                     crawler, notif)
+            _refetch_executor.submit(_run_refetch, article_id, crawler, notif, db)
             return {"ok": True, "refetch": True, "article_id": article_id}
 
         # ── New URL: fetch and insert ──
@@ -531,8 +531,7 @@ def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
         with _notification_lock:
             _refetch_tasks[article_id] = task
 
-        _refetch_executor.submit(_run_refetch, article_id, url, title,
-                                 crawler, notif)
+        _refetch_executor.submit(_run_refetch, article_id, crawler, notif, db)
         return {"ok": True, "task": task}
 
     @app.delete("/api/news/{article_id}")
@@ -558,6 +557,12 @@ def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
         """Return notification list, optionally filtered to unread only."""
         with _notification_lock:
             result = [dict(n) for n in _notifications]
+        # 回填 article_id：新 URL 抓取的通知 title 就是 URL
+        for n in result:
+            if n.get("article_id", 0) == 0 and n.get("title", "").startswith("http"):
+                article = db.get_article_by_url(n["title"])
+                if article:
+                    n["article_id"] = article["id"]
         if unread_only:
             result = [n for n in result if not n.get("is_read")]
         return result

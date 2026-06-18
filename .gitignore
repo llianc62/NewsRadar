@@ -13,7 +13,7 @@ dist/
 .superpowers/
 .codegraph/
 .agents/
-
+.design/
 
 skills-lock.json
 .mcp.json
