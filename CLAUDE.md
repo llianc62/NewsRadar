@@ -23,11 +23,20 @@ python -m cli db clear --before 2026-06-01 --force
 python -m cli db clear --all --force
 python -m cli db clear --backend postgresql --before 2026-06-01
 
-# Install dependencies
+# Install dependencies (requires Python >= 3.12; code uses match/case & PEP 604 unions)
 uv sync
 
 # Docker infrastructure (PostgreSQL 16 + MinIO)
 docker compose up -d
+
+# Run the test suite
+# NOTE: pytest is installed in the venv but NOT declared in pyproject.toml — a fresh
+# `uv sync` alone will NOT install it. Add it via `uv pip install pytest` if missing.
+pytest
+
+# Run a single test file / single test
+pytest tests/test_parser.py
+pytest tests/test_parser.py::TestTrimNoise::test_trims_footer_copyright -v
 ```
 
 ## Architecture
@@ -60,7 +69,7 @@ Typer-based CLI with commands registered as submodules:
 
 - **PostgreSQL** (`storage/postgres.py`) — canonical store for the local daemon. Schema with partial unique indexes for dedup (hotlist: `source_id + url`, RSS: `source_id + guid`). Full-text search via GIN index.
 - **SQLite + S3** (`storage/sqlite.py`, `storage/s3.py`) — cloud CI backend. Each day gets its own `.db` file, uploaded to S3. The notifier downloads and queries these files.
-- **Cloud sync** (method on `Crawler`) — downloads daily SQLite DBs from S3, merges into PostgreSQL with `skip_existing=True` (local wins over cloud).
+- **Cloud sync** (`Crawler.sync_from_cloud`) — downloads daily SQLite DBs from S3, filters to rows newer than PG's latest cloud `crawled_at`, enriches incremental content (body + images), then merges into PostgreSQL via **UPSERT** (`skip_existing=False`, `crawled_from="cloud"`) so previously synced rows get metadata refreshed on re-crawl — not skipped.
 - **File storage** (`storage/files.py`) — unified `FileStorage` ABC with `LocalStorage` (filesystem) and `S3Storage` (MinIO/S3-compatible) implementations. Used by `ImageProcessor` for article image storage. Factory: `create_storage(config)`.
 
 ### News fetch pipeline
@@ -98,7 +107,9 @@ Each task type (crawl, sync) gets its own `asyncio.Event` signal. Timers set the
 
 ### Web frontend (`web/app.py`)
 
-FastAPI app factory with Jinja2 server-side rendering. Routes: `/` (market overview with tier stats), `/hot-news` (paginated list with tier filter), `/news/{id}` (detail page with content rendered via mistune GFM). Manual trigger API at `POST /api/trigger/{crawl,sync}` sets the corresponding semaphore signal. Templates in `web/templates/`, static assets in `web/static/`.
+FastAPI app factory with Jinja2 server-side rendering. Routes: `/` (market overview with tier stats), `/hot-news` (paginated list with tier filter), `/news/{article_id}` (detail page with content rendered via mistune GFM). Manual trigger API at `POST /api/trigger/{crawl,sync}` sets the corresponding semaphore signal. Templates in `web/templates/`, static assets in `web/static/`.
+
+**Refetch + notification subsystem** (module-level, in-memory, **not** persisted): `POST /api/news/{article_id}/refetch` re-downloads an article's body via a shared `Crawler` instance in a background `ThreadPoolExecutor`; `GET /api/notifications` / `GET /api/notifications/unread-count` / `POST /api/notifications/{notif_id}/read` expose an in-memory notification list (capped at 50, thread-safe via a module lock) tracking refetch progress and failures. State resets on daemon restart. A `Crawler` instance is injected via `create_app(..., crawler=web_crawler)` so the web layer and daemon share fetch logic without re-creating sessions per request.
 
 ### Configuration (`config/loader.py`)
 
