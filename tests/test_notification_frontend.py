@@ -36,10 +36,21 @@ def client():
 class TestListNotifications:
     def test_returns_all_notifications_including_read(self, client):
         """GET /api/notifications returns all notifications, not just unread."""
+        import web.app as app_module
+        app_module._notifications.append({
+            "id": 1, "article_id": 1, "title": "Unread", "status": "completed",
+            "error_message": "", "is_read": False, "created_at": 1700000000.0,
+        })
+        app_module._notifications.append({
+            "id": 2, "article_id": 2, "title": "Read", "status": "completed",
+            "error_message": "", "is_read": True, "created_at": 1700000001.0,
+        })
         response = client.get("/api/notifications")
         assert response.status_code == 200
         data = response.json()
-        assert isinstance(data, list)
+        assert len(data) >= 2
+        ids = {n["id"] for n in data}
+        assert 1 in ids and 2 in ids
 
 
 class TestMarkNotificationRead:
@@ -78,9 +89,16 @@ class TestMarkNotificationRead:
 
 class TestUnreadCount:
     def test_unread_count_endpoint(self, client):
-        """GET /api/notifications/unread-count returns a count."""
+        """GET /api/notifications/unread-count returns exact unread count."""
+        import web.app as app_module
+        app_module._notifications.append({
+            "id": 1, "article_id": 1, "title": "Unread", "status": "completed",
+            "error_message": "", "is_read": False, "created_at": 1700000000.0,
+        })
+        app_module._notifications.append({
+            "id": 2, "article_id": 2, "title": "Read", "status": "completed",
+            "error_message": "", "is_read": True, "created_at": 1700000001.0,
+        })
         response = client.get("/api/notifications/unread-count")
         assert response.status_code == 200
-        data = response.json()
-        assert "count" in data
-        assert isinstance(data["count"], int)
+        assert response.json() == {"count": 1}
