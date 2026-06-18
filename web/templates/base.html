@@ -71,11 +71,12 @@
   }
 
   function showToast(notif) {
+    var canNavigate = notif.status === 'completed' && notif.article_id > 0;
     buildToast({
       title: notif.title,
       sub: notif.status === 'completed' ? '抓取完成' : '抓取失败',
       kind: notif.status === 'completed' ? 'done' : 'fail',
-      onClick: function() { window.location.href = '/news/' + notif.article_id; },
+      onClick: canNavigate ? function() { window.location.href = '/news/' + notif.article_id; } : null,
     });
   }
 
@@ -98,9 +99,11 @@
       .replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
-  function markAndGo(notifId, articleId) {
+  function markAndGo(notifId, articleId, status) {
     fetch('/api/notifications/' + notifId + '/read', { method: 'POST' });
-    window.location.href = '/news/' + articleId;
+    if (status === 'completed' && articleId > 0) {
+      window.location.href = '/news/' + articleId;
+    }
   }
 
   function formatRelativeTime(ts) {
@@ -170,6 +173,7 @@
 
         if (forDrawer) {
           renderDrawerList(data);
+          return;  // 打开抽屉不触发 toast，用户正在看通知列表
         }
 
         data.forEach(function(n) {
@@ -218,7 +222,7 @@
       var timeStr = formatRelativeTime(n.created_at);
 
       html +=
-        '<div class="notify-item' + readClass + '" data-id="' + escapeAttr(n.id) + '" onclick="markAndGo(' + escapeAttr(n.id) + ', ' + escapeAttr(n.article_id) + ')">' +
+        '<div class="notify-item' + readClass + '" data-id="' + escapeAttr(n.id) + '" onclick="markAndGo(' + escapeAttr(n.id) + ', ' + escapeAttr(n.article_id) + ', \'' + escapeAttr(n.status) + '\')">' +
           '<span class="notify-item-dot ' + dotClass + '"></span>' +
           '<div class="notify-item-body">' +
             '<div class="notify-item-title">' + escapeHtml(n.title) + '</div>' +
@@ -244,8 +248,19 @@
       document.body.appendChild(tc);
     }
 
-    fetchUnreadCount();
-    setInterval(fetchUnreadCount, POLL_INTERVAL);
+    // Seed shownIds with existing notifications so refresh doesn't re-toast
+    fetch('/api/notifications')
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (Array.isArray(data)) {
+          data.forEach(function(n) { shownIds[n.id] = true; });
+        }
+      })
+      .catch(function() {})
+      .then(function() {
+        fetchUnreadCount();
+        setInterval(fetchUnreadCount, POLL_INTERVAL);
+      });
   }
 })();
 </script>
