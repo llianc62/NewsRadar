@@ -57,9 +57,9 @@ class NewsRadarDaemon:
         # Dedicated executor — we control its lifecycle
         self._executor = ThreadPoolExecutor(max_workers=4)
 
-        # ── Semaphores (one per task type) ──
-        self._crawl_signal = asyncio.Event()
-        self._sync_signal = asyncio.Event()
+        # ── Channels (asyncio.Queue — Go-style signal + data carrier) ──
+        self._crawl_queue: asyncio.Queue = asyncio.Queue()
+        self._sync_queue: asyncio.Queue = asyncio.Queue()
 
     # ── Helpers ──────────────────────────────────────────────────
 
@@ -79,65 +79,101 @@ class NewsRadarDaemon:
 
     # ── Timer ────────────────────────────────────────────────────
 
-    async def _timer(self, signal: asyncio.Event, interval_min: int, name: str) -> None:
-        """Set *signal* every *interval_min* minutes."""
+    async def _timer(self, queue: asyncio.Queue, interval_min: int, name: str) -> None:
+        """Put None into *queue* every *interval_min* minutes to wake the Worker."""
         print(f"[Timer/{name}] every {interval_min} min")
         while not self._shutdown_event.is_set():
             await self._sleep_or_shutdown(interval_min * 60)
             if not self._shutdown_event.is_set():
-                signal.set()
+                await queue.put(None)   # None = timer-triggered, no notification
 
     # ── Worker ───────────────────────────────────────────────────
 
-    async def _worker(self, name: str, signal: asyncio.Event, job) -> None:
-        """Wait for *signal* → execute *job* → clear → loop."""
+    async def _worker(self, name: str, queue: asyncio.Queue, job) -> None:
+        """Wait for an item from *queue*, then execute *job*.
+
+        queue item ``None`` → timer-triggered, skip notification.
+        queue item ``Callable`` → manual trigger, call it on completion.
+        """
         print(f"[Worker/{name}] ready")
         while not self._shutdown_event.is_set():
-            await self._wait_signal(signal)
-            if self._shutdown_event.is_set():
+            callback = await self._wait_queue(queue)
+            if callback is None and self._shutdown_event.is_set():
                 break
-            signal.clear()
-            await self._try_run_job(name, job)
+            await self._try_run_job(name, job, callback)
 
-    async def _wait_signal(self, signal: asyncio.Event) -> None:
-        """Wait for *signal* or *shutdown_event* — whichever fires first."""
-        sig_task = asyncio.create_task(signal.wait(), name="sig_wait")
-        shut_task = asyncio.create_task(self._shutdown_event.wait(), name="shut_wait")
+    async def _wait_queue(self, queue: asyncio.Queue):
+        """Block until queue has data or shutdown is requested.
+
+        Returns the queue item (None or callable), or None on shutdown.
+        """
+        get_task = asyncio.create_task(queue.get(), name="q_get")
+        shut_task = asyncio.create_task(self._shutdown_event.wait(), name="q_shut")
         done, pending = await asyncio.wait(
-            [sig_task, shut_task],
+            [get_task, shut_task],
             return_when=asyncio.FIRST_COMPLETED,
         )
         for t in pending:
             t.cancel()
+        if shut_task in done:
+            return None   # shutdown
+        return done.pop().result()
 
-    async def _try_run_job(self, name: str, job) -> None:
-        """Execute *job*, logging errors as non-fatal."""
+    async def _try_run_job(self, name: str, job, callback=None) -> None:
+        """Execute *job*. If *callback* is not None, call it with the result.
+
+        Args:
+            name: Human-readable job name for logging.
+            job: Async callable returning a dict.
+            callback: ``(bool, str) -> None`` or ``None``.
+                      ``None`` means timer-triggered — skip notification.
+        """
         try:
             print(f"\n[{name}] Starting...")
-            await job()
+            result = await job()
             print(f"[{name}] Complete.")
+            if callback is not None:
+                if isinstance(result, dict) and "success" in result:
+                    callback(result["success"], result.get("summary", f"{name} 完成"))
+                elif result:
+                    callback(True, str(result)[:500])
+                else:
+                    callback(True, f"{name} 完成")
         except asyncio.CancelledError:
             raise
         except Exception as e:
             print(f"[{name}] Failed (non-fatal): {e}")
+            if callback is not None:
+                callback(False, str(e)[:500])
 
     # ── Jobs (the actual work — no duplication) ──────────────────
 
-    async def _crawl_job(self) -> None:
+    async def _crawl_job(self) -> dict:
         """Fetch news (with content) → save to PostgreSQL."""
         crawler = Crawler(self.config, pg_db=self.db)
-        await self._run_in_thread(
+        result = await self._run_in_thread(
             crawler.fetch_all, OutputStyle.POSTGRESQL, True, True
         )
+        total = result.get("total", 0) if result else 0
+        return {
+            "success": True,
+            "summary": f"抓取完成，共 {total} 条新闻" if total > 0 else "抓取完成，无新新闻",
+            "count": total,
+        }
 
-    async def _sync_job(self) -> None:
+    async def _sync_job(self) -> dict:
         """Sync cloud SQLite data into PostgreSQL."""
         cloud_config = self.config["storage"]["cloud"]
         if not (cloud_config.get("bucket_name") and cloud_config.get("endpoint_url")):
-            print("[Sync] Cloud not configured — skipping.")
-            return
+            return {"success": True, "summary": "云端未配置 — 已跳过同步", "count": 0}
         crawler = Crawler(self.config, pg_db=self.db)
-        await self._run_in_thread(crawler.sync_from_cloud)
+        result = await self._run_in_thread(crawler.sync_from_cloud)
+        total = result.get("upserted", 0) if result else 0
+        return {
+            "success": True,
+            "summary": f"同步完成，新增 {total} 条" if total > 0 else "同步完成，无新数据",
+            "count": total,
+        }
 
     # ── Run ──────────────────────────────────────────────────────
 
@@ -156,37 +192,37 @@ class NewsRadarDaemon:
             loop.add_signal_handler(sig, self._handle_signal)
 
         # 3. Start web server first — non-blocking
-        signals = {
-            "crawl": self._crawl_signal,
-            "sync": self._sync_signal,
+        queues = {
+            "crawl": self._crawl_queue,
+            "sync": self._sync_queue,
         }
         s3_config = self.config.get("storage", {}).get("resource", {})
         web_crawler = Crawler(self.config, pg_db=self.db)
-        app = create_app(self.db, s3_config, signals=signals, crawler=web_crawler)
+        app = create_app(self.db, s3_config, queues=queues, crawler=web_crawler)
         web_task = asyncio.create_task(self._serve_web(app), name="web")
 
         # 4. Launch Workers (wait for signal → execute job → loop)
         for coro in [
-            lambda: self._worker("Crawl", self._crawl_signal, self._crawl_job),
-            lambda: self._worker("Sync", self._sync_signal, self._sync_job),
+            lambda: self._worker("Crawl", self._crawl_queue, self._crawl_job),
+            lambda: self._worker("Sync", self._sync_queue, self._sync_job),
         ]:
             t = asyncio.create_task(coro(), name=coro.__name__)
             self._bg_tasks.append(t)
 
-        # 5. Launch Timers (set signal every N minutes)
+        # 5. Launch Timers (put None into queue every N minutes)
         crawl_interval = self.config.get("crawler", {}).get("daemon_interval_minutes", 60)
         sync_interval = self.config.get("crawler", {}).get("sync_interval_minutes", 60)
 
-        for sig, interval, name in [
-            (self._crawl_signal, crawl_interval, "Crawl"),
-            (self._sync_signal, sync_interval, "Sync"),
+        for queue, interval, name in [
+            (self._crawl_queue, crawl_interval, "Crawl"),
+            (self._sync_queue, sync_interval, "Sync"),
         ]:
-            t = asyncio.create_task(self._timer(sig, interval, name), name=f"timer_{name}")
+            t = asyncio.create_task(self._timer(queue, interval, name), name=f"timer_{name}")
             self._bg_tasks.append(t)
 
-        # 6. Manually trigger sync at startup (fire immediately)
-        self._sync_signal.set()
-        self._crawl_signal.set()
+        # 6. Manually trigger both on startup (fire immediately)
+        await self._crawl_queue.put(None)
+        await self._sync_queue.put(None)
 
         # 7. Create shutdown watcher
         shutdown_task = asyncio.create_task(
