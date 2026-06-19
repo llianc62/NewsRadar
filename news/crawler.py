@@ -252,7 +252,7 @@ class Crawler:
         output_style: OutputStyle,
         with_content: bool = False,
         with_image: bool = False,
-    ) -> None:
+    ) -> dict:
         """Fetch from all configured sources (hot-list + RSS).
 
         When *output_style* is a DB backend the data is persisted
@@ -295,6 +295,11 @@ class Crawler:
         self.persist(*all_items, output_style=output_style)
 
         print(f"=== Fetch complete: {len(all_items)} items ===")
+        return {
+            "total": len(all_items),
+            "hotlist": len([i for i in all_items if i.get("source_type") == "hotlist"]),
+            "rss": len([i for i in all_items if i.get("source_type") == "rss"]),
+        }
 
     # ═══════════════════════════════════════════════════════════════════
     # Internal — content enrichment (shared by fetch_all + cloud sync)
@@ -645,7 +650,7 @@ class Crawler:
     # Cloud sync — download S3 SQLite DBs → merge into PostgreSQL
     # ═══════════════════════════════════════════════════════════════════
 
-    def sync_from_cloud(self) -> None:
+    def sync_from_cloud(self) -> dict:
         """Download recent SQLite DBs from S3, enrich incremental content,
         and merge into PostgreSQL via UPSERT.
 
@@ -764,6 +769,11 @@ class Crawler:
             f"\n[Sync] Complete: {total_new} upserted, {total_skipped} skipped "
             f"({len(db_keys)} day(s) processed)"
         )
+        return {
+            "upserted": total_new,
+            "skipped": total_skipped,
+            "days": len(db_keys),
+        }
 
     @staticmethod
     def _read_sqlite_db(db_path) -> List[Dict[str, Any]]:
