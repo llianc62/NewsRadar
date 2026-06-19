@@ -25,14 +25,14 @@ def mock_db():
 
 @pytest.fixture
 def mock_crawler():
-    """Mock Crawler with fetch() that delays for duplicate-dedup test."""
+    """Mock Crawler with enrich_content() that delays for duplicate-dedup test."""
     c = MagicMock()
     c.timeout = 30
 
-    def delayed_fetch(*args, **kwargs):
+    def delayed_enrich(*args, **kwargs):
         time.sleep(0.3)
 
-    c.fetch.side_effect = delayed_fetch
+    c.enrich_content.side_effect = delayed_enrich
     return c
 
 

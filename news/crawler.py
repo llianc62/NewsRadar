@@ -230,7 +230,7 @@ class Crawler:
         item["tags"] = parsed.get("tags", [])
 
         if not with_content:
-            self.persist(item, output_style)
+            self.persist(item, output_style=output_style)
             return
 
         # ── Persistence ────────────────────────────────────────────
@@ -245,7 +245,7 @@ class Crawler:
                     storage = target_storage
                 self._run_batch_image_download([item], storage)
 
-        self.persist(item, output_style)
+        self.persist(item, output_style=output_style)
 
     def fetch_all(
         self,

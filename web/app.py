@@ -117,7 +117,9 @@ def _run_refetch(article_id: int, crawler, notif: dict, db) -> None:
         if article is None:
             raise ValueError("文章不存在")
         crawler.enrich_content(article, with_image=True)
-        crawler.persist(OutputStyle.POSTGRESQL, article)
+        content = article.get("content", "")
+        # 直接更新 content 字段，跳过 UPSERT 的内容保留逻辑
+        db.update_article_content(article_id, content)
         notif["status"] = "completed"
     except Exception as e:
         notif["status"] = "failed"
