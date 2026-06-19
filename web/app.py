@@ -1,7 +1,9 @@
 """NewsRadar Web Frontend — FastAPI + Jinja2 SSR."""
 
+import json
 import re
 import time
+import asyncio
 import threading
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
@@ -67,21 +69,33 @@ _notification_counter: int = 0             # 自增 ID
 _notification_lock = threading.Lock()      # 线程安全
 _refetch_executor: ThreadPoolExecutor | None = None
 
+# ── SSE state ──
+_sse_clients: set["asyncio.Queue"] = set()
+_sse_event_loop: "asyncio.AbstractEventLoop | None" = None
+
 
 def _now() -> float:
     return time.time()
 
 
-def _add_notification(article_id: int, title: str, status: str = "pending",
-                      error_message: str = "") -> dict:
+def _add_notification(
+    article_id: int,
+    title: str,
+    status: str = "pending",
+    error_message: str = "",
+    category: str = "fetch",
+    summary: str = "",
+) -> dict:
     """Create a notification, append to list, return the dict."""
     global _notification_counter
     with _notification_lock:
         _notification_counter += 1
         notif = {
             "id": _notification_counter,
+            "category": category,
             "article_id": article_id,
             "title": title,
+            "summary": summary,
             "status": status,
             "error_message": error_message,
             "is_read": False,
@@ -91,28 +105,58 @@ def _add_notification(article_id: int, title: str, status: str = "pending",
         # Cap at 50
         if len(_notifications) > 50:
             _notifications.pop()
+        # Push SSE event for new notification
+        _push_sse_event({"type": "new", "notification": dict(notif)})
         return notif
+
+
+def _push_sse_event(data: dict) -> None:
+    """Push an SSE event to all connected clients. Thread-safe."""
+    loop = _sse_event_loop
+    if loop is None or not _sse_clients:
+        return
+
+    def _put():
+        for q in list(_sse_clients):
+            try:
+                q.put_nowait(data)
+            except asyncio.QueueFull:
+                pass
+
+    try:
+        running = asyncio.get_running_loop()
+        if running is loop:
+            _put()
+        else:
+            loop.call_soon_threadsafe(_put)
+    except RuntimeError:
+        # No running loop — called from thread pool thread
+        loop.call_soon_threadsafe(_put)
 
 
 def _run_fetch_url(url: str, crawler, notif: dict, db) -> None:
     """Execute URL fetch in background — thin wrapper around crawler.fetch()."""
     try:
         notif["status"] = "running"
+        _push_sse_event({"type": "update", "notification": dict(notif)})
         crawler.fetch(url, OutputStyle.POSTGRESQL, True, True)
         notif["status"] = "completed"
-        # 回填 article_id，使前端通知可跳转到文章详情页
+        # 回填 article_id
         article = db.get_article_by_url(url)
         if article:
             notif["article_id"] = article["id"]
     except Exception as e:
         notif["status"] = "failed"
         notif["error_message"] = str(e)[:500]
+    finally:
+        _push_sse_event({"type": "update", "notification": dict(notif)})
 
 
 def _run_refetch(article_id: int, crawler, notif: dict, db) -> None:
     """Execute refetch in background — re-download content and persist."""
     try:
         notif["status"] = "running"
+        _push_sse_event({"type": "update", "notification": dict(notif)})
         article = db.get_news_by_id(article_id)
         if article is None:
             raise ValueError("文章不存在")
@@ -125,6 +169,7 @@ def _run_refetch(article_id: int, crawler, notif: dict, db) -> None:
         notif["status"] = "failed"
         notif["error_message"] = str(e)[:500]
     finally:
+        _push_sse_event({"type": "update", "notification": dict(notif)})
         _refetch_tasks.pop(article_id, None)
 
 
@@ -155,7 +200,7 @@ def render_template(name: str, **context) -> str:
 
 # ── App factory ──────────────────────────────────────────────────
 
-def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
+def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
     """Create and configure the FastAPI application.
 
     Args:
@@ -164,9 +209,8 @@ def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
         s3_config: S3 config dict for the ``/media/`` image proxy
             (required). Keys: endpoint_url, bucket_name,
             access_key_id, secret_access_key, region.
-        signals: Optional dict of ``asyncio.Event`` signals for manual
-            task triggering via ``POST /api/trigger/{name}``.
-            Keys: ``"crawl"``, ``"sync"``.
+        queues: Optional dict of ``asyncio.Queue`` for manual trigger +
+                notification callback. Keys: ``"crawl"``, ``"sync"``.
         crawler: Optional :class:`news.crawler.Crawler` instance for
             refetch API. If ``None``, the refetch endpoint will reject
             requests with "抓取服务未就绪".
@@ -189,7 +233,7 @@ def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
     app = FastAPI(title="NewsRadar", version="2.0.0", lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.state.db = db
-    app.state.signals = signals or {}
+    app.state.queues = queues or {}
 
     # S3 storage — required for /media/ proxy
     app.state.s3_storage = S3Storage(s3_config)
@@ -436,21 +480,76 @@ def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
 
     @app.post("/api/trigger/crawl")
     async def trigger_crawl():
-        """Manually trigger a crawl job."""
-        signal = app.state.signals.get("crawl")
-        if signal is None:
+        """Manually trigger a crawl job with notification."""
+        queue = app.state.queues.get("crawl")
+        if queue is None:
             return JSONResponse({"ok": False, "error": "not available"}, status_code=404)
-        signal.set()
-        return {"ok": True, "task": "crawl"}
+
+        notif = _add_notification(0, "新闻抓取", "pending", category="crawl")
+
+        def on_complete(success: bool, summary: str):
+            with _notification_lock:
+                notif["status"] = "completed" if success else "failed"
+                notif["summary"] = summary
+            _push_sse_event({"type": "update", "notification": dict(notif)})
+
+        await queue.put(on_complete)
+        return {"ok": True, "task": "crawl", "notif_id": notif["id"]}
 
     @app.post("/api/trigger/sync")
     async def trigger_sync():
-        """Manually trigger a cloud sync job."""
-        signal = app.state.signals.get("sync")
-        if signal is None:
+        """Manually trigger a cloud sync job with notification."""
+        queue = app.state.queues.get("sync")
+        if queue is None:
             return JSONResponse({"ok": False, "error": "not available"}, status_code=404)
-        signal.set()
-        return {"ok": True, "task": "sync"}
+
+        notif = _add_notification(0, "云端同步", "pending", category="sync")
+
+        def on_complete(success: bool, summary: str):
+            with _notification_lock:
+                notif["status"] = "completed" if success else "failed"
+                notif["summary"] = summary
+            _push_sse_event({"type": "update", "notification": dict(notif)})
+
+        await queue.put(on_complete)
+        return {"ok": True, "task": "sync", "notif_id": notif["id"]}
+
+    # ── SSE stream ──────────────────────────────────────────────
+
+    @app.get("/api/notifications/stream")
+    async def notification_stream(request: Request):
+        """SSE endpoint — pushes new/updated notifications to the client."""
+        from starlette.responses import StreamingResponse
+
+        global _sse_event_loop
+        if _sse_event_loop is None:
+            _sse_event_loop = asyncio.get_running_loop()
+
+        queue: asyncio.Queue = asyncio.Queue()
+        _sse_clients.add(queue)
+
+        async def event_generator():
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    try:
+                        data = await asyncio.wait_for(queue.get(), timeout=30.0)
+                        yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                    except asyncio.TimeoutError:
+                        yield ": keepalive\n\n"
+            finally:
+                _sse_clients.discard(queue)
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     # ── Manual Fetch API ───────────────────────────────────────
 
@@ -585,6 +684,14 @@ def create_app(db, s3_config: dict, signals: dict = None, crawler=None):
                     n["is_read"] = True
                     return {"ok": True}
         return JSONResponse({"ok": False, "error": "通知不存在"}, status_code=404)
+
+    @app.post("/api/notifications/mark-all-read")
+    async def mark_all_read():
+        """Mark all notifications as read."""
+        with _notification_lock:
+            for n in _notifications:
+                n["is_read"] = True
+        return {"ok": True}
 
     return app
 
