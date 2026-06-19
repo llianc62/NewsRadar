@@ -113,7 +113,7 @@
     <!-- Control Deck -->
     {% include "components/control_deck.html" %}
 
-    <!-- Action Bar — search + submit URL -->
+    <!-- Action Bar — search + action buttons -->
     <div class="action-bar">
       <div class="search-wrap" id="search-wrap">
         <span class="search-icon">
@@ -137,10 +137,37 @@
         <div class="search-spinner" id="search-spinner"></div>
       </div>
 
-      <button class="submit-btn" id="submit-btn" onclick="openSubmitModal()">
-        <span class="submit-btn-plus">+</span>
-        <span class="submit-btn-label">提交新闻</span>
-      </button>
+      <div class="action-divider"></div>
+
+      <div class="action-btn-group">
+        <!-- Plus: submit news URL -->
+        <button class="act-btn act-btn--plus" data-tooltip="提交新闻链接" onclick="openSubmitModal()" aria-label="提交新闻链接">
+          <span class="act-btn-icon-wrap">+</span>
+        </button>
+
+        <!-- Bug: trigger crawl -->
+        <button class="act-btn act-btn--crawl" data-tooltip="触发新闻抓取" onclick="triggerCrawl()" aria-label="触发新闻抓取">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <ellipse cx="12" cy="13" rx="5" ry="6"/>
+            <path d="M12 7v6"/>
+            <path d="M9 7c-1-2.5-2.5-3.5-3-3.5"/>
+            <path d="M15 7c1-2.5 2.5-3.5 3-3.5"/>
+            <path d="M7 10l-3 1"/><path d="M7 13l-3 2"/><path d="M7 16l-2.5 2.5"/>
+            <path d="M17 10l3 1"/><path d="M17 13l3 2"/><path d="M17 16l2.5 2.5"/>
+            <circle cx="10.5" cy="8" r="0.8" fill="currentColor"/>
+            <circle cx="13.5" cy="8" r="0.8" fill="currentColor"/>
+          </svg>
+        </button>
+
+        <!-- Cloud: trigger sync -->
+        <button class="act-btn act-btn--sync" data-tooltip="从云端同步" onclick="triggerSync()" aria-label="从云端同步">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M6.5 17.5c-2.2-.3-4-2.2-4-4.5 0-2.2 1.5-4 3.5-4.5C6.3 5.7 8.9 4 12 4c3.1 0 5.7 1.7 6.5 4.5 2 .5 3.5 2.3 3.5 4.5 0 2.3-1.8 4.2-4 4.5"/>
+            <path d="M12 15v5"/>
+            <path d="M9 18l3 3 3-3"/>
+          </svg>
+        </button>
+      </div>
     </div>
 
     <!-- Submit URL Modal -->
