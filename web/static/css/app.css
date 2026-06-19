@@ -1205,6 +1205,9 @@ a { color: inherit; text-decoration: none; }
 .act-btn--plus:hover .act-btn-icon-wrap {
   transform: rotate(90deg);
 }
+.act-btn--plus:active .act-btn-icon-wrap {
+  transform: rotate(90deg) scale(0.9);
+}
 
 /* ── Crawl variant (bug) — wiggle on hover ── */
 .act-btn--crawl:hover svg {
