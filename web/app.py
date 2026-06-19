@@ -71,6 +71,7 @@ _refetch_executor: ThreadPoolExecutor | None = None
 
 # ── SSE state ──
 _sse_clients: set["asyncio.Queue"] = set()
+_sse_clients_lock = threading.Lock()
 _sse_event_loop: "asyncio.AbstractEventLoop | None" = None
 
 
@@ -105,9 +106,9 @@ def _add_notification(
         # Cap at 50
         if len(_notifications) > 50:
             _notifications.pop()
-        # Push SSE event for new notification
-        _push_sse_event({"type": "new", "notification": dict(notif)})
-        return notif
+    # Push SSE event outside the lock to keep lock scope tight
+    _push_sse_event({"type": "new", "notification": dict(notif)})
+    return notif
 
 
 def _push_sse_event(data: dict) -> None:
@@ -117,7 +118,9 @@ def _push_sse_event(data: dict) -> None:
         return
 
     def _put():
-        for q in list(_sse_clients):
+        with _sse_clients_lock:
+            clients = list(_sse_clients)
+        for q in clients:
             try:
                 q.put_nowait(data)
             except asyncio.QueueFull:
@@ -526,7 +529,8 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
             _sse_event_loop = asyncio.get_running_loop()
 
         queue: asyncio.Queue = asyncio.Queue()
-        _sse_clients.add(queue)
+        with _sse_clients_lock:
+            _sse_clients.add(queue)
 
         async def event_generator():
             try:
@@ -539,7 +543,8 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
                     except asyncio.TimeoutError:
                         yield ": keepalive\n\n"
             finally:
-                _sse_clients.discard(queue)
+                with _sse_clients_lock:
+                    _sse_clients.discard(queue)
 
         return StreamingResponse(
             event_generator(),
