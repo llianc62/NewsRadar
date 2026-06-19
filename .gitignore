@@ -14,6 +14,7 @@ dist/
 .codegraph/
 .agents/
 .design/
+.planning/
 
 skills-lock.json
 .mcp.json
@@ -24,3 +25,6 @@ output/
 data/
 
 temp.md
+task_plan.md
+findings.md
+progress.md

@@ -283,18 +283,17 @@
   <!-- Tool Bar -->
   <div class="tool-bar">
     <button class="tool-btn"
+            onclick="document.querySelector('.page-simple').scrollTo({top:0,behavior:'smooth'})"
+            title="返回顶部">
+      {{ icon_svg("arrow-up") | safe }}
+    </button>
+    <button class="tool-btn"
             onclick="refetchArticle()"
             title="重新抓取">
       {{ icon_svg("refresh") | safe }}
     </button>
-    <div class="tool-sep"></div>
     <button class="tool-btn danger" id="delete-btn" onclick="openDeleteModal()" title="删除文章">
       {{ icon_svg("trash") | safe }}
-    </button>
-    <button class="tool-btn"
-            onclick="document.querySelector('.page-simple').scrollTo({top:0,behavior:'smooth'})"
-            title="返回顶部">
-      {{ icon_svg("arrow-up") | safe }}
     </button>
   </div>
 
