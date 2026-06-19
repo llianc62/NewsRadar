@@ -19,18 +19,15 @@
 </div>
 
 </body>
-<!-- Shared: notification polling + toast + drawer -->
+<!-- Shared: notification SSE + toast + drawer -->
 <script>
 (function() {
   'use strict';
 
-  var POLL_INTERVAL = 5000;
   var TOAST_DURATION = 5000;
   var shownIds = {};   // track which notifs already toasted
 
   // ── Toast ──
-  // Builds a toast node from a normalized descriptor:
-  //   { title, sub, kind: 'done'|'fail'|'info', onClick: fn|null }
   function buildToast(opts) {
     var container = document.getElementById('toast-container');
     if (!container) return null;
@@ -72,18 +69,18 @@
   }
 
   function showToast(notif) {
-    var canNavigate = notif.status === 'completed' && notif.article_id > 0;
+    var isTask = notif.category === 'crawl' || notif.category === 'sync';
+    var canNavigate = !isTask && notif.status === 'completed' && notif.article_id > 0;
     buildToast({
       title: notif.title,
-      sub: notif.status === 'completed' ? '抓取完成' : '抓取失败',
+      sub: isTask
+        ? (notif.summary || (notif.status === 'completed' ? '任务完成' : '任务失败'))
+        : (notif.status === 'completed' ? '抓取完成' : '抓取失败'),
       kind: notif.status === 'completed' ? 'done' : 'fail',
       onClick: canNavigate ? function() { window.location.href = '/news/' + notif.article_id; } : null,
     });
   }
 
-  // Generic toast for ad-hoc UI flows (e.g. delete). Exposed globally so
-  // page scripts injected via the per-page scripts block can reuse the
-  // shared visual system without a second toast implementation.
   window.showAppToast = function(title, sub, kind, onClick) {
     buildToast({ title: title, sub: sub || '', kind: kind || 'done',
                  onClick: onClick || null });
@@ -100,11 +97,12 @@
       .replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
-  window.markAndGo = function(notifId, articleId, status) {
+  window.markAndGo = function(notifId, articleId, status, category) {
     fetch('/api/notifications/' + notifId + '/read', { method: 'POST' });
-    if (status === 'completed' && articleId > 0) {
+    if (status === 'completed' && articleId > 0 && category !== 'crawl' && category !== 'sync') {
       window.location.href = '/news/' + articleId;
     }
+    closeDrawer();
   };
 
   function formatRelativeTime(ts) {
@@ -130,7 +128,8 @@
   }
 
   // ── Drawer ──
-  window.toggleDrawer = function() {
+  window.toggleDrawer = function(event) {
+    event && event.stopPropagation();
     var drawer = document.getElementById('notify-drawer');
     var overlay = document.getElementById('notify-overlay');
     if (!drawer || !overlay) return;
@@ -141,6 +140,9 @@
       overlay.classList.add('is-open');
       document.body.style.overflow = 'hidden';
       fetchNotifications(true);
+      // 打开抽屉 = 全部已读
+      fetch('/api/notifications/mark-all-read', { method: 'POST' })
+        .then(function() { updateBadge(0); });
     }
   };
 
@@ -151,18 +153,6 @@
     drawer.classList.remove('is-open');
     overlay.classList.remove('is-open');
     document.body.style.overflow = '';
-    // Mark all shown as read
-    var list = document.getElementById('notify-list');
-    if (list) {
-      var items = list.querySelectorAll('.notify-item');
-      items.forEach(function(item) {
-        var id = item.getAttribute('data-id');
-        if (id) {
-          fetch('/api/notifications/' + id + '/read', { method: 'POST' });
-        }
-      });
-    }
-    updateBadge(0);
   };
 
   // ── Fetch ──
@@ -171,16 +161,13 @@
       .then(function(r) { return r.json(); })
       .then(function(data) {
         if (!Array.isArray(data)) return;
-
         if (forDrawer) {
           renderDrawerList(data);
-          return;  // 打开抽屉不触发 toast，用户正在看通知列表
+          return;
         }
-
         data.forEach(function(n) {
           if (!shownIds[n.id] && (n.status === 'completed' || n.status === 'failed')) {
             shownIds[n.id] = true;
-            // Only toast on hot-news or detail pages
             var path = window.location.pathname;
             if (path.indexOf('/hot-news') === 0 || path.indexOf('/news/') === 0) {
               showToast(n);
@@ -191,16 +178,18 @@
       .catch(function() { /* ignore network errors */ });
   }
 
-  function fetchUnreadCount() {
-    fetch('/api/notifications/unread-count')
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        updateBadge(data.count || 0);
-        if (data.count > 0) {
-          fetchNotifications(false);
-        }
-      })
-      .catch(function() {});
+  function getStatusText(category, status) {
+    if (category === 'crawl' || category === 'sync') {
+      if (status === 'pending')  return '排队中';
+      if (status === 'running')  return '执行中';
+      if (status === 'completed') return '已完成';
+      if (status === 'failed')   return '执行失败';
+    }
+    if (status === 'pending')  return '等待抓取';
+    if (status === 'running')  return '抓取中';
+    if (status === 'completed') return '抓取成功';
+    if (status === 'failed')   return '抓取失败';
+    return status;
   }
 
   function renderDrawerList(data) {
@@ -216,29 +205,42 @@
 
     var html = '';
     data.forEach(function(n) {
-      var dotClass = n.status === 'completed' ? 'done' : n.status === 'failed' ? 'fail' : 'running';
-      var statusClass = n.status === 'completed' ? 'done' : n.status === 'failed' ? 'fail' : 'running';
-      var statusText = n.status === 'completed' ? '抓取成功' : n.status === 'failed' ? '抓取失败' : '抓取中';
+      var dotClass = n.status === 'completed' ? 'done'
+        : n.status === 'failed' ? 'fail'
+        : 'running';
+      var statusText = getStatusText(n.category, n.status);
       var readClass = n.is_read ? ' is-read' : '';
       var timeStr = formatRelativeTime(n.created_at);
+      var isTask = n.category === 'crawl' || n.category === 'sync';
 
       html +=
-        '<div class="notify-item' + readClass + '" data-id="' + escapeAttr(n.id) + '" onclick="markAndGo(' + escapeAttr(n.id) + ', ' + escapeAttr(n.article_id) + ', \'' + escapeAttr(n.status) + '\')">' +
-          '<span class="notify-item-dot ' + dotClass + '"></span>' +
-          '<div class="notify-item-body">' +
-            '<div class="notify-item-title">' + escapeHtml(n.title) + '</div>' +
-            '<div class="notify-item-meta">' +
-              '<span class="notify-item-status ' + statusClass + '">' + statusText + '</span>' +
-              (timeStr ? '<span class="notify-item-time">· ' + escapeHtml(timeStr) + '</span>' : '') +
-            '</div>' +
-          '</div>' +
-        '</div>';
+        '<div class="notify-item' + readClass + '" data-id="' + escapeAttr(n.id)
+          + '" onclick="markAndGo('
+          + escapeAttr(n.id) + ', '
+          + escapeAttr(n.article_id) + ', '
+          + escapeAttr(n.status) + ', '
+          + escapeAttr(n.category)
+          + ')">'
+          + '<span class="notify-item-dot ' + dotClass + '"></span>'
+          + '<div class="notify-item-body">'
+            + '<div class="notify-item-title">' + escapeHtml(n.title) + '</div>'
+            + (n.summary && isTask
+                ? '<div class="notify-item-summary">' + escapeHtml(n.summary) + '</div>'
+                : '')
+            + '<div class="notify-item-meta">'
+              + '<span class="notify-item-status ' + dotClass + '">'
+                + statusText
+              + '</span>'
+              + (timeStr ? '<span class="notify-item-time">· '
+                + escapeHtml(timeStr) + '</span>' : '')
+            + '</div>'
+          + '</div>'
+        + '</div>';
     });
     list.innerHTML = html;
   }
 
-  // ── Polling ──
-  // Only active on hot-news and news detail pages
+  // ── Initialization ──
   var path = window.location.pathname;
   if (path.indexOf('/hot-news') === 0 || path.indexOf('/news/') === 0) {
     // Create toast container if not present
@@ -249,7 +251,7 @@
       document.body.appendChild(tc);
     }
 
-    // Seed shownIds with existing notifications so refresh doesn't re-toast
+    // Seed shownIds with existing notifications so reconnect doesn't re-toast
     fetch('/api/notifications')
       .then(function(r) { return r.json(); })
       .then(function(data) {
@@ -257,11 +259,77 @@
           data.forEach(function(n) { shownIds[n.id] = true; });
         }
       })
-      .catch(function() {})
-      .then(function() {
-        fetchUnreadCount();
-        setInterval(fetchUnreadCount, POLL_INTERVAL);
-      });
+      .catch(function() {});
+
+    // ── SSE connection (replaces polling) ──
+    var es = new EventSource('/api/notifications/stream');
+
+    es.onopen = function() {
+      console.log('[SSE] connected');
+      // 初始获取未读计数（SSE 重连后同步 badge）
+      fetch('/api/notifications/unread-count')
+        .then(function(r) { return r.json(); })
+        .then(function(d) { updateBadge(d.count || 0); });
+    };
+
+    es.onerror = function() {
+      console.log('[SSE] connection lost, will retry...');
+    };
+
+    es.addEventListener('new', function(e) {
+      var payload = JSON.parse(e.data);
+      var notif = payload.notification;
+      if (!notif) return;
+
+      // 更新铃铛红点
+      fetch('/api/notifications/unread-count')
+        .then(function(r) { return r.json(); })
+        .then(function(d) { updateBadge(d.count || 0); });
+
+      // 如果不在 hot-news 或 news detail 页面，不弹 toast
+      if (path.indexOf('/hot-news') !== 0 && path.indexOf('/news/') !== 0) return;
+
+      // 根据 category 显示不同 toast
+      if (notif.category === 'crawl' || notif.category === 'sync') {
+        showAppToast(
+          notif.title,
+          notif.summary || '任务已触发，正在执行…',
+          'info'
+        );
+      } else {
+        if (!shownIds[notif.id]) {
+          shownIds[notif.id] = true;
+          showToast(notif);
+        }
+      }
+    });
+
+    es.addEventListener('update', function(e) {
+      var payload = JSON.parse(e.data);
+      var notif = payload.notification;
+      if (!notif) return;
+
+      // 更新铃铛红点
+      fetch('/api/notifications/unread-count')
+        .then(function(r) { return r.json(); })
+        .then(function(d) { updateBadge(d.count || 0); });
+
+      if (path.indexOf('/hot-news') !== 0 && path.indexOf('/news/') !== 0) return;
+
+      // 任务完成/失败 — toast
+      var kind = notif.status === 'completed' ? 'done' : 'fail';
+      var sub = notif.status === 'completed'
+        ? (notif.summary || '任务完成')
+        : (notif.error_message || '任务失败');
+
+      // 抽屉打开则刷新列表
+      var drawer = document.getElementById('notify-drawer');
+      if (drawer && drawer.classList.contains('is-open')) {
+        fetchNotifications(true);
+      }
+
+      showAppToast(notif.title, sub, kind);
+    });
   }
 })();
 </script>
