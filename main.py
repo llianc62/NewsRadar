@@ -20,6 +20,7 @@ import sys
 import signal
 import asyncio
 
+from typing import Any
 from concurrent.futures import ThreadPoolExecutor
 
 from config.loader import load_config
@@ -38,14 +39,14 @@ class NewsRadarDaemon:
     shutdown can call ``executor.shutdown(wait=False)`` and avoid
     blocking on long-running threads.
 
-    Background tasks use a **semaphore pattern**::
+    Background tasks use an **asyncio.Queue channel pattern**::
 
-        Timer ──set()──▶ asyncio.Event ◀──await── Worker ──exec──▶ Job
+        Timer ──put(None)──▶ asyncio.Queue ◀──get── Worker ──job──▶
 
-    Each task type gets one ``asyncio.Event`` signal.  A *timer* sets
-    the signal every N minutes; a *worker* waits for the signal then
-    executes the *job*.  At startup the sync signal is set manually so
-    it fires immediately.
+    Each task type gets one ``asyncio.Queue``.  A *timer* puts
+    ``None`` every N minutes (wake without notification); a manual
+    *trigger* puts a callback closure (wake with notification).
+    The *worker* takes items from the queue and executes the *job*.
     """
 
     def __init__(self, config_path: str = "config.yaml"):
@@ -102,7 +103,7 @@ class NewsRadarDaemon:
                 break
             await self._try_run_job(name, job, callback)
 
-    async def _wait_queue(self, queue: asyncio.Queue):
+    async def _wait_queue(self, queue: asyncio.Queue) -> Any:
         """Block until queue has data or shutdown is requested.
 
         Returns the queue item (None or callable), or None on shutdown.
@@ -115,9 +116,9 @@ class NewsRadarDaemon:
         )
         for t in pending:
             t.cancel()
-        if shut_task in done:
-            return None   # shutdown
-        return done.pop().result()
+        if get_task in done:
+            return get_task.result()  # consume item even if shutdown also fired
+        return None  # shutdown fired, no queue item to consume
 
     async def _try_run_job(self, name: str, job, callback=None) -> None:
         """Execute *job*. If *callback* is not None, call it with the result.
@@ -133,12 +134,15 @@ class NewsRadarDaemon:
             result = await job()
             print(f"[{name}] Complete.")
             if callback is not None:
-                if isinstance(result, dict) and "success" in result:
-                    callback(result["success"], result.get("summary", f"{name} 完成"))
-                elif result:
-                    callback(True, str(result)[:500])
-                else:
-                    callback(True, f"{name} 完成")
+                try:
+                    if isinstance(result, dict) and "success" in result:
+                        callback(result["success"], result.get("summary", f"{name} 完成"))
+                    elif result:
+                        callback(True, str(result)[:500])
+                    else:
+                        callback(True, f"{name} 完成")
+                except Exception as cb_err:
+                    print(f"[{name}] Callback failed (non-fatal): {cb_err}")
         except asyncio.CancelledError:
             raise
         except Exception as e:
