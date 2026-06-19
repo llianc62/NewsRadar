@@ -604,6 +604,37 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 });
 
+// ── Action bar: crawl / sync triggers ──
+function triggerCrawl() {
+  fetch('/api/trigger/crawl', { method: 'POST' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.ok) {
+        showAppToast('抓取任务已触发', '系统正在抓取最新新闻…', 'done');
+      } else {
+        showAppToast('抓取触发失败', data.error || '服务暂不可用', 'fail');
+      }
+    })
+    .catch(function() {
+      showAppToast('抓取触发失败', '网络错误，请检查连接后重试', 'fail');
+    });
+}
+
+function triggerSync() {
+  fetch('/api/trigger/sync', { method: 'POST' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.ok) {
+        showAppToast('同步任务已触发', '正在从云端同步数据…', 'done');
+      } else {
+        showAppToast('同步触发失败', data.error || '服务暂不可用', 'fail');
+      }
+    })
+    .catch(function() {
+      showAppToast('同步触发失败', '网络错误，请检查连接后重试', 'fail');
+    });
+}
+
 // ── Init ──
 initPresets();
 highlightActivePreset();
