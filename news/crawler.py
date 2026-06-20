@@ -852,3 +852,43 @@ class Crawler:
         if self._sqlite is not None:
             self._sqlite.cleanup()
             self._sqlite = None
+
+
+# ── Keyword extraction (jieba TextRank fallback) ─────────────────
+
+def _extract_keywords_textrank(content: str, topk: int = 5) -> list[str]:
+    """从 Markdown 正文提取关键词，用作 tags fallback。
+
+    仅当页面元数据（meta keywords / JSON-LD）无 tags 时调用。
+    使用 jieba TextRank 算法 + 词性过滤，适合中文新闻正文。
+
+    Args:
+        content: Markdown 格式的 article body。
+        topk: 最多返回的关键词数量。
+
+    Returns:
+        关键词列表（可能少于 *topk* 当正文信息量不足时），
+        或空列表当正文过短或无法提取。
+    """
+    # ── 清洗 Markdown 语法 ──────────────────────────────────────
+    text = re.sub(r'!\[.*?\]\(.*?\)', '', content)          # 图片
+    text = re.sub(r'\[([^\]]*)\]\(.*?\)', r'\1', text)      # 链接保留文字
+    text = re.sub(r'[#*>`|~\-_]', ' ', text)                # 格式标记
+    text = re.sub(r'\s+', ' ', text).strip()
+
+    if len(text) < 50:
+        return []
+
+    # ── jieba TextRank ─────────────────────────────────────────
+    try:
+        import jieba.analyse
+    except ImportError:
+        return []
+
+    keywords = jieba.analyse.textrank(
+        text,
+        topK=topk,
+        withWeight=False,
+        allowPOS=('ns', 'n', 'vn', 'nr', 'nt', 'nz'),
+    )
+    return keywords
