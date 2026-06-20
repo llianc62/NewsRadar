@@ -394,6 +394,8 @@ class Crawler:
         item["summary"] = parsed.get("summary", "")
         item["category"] = parsed.get("category", "")
         item["tags"] = parsed.get("tags", [])
+        if not item["tags"] and item.get("content"):
+            item["tags"] = _extract_keywords_textrank(item["content"])
         return True
 
     def _run_batch_image_download(
