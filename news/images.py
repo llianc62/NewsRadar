@@ -2,8 +2,8 @@
 """Image download and storage processor.
 
 Downloads article images concurrently via thread pool, saves them
-through a :class:`FileStorage` backend, and returns clean relative
-paths suitable for embedding in Markdown content.
+through a :class:`FileStorage` backend, and returns relative paths
+suitable for embedding in Markdown content.
 
 Usage::
 
@@ -12,14 +12,12 @@ Usage::
     ip = ImageProcessor(max_workers=8)
     storage = LocalStorage("output")
 
-    # Single download
-    result = ip.download("https://x.com/a.jpg", target_storage=storage)
-    # → {"https://x.com/a.jpg": "images/a.jpg"}
-
-    # Batch download (parallel)
-    url_map = {"https://x.com/a.jpg": "", "https://x.com/b.jpg": ""}
-    url_map = ip.download(*url_map.keys(), target_storage=storage)
-    # → {"https://x.com/a.jpg": "images/a.jpg", "https://x.com/b.jpg": "images/b.jpg"}
+    url_map = {
+        "https://x.com/a.jpg": "news/2026-06-15/images/a.jpg",
+        "https://x.com/b.jpg": "news/2026-06-15/images/b.jpg",
+    }
+    result = ip.download(url_map, storage=storage)
+    # → {"https://x.com/a.jpg": "images/a.jpg", ...}
 """
 
 import re
@@ -34,10 +32,14 @@ from storage import FileStorage
 
 class ImageProcessor:
     """Download article images, store via :class:`FileStorage`,
-    return mapping from original URL → stored path.
+    return mapping from original URL → relative path.
+
+    Callers pre-compute the full S3 key for each URL and pass it as
+    ``{url: "news/YYYY-MM-DD/images/xxx.jpg"}``.  The processor downloads
+    each image and saves it directly to the given key.
 
     Does NOT modify Markdown — callers handle string replacement
-    using the returned mapping dicts.
+    using the returned ``{url: "images/xxx.jpg"}`` mapping.
 
     Usage::
 
@@ -46,14 +48,11 @@ class ImageProcessor:
         ip = ImageProcessor(max_workers=8)
         storage = LocalStorage("output")
 
-        # Single download
-        result = ip.download("https://x.com/a.jpg", target_storage=storage)
+        url_map = {
+            "https://x.com/a.jpg": "news/2026-06-15/images/a.jpg",
+        }
+        result = ip.download(url_map, storage=storage)
         # → {"https://x.com/a.jpg": "images/a.jpg"}
-
-        # Batch download (parallel)
-        url_map = {"https://x.com/a.jpg": "", "https://x.com/b.jpg": ""}
-        url_map = ip.download(*url_map.keys(), target_storage=storage)
-        # → {"https://x.com/a.jpg": "images/a.jpg", "https://x.com/b.jpg": "images/b.jpg"}
     """
 
     # Content-Type → file extension mapping
@@ -97,31 +96,33 @@ class ImageProcessor:
 
     # ── Public API ─────────────────────────────────────────────────
 
-    def download(self, *urls: str, storage: FileStorage) -> Dict[str, str]:
-        """Download images from *urls*, save via *target_storage*.
-
-        Downloads are parallelised across ``max_workers`` threads.
-        Duplicate URLs are downloaded only once.
+    def download(
+        self, url_map: Dict[str, str], storage: FileStorage,
+    ) -> Dict[str, str]:
+        """Download images and save to pre-computed paths.
 
         Args:
-            *urls: One or more image URLs to download.
-            target_storage: :class:`FileStorage` backend for saving images.
+            url_map: ``{url: "news/YYYY-MM-DD/images/xxx.jpg", ...}``.
+                Each value is the full S3 key where the image will be stored.
+            storage: :class:`FileStorage` backend for saving images.
 
         Returns:
-            ``{url: saved_path, ...}`` — each URL maps to the stored path
-            on success, or ``""`` on failure.
+            ``{url: "images/xxx.jpg", ...}`` — each URL maps to the
+            relative path (for Markdown content replacement) on success,
+            or ``""`` on failure.
         """
-        if not urls:
+        if not url_map:
             return {}
 
-        result: Dict[str, str] = {url: "" for url in urls}
-        target_dir = self._images_dir()
+        result: Dict[str, str] = {url: "" for url in url_map}
         print(f"[ImageProcessor] Downloading {len(result)} unique images "
               f"(workers={self._max_workers})")
         executor = self._get_executor()
         futures = {
-            executor.submit(self._download_and_save, url, target_dir, storage): url
-            for url in result
+            executor.submit(
+                self._download_and_save, url, target_path, storage,
+            ): url
+            for url, target_path in url_map.items()
         }
 
         for future in as_completed(futures):
@@ -139,23 +140,16 @@ class ImageProcessor:
 
     # ── Helpers ────────────────────────────────────────────────────
 
-    @staticmethod
-    def _images_dir() -> str:
-        """Derive today's image directory: ``news/YYYY-MM-DD/images``."""
-        from utils import format_date_folder
-        return f"news/{format_date_folder()}/images"
-
     def _download_and_save(
         self,
         url: str,
-        target_dir: str,
+        target_path: str,
         storage: FileStorage,
     ) -> Optional[str]:
-        """Download a single image and save via *target_storage*.
+        """Download *url* and save directly to *target_path* (full S3 key).
 
-        Used as a future in the thread pool inside :meth:`download`.
-
-        Returns the saved path on success, or None on failure.
+        Returns ``"images/xxx.jpg"`` (relative path for content
+        replacement) on success, or ``None`` on failure.
         """
         try:
             resp = self.session.get(url, timeout=30)
@@ -172,9 +166,9 @@ class ImageProcessor:
 
         ext = self.EXT_MAP.get(content_type, ".jpg")
         filename = self._extract_filename(url, ext)
-        target_path = f"{target_dir}/{filename}"
+        file_path = f"{target_path}/{filename}"
         try:
-            storage.save(image_data, target_path, content_type)
+            storage.save(image_data, file_path, content_type)
             return f"images/{filename}"
         except Exception as e:
             print(f"[ImageProcessor] Save failed [{url}]: {e}")

@@ -467,6 +467,24 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
         )
         return HTMLResponse(html)
 
+    def _resolve_image_paths(content: str, published_at) -> str:
+        """将 content 中的 ``images/xxx`` 替换为 ``/media/news/YYYY-MM-DD/images/xxx``。
+
+        日期从 *published_at* 提取；若为空则回退到当天日期。
+        """
+        if not content or "images/" not in content:
+            return content
+        if published_at:
+            if hasattr(published_at, "strftime"):
+                date_str = published_at.strftime("%Y-%m-%d")
+            else:
+                date_str = str(published_at)[:10]
+        else:
+            from datetime import date as date_type
+            date_str = date_type.today().isoformat()
+        media_prefix = f"/media/news/{date_str}/images/"
+        return content.replace("images/", media_prefix)
+
     @app.get("/news/{article_id}", response_class=HTMLResponse)
     async def news_detail(request: Request, article_id: int):
         """Single news article detail page."""
@@ -476,6 +494,9 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
         # 正文中的 H1 标题与页面 title 重复，在渲染前移除
         if article.get("content"):
             article["content"] = re.sub(r"^# .+?\n\n?", "", article["content"], count=1)
+            article["content"] = _resolve_image_paths(
+                article["content"], article.get("published_at"),
+            )
         html = render_template("pages/news_detail.html", active_page="hot-news", article=article)
         return HTMLResponse(html)
 

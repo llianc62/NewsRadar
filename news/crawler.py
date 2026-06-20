@@ -241,8 +241,8 @@ class Crawler:
             # Phase 2: batch image download (if requested)
             if with_image:
                 storage = self._resource_storage
-                if target_storage:
-                    storage = target_storage
+                if target_storage == StorageTarget.LOCAL:
+                    storage = self._local_storage
                 self._run_batch_image_download([item], storage)
 
         self.persist(item, output_style=output_style)
@@ -419,20 +419,25 @@ class Crawler:
             print("[Crawler] Phase 2 — S3 not configured, skipping image download")
             return
 
-        # Collect unique image URLs across all items
-        urls = set()
-        for it in items:
-            if it.get("content"):
-                for img_url in Crawler._extract_image_urls(it["content"]):
-                    urls.add(img_url)
+        url_map: Dict[str, str] = {}
+        for item in items:
+            if not item.get("content"):
+                continue
+            published_at = item.get("published_at", "")
+            published_date = published_at[:10] if published_at else format_date_folder()
+            for url in self._extract_image_urls(item["content"]):
+                if url in url_map:
+                    continue
+                target_dir = f"news/{published_date}/images"
+                url_map[url] = target_dir
 
-        if not urls:
+        if not url_map:
             print("[Crawler] Phase 2 — no images found, skipping")
             return
 
-        print(f"[Crawler] Phase 2 — downloading {len(urls)} unique images")
+        print(f"[Crawler] Phase 2 — downloading {len(url_map)} unique images")
         processor = self._get_image_processor()
-        url_map = processor.download(*urls, storage=image_storage)
+        url_map = processor.download(url_map, storage=image_storage)
         if not url_map:
             print("[Crawler] Phase 2 done (no images downloaded)")
             return
@@ -440,21 +445,20 @@ class Crawler:
         # Replace URLs in-place: iterate url_map keys and do substring
         # replacement — avoids a second regex extraction per item
         replaced = 0
-        for it in items:
-            md = it.get("content", "")
+        for item in items:
+            md = item.get("content", "")
             if not md:
                 continue
             for old_url, new_path in url_map.items():
                 if old_url in md:
                     md = md.replace(old_url, new_path)
                     replaced += 1
-            it["content"] = md
+            item["content"] = md
 
         print(f"[Crawler] Phase 2 done: {replaced} replacements across "
-              f"{sum(1 for it in items if it.get('content'))} articles")
+              f"{sum(1 for item in items if item.get('content'))} articles")
 
-    @staticmethod
-    def _extract_image_urls(markdown: str) -> List[str]:
+    def _extract_image_urls(self, markdown: str) -> List[str]:
         """Extract image URLs from Markdown text.
 
         Matches both Markdown image syntax (``![alt](url)``) and inline
@@ -632,18 +636,10 @@ class Crawler:
     def _persist_postgresql(self, data: NewsData) -> None:
         """Save to PostgreSQL.
 
-        Transforms relative image paths (``images/xxx.png``) to
-        ``/media/news/YYYY-MM-DD/images/xxx.png`` so the web
-        ``/media/`` proxy can resolve them to S3 objects.
+        Content image paths are stored as bare ``images/xxx.jpg``.
+        The web rendering layer resolves them to ``/media/`` URLs
+        using each article's ``updated_at`` date.
         """
-        # Transform image paths for web/S3 resolution
-        date_str = format_date_folder()
-        media_prefix = f"/media/news/{date_str}/images/"
-        for items in data.items.values():
-            for item in items:
-                if item.content:
-                    item.content = item.content.replace("images/", media_prefix)
-
         db = self._get_pg_db()
         result = db.save_news_data(data, self._source_tiers, crawled_from="local")
         print(f"[Crawler] PG save result: {result}")
