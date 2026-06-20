@@ -6,6 +6,7 @@ class (no more module-level global ``_pool``).
 """
 
 import json
+import re
 import time
 from contextlib import contextmanager
 from datetime import datetime
@@ -15,6 +16,16 @@ from typing import Any, Dict, List, Optional, Tuple
 import psycopg2
 import psycopg2.extras
 from psycopg2.pool import ThreadedConnectionPool
+
+# Detect CJK characters for search routing:
+#   CJK search  → ILIKE + pg_trgm GIN index
+#   ASCII search → FTS (to_tsvector @@ plainto_tsquery)
+_CJK_RE = re.compile(r"[一-鿿㐀-䶿豈-﫿]")
+
+
+def _contains_cjk(text: str) -> bool:
+    """Return True if *text* contains any CJK character."""
+    return bool(_CJK_RE.search(text))
 
 # Register JSONB adapter
 psycopg2.extras.register_default_jsonb(loads=json.loads)
@@ -182,7 +193,52 @@ class PostgreSQL:
         self._run_migrations()
 
     def _run_migrations(self) -> None:
-        pass
+        """Idempotent schema migrations."""
+        conn = self._pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                # Migration 001: rebuild full-text index to include content
+                # (previous index may have been dropped or never included content)
+                cur.execute(
+                    """SELECT EXISTS (
+                        SELECT 1 FROM pg_indexes
+                        WHERE indexname = 'idx_fulltext'
+                          AND indexdef LIKE '%COALESCE(content%'
+                    )"""
+                )
+                has_content_in_index = cur.fetchone()[0]
+                if not has_content_in_index:
+                    print("[DB] Migrating: rebuilding idx_fulltext to include content...")
+                    cur.execute("DROP INDEX IF EXISTS idx_fulltext")
+                    cur.execute(
+                        """CREATE INDEX idx_fulltext ON news_articles
+                           USING GIN (to_tsvector('simple',
+                               title || ' ' || COALESCE(summary, '') || ' '
+                               || COALESCE(content, '')))"""
+                    )
+                    conn.commit()
+                    print("[DB] Migration complete: idx_fulltext rebuilt with content.")
+
+                # Migration 002: create pg_trgm extension + trigram index for CJK search
+                cur.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+                cur.execute(
+                    """SELECT EXISTS (
+                        SELECT 1 FROM pg_indexes
+                        WHERE indexname = 'idx_fulltext_trgm'
+                    )"""
+                )
+                has_trgm_index = cur.fetchone()[0]
+                if not has_trgm_index:
+                    print("[DB] Migrating: creating idx_fulltext_trgm for CJK ILIKE search...")
+                    cur.execute(
+                        """CREATE INDEX idx_fulltext_trgm ON news_articles
+                           USING GIN ((title || ' ' || COALESCE(summary, '')
+                           || ' ' || COALESCE(content, '')) gin_trgm_ops)"""
+                    )
+                    conn.commit()
+                    print("[DB] Migration complete: idx_fulltext_trgm created.")
+        finally:
+            self._pool.putconn(conn)
 
     def _schema_ready(self) -> bool:
         """Check whether the schema tables already exist."""
@@ -466,11 +522,19 @@ class PostgreSQL:
             conditions.append("%s = ANY(tags)")
             params.append(keyword)
         if search is not None:
-            conditions.append(
-                "(title || ' ' || COALESCE(summary, '') || ' ' || COALESCE(content, '')"
-                " || ' ' || COALESCE(array_to_string(tags, ' '), '')) ILIKE %s"
-            )
-            params.append(f"%{search}%")
+            if _contains_cjk(search):
+                conditions.append(
+                    "(title || ' ' || COALESCE(summary, '')"
+                    " || ' ' || COALESCE(content, '')) ILIKE %s"
+                )
+                params.append(f"%{search}%")
+            else:
+                conditions.append(
+                    "to_tsvector('simple', title || ' ' || COALESCE(summary, '')"
+                    " || ' ' || COALESCE(content, ''))"
+                    " @@ plainto_tsquery('simple', %s)"
+                )
+                params.append(search)
         # Date filtering: published_at within [date_from, date_to] inclusive full days
         if date_from is not None:
             conditions.append("published_at >= %s::date")
@@ -534,11 +598,19 @@ class PostgreSQL:
             conditions.append("%s = ANY(tags)")
             params.append(keyword)
         if search is not None:
-            conditions.append(
-                "(title || ' ' || COALESCE(summary, '') || ' ' || COALESCE(content, '')"
-                " || ' ' || COALESCE(array_to_string(tags, ' '), '')) ILIKE %s"
-            )
-            params.append(f"%{search}%")
+            if _contains_cjk(search):
+                conditions.append(
+                    "(title || ' ' || COALESCE(summary, '')"
+                    " || ' ' || COALESCE(content, '')) ILIKE %s"
+                )
+                params.append(f"%{search}%")
+            else:
+                conditions.append(
+                    "to_tsvector('simple', title || ' ' || COALESCE(summary, '')"
+                    " || ' ' || COALESCE(content, ''))"
+                    " @@ plainto_tsquery('simple', %s)"
+                )
+                params.append(search)
         if date_from is not None:
             conditions.append("published_at >= %s::date")
             params.append(date_from)
@@ -575,11 +647,19 @@ class PostgreSQL:
             conditions.append("%s = ANY(tags)")
             params.append(keyword)
         if search is not None:
-            conditions.append(
-                "(title || ' ' || COALESCE(summary, '') || ' ' || COALESCE(content, '')"
-                " || ' ' || COALESCE(array_to_string(tags, ' '), '')) ILIKE %s"
-            )
-            params.append(f"%{search}%")
+            if _contains_cjk(search):
+                conditions.append(
+                    "(title || ' ' || COALESCE(summary, '')"
+                    " || ' ' || COALESCE(content, '')) ILIKE %s"
+                )
+                params.append(f"%{search}%")
+            else:
+                conditions.append(
+                    "to_tsvector('simple', title || ' ' || COALESCE(summary, '')"
+                    " || ' ' || COALESCE(content, ''))"
+                    " @@ plainto_tsquery('simple', %s)"
+                )
+                params.append(search)
         if date_from is not None:
             conditions.append("published_at >= %s::date")
             params.append(date_from)
@@ -624,11 +704,19 @@ class PostgreSQL:
         elif sentiment == "neutral":
             conditions.append("sentiment_score > 33 AND sentiment_score < 67")
         if search is not None:
-            conditions.append(
-                "(title || ' ' || COALESCE(summary, '') || ' ' || COALESCE(content, '')"
-                " || ' ' || COALESCE(array_to_string(tags, ' '), '')) ILIKE %s"
-            )
-            params.append(f"%{search}%")
+            if _contains_cjk(search):
+                conditions.append(
+                    "(title || ' ' || COALESCE(summary, '')"
+                    " || ' ' || COALESCE(content, '')) ILIKE %s"
+                )
+                params.append(f"%{search}%")
+            else:
+                conditions.append(
+                    "to_tsvector('simple', title || ' ' || COALESCE(summary, '')"
+                    " || ' ' || COALESCE(content, ''))"
+                    " @@ plainto_tsquery('simple', %s)"
+                )
+                params.append(search)
         if date_from is not None:
             conditions.append("published_at >= %s::date")
             params.append(date_from)
@@ -670,11 +758,19 @@ class PostgreSQL:
             conditions.append("%s = ANY(tags)")
             params.append(keyword)
         if search is not None:
-            conditions.append(
-                "(title || ' ' || COALESCE(summary, '') || ' ' || COALESCE(content, '')"
-                " || ' ' || COALESCE(array_to_string(tags, ' '), '')) ILIKE %s"
-            )
-            params.append(f"%{search}%")
+            if _contains_cjk(search):
+                conditions.append(
+                    "(title || ' ' || COALESCE(summary, '')"
+                    " || ' ' || COALESCE(content, '')) ILIKE %s"
+                )
+                params.append(f"%{search}%")
+            else:
+                conditions.append(
+                    "to_tsvector('simple', title || ' ' || COALESCE(summary, '')"
+                    " || ' ' || COALESCE(content, ''))"
+                    " @@ plainto_tsquery('simple', %s)"
+                )
+                params.append(search)
         # Use date parameters instead of hardcoded CURRENT_DATE
         if date_from is not None:
             conditions.append("published_at >= %s::date")
@@ -744,11 +840,19 @@ class PostgreSQL:
             conditions.append("published_at < %s::date + interval '1 day'")
             params.append(date_to)
         if search is not None:
-            conditions.append(
-                "(title || ' ' || COALESCE(summary, '') || ' ' || COALESCE(content, '')"
-                " || ' ' || COALESCE(array_to_string(tags, ' '), '')) ILIKE %s"
-            )
-            params.append(f"%{search}%")
+            if _contains_cjk(search):
+                conditions.append(
+                    "(title || ' ' || COALESCE(summary, '')"
+                    " || ' ' || COALESCE(content, '')) ILIKE %s"
+                )
+                params.append(f"%{search}%")
+            else:
+                conditions.append(
+                    "to_tsvector('simple', title || ' ' || COALESCE(summary, '')"
+                    " || ' ' || COALESCE(content, ''))"
+                    " @@ plainto_tsquery('simple', %s)"
+                )
+                params.append(search)
         where_clause = " WHERE " + " AND ".join(conditions)
 
         with self.get_conn() as conn:
@@ -808,6 +912,43 @@ class PostgreSQL:
                 cur.execute(
                     "UPDATE news_articles SET content = %s, updated_at = NOW() WHERE id = %s",
                     (content, article_id),
+                )
+                return cur.rowcount > 0
+
+    def update_article_full(
+        self,
+        article_id: int,
+        title: str = "",
+        content: str = "",
+        published_at=None,
+        author: str = "",
+        summary: str = "",
+        category: str = "",
+        tags: list | None = None,
+    ) -> bool:
+        """Update all content and metadata fields after a refetch.
+
+        Unlike the UPSERT path (which preserves non-empty content on
+        conflict), this unconditionally overwrites every field so the
+        DB stays consistent with what the parser extracted — including
+        ``published_at`` which drives the ``/media/`` image path
+        resolution in the web layer.
+        """
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE news_articles
+                       SET title = COALESCE(NULLIF(%s, ''), title),
+                           content = %s,
+                           published_at = COALESCE(%s, published_at),
+                           author = %s,
+                           summary = %s,
+                           category = %s,
+                           tags = COALESCE(%s, tags),
+                           updated_at = NOW()
+                       WHERE id = %s""",
+                    (title, content, published_at, author, summary,
+                     category, tags, article_id),
                 )
                 return cur.rowcount > 0
 

@@ -70,9 +70,16 @@ CREATE INDEX IF NOT EXISTS idx_tags_gin     ON news_articles USING GIN (tags);
 CREATE INDEX IF NOT EXISTS idx_keywords_gin ON news_articles USING GIN (keywords);
 CREATE INDEX IF NOT EXISTS idx_entities_gin ON news_articles USING GIN (entities);
 
--- Full-text search index
+-- Full-text search index for English/Latin text (token-based)
 CREATE INDEX IF NOT EXISTS idx_fulltext ON news_articles
     USING GIN (to_tsvector('simple', title || ' ' || COALESCE(summary, '') || ' ' || COALESCE(content, '')));
+
+-- pg_trgm extension for CJK ILIKE acceleration
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- Trigram GIN index for Chinese/Japanese/Korean ILIKE search
+CREATE INDEX IF NOT EXISTS idx_fulltext_trgm ON news_articles
+    USING GIN ((title || ' ' || COALESCE(summary, '') || ' ' || COALESCE(content, '')) gin_trgm_ops);
 
 -- Images index
 CREATE INDEX IF NOT EXISTS idx_images_article ON news_images (article_id);
