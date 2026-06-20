@@ -2,6 +2,8 @@
 
 import pytest
 
+pytest_plugins = "tests.conftest_db"
+
 
 @pytest.fixture
 def parser():
