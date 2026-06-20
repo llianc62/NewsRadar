@@ -423,12 +423,12 @@ class Crawler:
         for item in items:
             if not item.get("content"):
                 continue
-            published_at = item.get("published_at", "")
-            published_date = published_at[:10] if published_at else format_date_folder()
+            created_at = item.get("created_at")
+            article_date = created_at.strftime("%Y-%m-%d")
             for url in self._extract_image_urls(item["content"]):
                 if url in url_map:
                     continue
-                target_dir = f"news/{published_date}/images"
+                target_dir = f"news/{article_date}/images"
                 url_map[url] = target_dir
 
         if not url_map:
