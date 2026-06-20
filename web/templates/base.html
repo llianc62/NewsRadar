@@ -262,6 +262,11 @@
     // ── SSE connection (replaces polling) ──
     var es = new EventSource('/api/notifications/stream');
 
+    // 页面离开时立即关闭 SSE，防止连接堆积耗尽浏览器连接池 (Chrome 限制 6 个/域名)
+    function closeSSE() { es.close(); }
+    window.addEventListener('beforeunload', closeSSE);
+    window.addEventListener('pagehide', closeSSE);
+
     es.onopen = function() {
       console.log('[SSE] connected');
       // 初始获取未读计数（SSE 重连后同步 badge）
