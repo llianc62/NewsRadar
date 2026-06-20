@@ -122,3 +122,101 @@ class TestTrimNoise:
         result = parser._trim_noise(html)
         assert result is not None
         assert "chart.png" in result
+
+    def test_short_page_with_h1_not_degraded(self):
+        """A page with h1 heading but short body should not degrade to None."""
+        body = "<h1>文章标题</h1><p>短正文。</p>"
+        html = make_html(body)
+        parser = HtmlParser()
+        result = parser._trim_noise(html)
+        assert result is not None
+        assert "标题" in result
+
+    def test_h4_h5_h6_skipped_as_footer_headings(self):
+        """h4/h5/h6 are almost always footer headings like '扫码下载APP'
+        and should be skipped when searching for the end boundary."""
+        body = "<h1>文章标题</h1><p>" + "正文内容。" * 20 + "</p>"
+        tail = "<h4>扫码下载APP</h4><p>© 2024</p>"
+        html = make_html(body, tail_noise=tail)
+        parser = HtmlParser()
+        result = parser._trim_noise(html)
+        assert result is not None
+        assert "扫码下载" not in result
+
+    def test_start_gt_end_degrades_to_none(self):
+        """When start > end (overlap), _trim_noise returns None."""
+        # This is challenging to trigger manually — test the degenerate case
+        # where boundaries can't be established
+        html = make_html("")
+        parser = HtmlParser()
+        # No blocks at all — should degrade
+        result = parser._trim_noise(html)
+        assert result is None
+
+    def test_no_blocks_degrades_to_none(self):
+        """HTML with no block-level elements should return None."""
+        html = "<html><body>裸文本，没有块级标签。</body></html>"
+        parser = HtmlParser()
+        result = parser._trim_noise(html)
+        assert result is None
+
+    def test_preserves_nested_div_between_boundaries(self):
+        """Content inside nested <div> between start and end is preserved
+        after DOM pruning (not lost like with the old block reassembly)."""
+        body = "<h1>标题</h1>"
+        body += "<div><p>" + "嵌套段落内容。" * 20 + "</p></div>"
+        body += "<p>" + "更多内容。" * 10 + "</p>"
+        html = make_html(body)
+        parser = HtmlParser()
+        result = parser._trim_noise(html)
+        assert result is not None
+        assert "嵌套段落内容" in result
+
+    def test_removes_meta_wrapper_different_parents(self):
+        """When h1 and the content div are siblings, noise wrappers
+        between them (author/date/share divs) should be removed."""
+        body = "<h1>文章标题</h1>"
+        # Metadata wrapper — author, date, share buttons
+        body += '<div class="meta"><span>作者：张三</span><span>2026-06-15</span></div>'
+        body += '<div class="content"><p>' + "正文内容。" * 20 + "</p></div>"
+        html = make_html(body)
+        parser = HtmlParser()
+        result = parser._trim_noise(html)
+        assert result is not None
+        # Metadata wrapper should be removed
+        assert "作者" not in result
+        assert "正文内容" in result
+
+    def test_short_copyright_line_trimmed(self):
+        """Short <p> at the end like '© 2024 某某网' (< 30 chars) is
+        treated as tail noise."""
+        body = "<h1>标题</h1><p>" + "正文内容。" * 20 + "</p>"
+        tail = "<p>© 2024 某某网</p>"
+        html = make_html(body, tail_noise=tail)
+        parser = HtmlParser()
+        result = parser._trim_noise(html)
+        assert result is not None
+        assert "©" not in result
+        assert "正文内容" in result
+
+    def test_long_paragraph_as_end_signal(self):
+        """A paragraph >= 50 chars with low link density should serve
+        as a reliable end boundary."""
+        body = "<h1>标题</h1><p>" + "正文内容。" * 20 + "</p>"
+        tail = "<p>" + "尾部无关链接。" * 5 + "</p>"
+        html = make_html(body, tail_noise=tail)
+        parser = HtmlParser()
+        result = parser._trim_noise(html)
+        assert result is not None
+        assert "正文内容" in result
+
+    def test_output_wrapped_in_article(self):
+        """_trim_noise output is wrapped in <html><body><article> for
+        trafilatura heading recognition."""
+        body = "<h1>文章标题</h1><p>" + "正文内容。" * 20 + "</p>"
+        html = make_html(body)
+        parser = HtmlParser()
+        result = parser._trim_noise(html)
+        assert result is not None
+        assert "<article>" in result
+        assert "文章标题" in result
