@@ -467,18 +467,19 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
         )
         return HTMLResponse(html)
 
-    def _resolve_image_paths(content: str, published_at) -> str:
+    def _resolve_image_paths(content: str, created_at) -> str:
         """将 content 中的 ``images/xxx`` 替换为 ``/media/news/YYYY-MM-DD/images/xxx``。
 
-        日期从 *published_at* 提取；若为空则回退到当天日期。
+        日期从 *created_at* 提取（插入时一次性设置，不会随 refetch 变动）；
+        若为空则回退到当天日期。
         """
         if not content or "images/" not in content:
             return content
-        if published_at:
-            if hasattr(published_at, "strftime"):
-                date_str = published_at.strftime("%Y-%m-%d")
+        if created_at:
+            if hasattr(created_at, "strftime"):
+                date_str = created_at.strftime("%Y-%m-%d")
             else:
-                date_str = str(published_at)[:10]
+                date_str = str(created_at)[:10]
         else:
             from datetime import date as date_type
             date_str = date_type.today().isoformat()
@@ -495,7 +496,7 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
         if article.get("content"):
             article["content"] = re.sub(r"^# .+?\n\n?", "", article["content"], count=1)
             article["content"] = _resolve_image_paths(
-                article["content"], article.get("published_at"),
+                article["content"], article.get("created_at"),
             )
         html = render_template("pages/news_detail.html", active_page="hot-news", article=article)
         return HTMLResponse(html)

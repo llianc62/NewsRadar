@@ -211,6 +211,14 @@
       var timeStr = formatRelativeTime(n.created_at);
       var isTask = n.category === 'crawl' || n.category === 'sync';
 
+      // 失败时展示错误信息，任务类展示 summary
+      var subText = '';
+      if (n.status === 'failed') {
+        subText = n.error_message || n.summary || '';
+      } else if (n.summary && isTask) {
+        subText = n.summary;
+      }
+
       html +=
         '<div class="notify-item' + readClass + '" data-id="' + escapeAttr(n.id)
           + '" onclick="markAndGo('
@@ -222,8 +230,8 @@
           + '<span class="notify-item-dot ' + dotClass + '"></span>'
           + '<div class="notify-item-body">'
             + '<div class="notify-item-title">' + escapeHtml(n.title) + '</div>'
-            + (n.summary && isTask
-                ? '<div class="notify-item-summary">' + escapeHtml(n.summary) + '</div>'
+            + (subText
+                ? '<div class="notify-item-summary">' + escapeHtml(subText) + '</div>'
                 : '')
             + '<div class="notify-item-meta">'
               + '<span class="notify-item-status ' + dotClass + '">'
@@ -337,7 +345,11 @@
         fetchNotifications(true);
       }
 
-      showAppToast(notif.title, sub, kind);
+      var isTask = notif.category === 'crawl' || notif.category === 'sync';
+      var onClick = (notif.status === 'completed' && notif.article_id > 0 && !isTask)
+        ? function() { window.location.href = '/news/' + notif.article_id; }
+        : null;
+      showAppToast(notif.title, sub, kind, onClick);
     });
   }
 })();
