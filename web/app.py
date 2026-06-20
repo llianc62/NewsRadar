@@ -236,6 +236,22 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
     app = FastAPI(title="NewsRadar", version="2.0.0", lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
     app.state.db = db
+
+    # ── Cache-Control middleware for static assets ─────────────────
+    # Without explicit Cache-Control, browsers may re-download static
+    # files on every navigation.  Fonts (immutable by filename) get
+    # 1-year cache; CSS/JS get 24-hour cache.
+    @app.middleware("http")
+    async def cache_static(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/static/"):
+            if request.url.path.endswith(".woff2"):
+                response.headers["Cache-Control"] = (
+                    "public, max-age=31536000, immutable"
+                )
+            else:
+                response.headers["Cache-Control"] = "public, max-age=86400"
+        return response
     app.state.queues = queues or {}
 
     # S3 storage — required for /media/ proxy

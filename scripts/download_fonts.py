@@ -1,14 +1,21 @@
 """Download Google Fonts woff2 files for self-hosting.
 
+Downloads only the *latin* subset (covers Chinese-friendly Latin characters)
+and deduplicates by URL — Google Fonts often serves the same variable-font
+file for multiple static weight instances, so 4 declared weights may map to
+a single downloaded file.
+
 Usage: python scripts/download_fonts.py
 """
+from __future__ import annotations
+
 import re
 import urllib.request
 from pathlib import Path
 
 FONTS_DIR = Path(__file__).parent.parent / "web" / "static" / "fonts"
+FONTS_CSS_PATH = Path(__file__).parent.parent / "web" / "static" / "css" / "fonts.css"
 
-# Modern Chrome user-agent to get woff2 URLs
 UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -22,64 +29,127 @@ GOOGLE_FONTS_CSS_URL = (
     "&display=swap"
 )
 
-FONT_WEIGHT_MAP = {
-    "Newsreader": {
-        "400": "newsreader-400.woff2",
-        "500": "newsreader-500.woff2",
-        "600": "newsreader-600.woff2",
-        "700": "newsreader-700.woff2",
-    },
-    "DM Sans": {
-        "400": "dmsans-400.woff2",
-        "500": "dmsans-500.woff2",
-        "600": "dmsans-600.woff2",
-        "700": "dmsans-700.woff2",
-    },
-    "JetBrains Mono": {
-        "400": "jetbrainsmono-400.woff2",
-        "500": "jetbrainsmono-500.woff2",
-        "600": "jetbrainsmono-600.woff2",
-    },
+FAMILY_STEMS = {
+    "Newsreader": "newsreader",
+    "DM Sans": "dmsans",
+    "JetBrains Mono": "jetbrainsmono",
 }
 
+LATIN_MARKER = "U+0000-00FF"
 
-def main():
+# Regex to split CSS into @font-face blocks
+_BLOCK_RE = re.compile(r"@font-face\s*\{([^}]+)\}", re.DOTALL)
+
+
+def main() -> None:
     FONTS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 1. Fetch the Google Fonts CSS
+    # 1. Fetch the Google Fonts CSS ----------------------------------
     print("Fetching Google Fonts CSS...")
     req = urllib.request.Request(GOOGLE_FONTS_CSS_URL, headers={"User-Agent": UA})
     with urllib.request.urlopen(req, timeout=30) as resp:
         css_text = resp.read().decode("utf-8")
 
-    # 2. Extract woff2 URLs with font-family and font-weight context
-    # The CSS structure is:
-    #   @font-face { font-family: 'Newsreader'; font-weight: 400; src: url(...) format('woff2'); }
-    #   /* latin-ext */ @font-face { ... }  (skip non-latin subsets if already have latin)
-    pattern = re.compile(
-        r"@font-face\s*\{[^}]*"
-        r"font-family:\s*'([^']+)'[^}]*"
-        r"font-weight:\s*(\d+)[^}]*"
-        r"src:\s*url\(([^)]+)\)[^}]*"
-        r"format\('woff2'\)",
-        re.DOTALL,
-    )
+    # 2. Parse each @font-face block ---------------------------------
+    #    Build: family -> weight -> list of (is_latin, url)
+    candidates: dict[str, dict[str, list[tuple[bool, str]]]] = {}
 
-    downloaded = set()
-    for match in pattern.finditer(css_text):
-        family = match.group(1)
-        weight = match.group(2)
-        url = match.group(3)
-        filename = FONT_WEIGHT_MAP.get(family, {}).get(weight)
-        if not filename or filename in downloaded:
+    for block_text in _BLOCK_RE.findall(css_text):
+        family_m = re.search(r"font-family:\s*'([^']+)'", block_text)
+        weight_m = re.search(r"font-weight:\s*(\d+)", block_text)
+        url_m = re.search(r"url\(([^)]+)\)", block_text)
+        unicode_m = re.search(r"unicode-range:\s*([^;]+);", block_text)
+
+        if not (family_m and weight_m and url_m):
             continue
-        downloaded.add(filename)
-        filepath = FONTS_DIR / filename
-        print(f"  {family} wght@{weight} -> {filename}")
-        urllib.request.urlretrieve(url, filepath)
-        print(f"    saved ({filepath.stat().st_size} bytes)")
+        family = family_m.group(1)
+        if family not in FAMILY_STEMS:
+            continue
 
-    print(f"\nDownloaded {len(downloaded)} font files to {FONTS_DIR}")
+        weight = weight_m.group(1)
+        is_latin = LATIN_MARKER in (unicode_m.group(1) if unicode_m else "")
+        url = url_m.group(1)
+
+        candidates.setdefault(family, {}).setdefault(weight, []).append(
+            (is_latin, url)
+        )
+
+    print(f"  Parsed {sum(len(w) for w in candidates.values())} weights across {len(candidates)} families")
+
+    # 3. Select best URL per (family, weight) — prefer latin ---------
+    #    url_to_stem: unique URL -> basename stem (no .woff2 extension)
+    url_to_stem: dict[str, str] = {}
+    #    weight_map: family -> weight -> stem (for CSS generation)
+    weight_map: dict[str, dict[str, str]] = {}
+
+    for family, weights in candidates.items():
+        weight_map[family] = {}
+        for weight, options in weights.items():
+            # Prefer latin, fall back to first option
+            best = next(
+                (opt for opt in options if opt[0]),
+                options[0],
+            )
+            url = best[1]
+
+            if url not in url_to_stem:
+                base = FAMILY_STEMS[family]
+                # If the same base is already used by a different URL,
+                # append the weight (JetBrains Mono case)
+                existing = [s for s in url_to_stem.values() if s.startswith(base)]
+                if existing:
+                    stem = f"{base}-{weight}"
+                else:
+                    stem = base
+                url_to_stem[url] = stem
+            weight_map[family][weight] = url_to_stem[url]
+
+    print(f"  {len(url_to_stem)} unique file(s) to download")
+
+    # 4. Download unique font files ----------------------------------
+    for url, stem in url_to_stem.items():
+        filepath = FONTS_DIR / f"{stem}.woff2"
+        print(f"  → {stem}.woff2")
+        urllib.request.urlretrieve(url, filepath)
+        print(f"    {filepath.stat().st_size:,} bytes")
+
+    # Clean up old font files that are no longer needed
+    expected_names = {f"{s}.woff2" for s in url_to_stem.values()}
+    for old_file in FONTS_DIR.glob("*.woff2"):
+        if old_file.name not in expected_names:
+            print(f"  ✕ removing stale file: {old_file.name}")
+            old_file.unlink()
+
+    print(f"\nDone — {len(url_to_stem)} font files in {FONTS_DIR}")
+
+    # 5. Generate fonts.css ------------------------------------------
+    css_lines = [
+        "/* ── Self-hosted fonts (auto-generated) ── */",
+        "/*    Run:  python scripts/download_fonts.py   */",
+        "/*    All fonts use font-display: swap — text   */",
+        "/*    renders immediately with fallback font.   */",
+        "",
+    ]
+
+    for family in sorted(weight_map):
+        weights = weight_map[family]
+        css_lines.append(f"/* {family} */")
+        for weight in sorted(weights, key=int):
+            stem = weights[weight]
+            css_lines.extend([
+                "@font-face {",
+                f"  font-family: '{family}';",
+                "  font-style: normal;",
+                f"  font-weight: {weight};",
+                "  font-display: swap;",
+                f"  src: url('/static/fonts/{stem}.woff2') format('woff2');",
+                "}",
+            ])
+        css_lines.append("")
+
+    fonts_css = "\n".join(css_lines)
+    FONTS_CSS_PATH.write_text(fonts_css, encoding="utf-8")
+    print(f"Generated {FONTS_CSS_PATH}")
 
 
 if __name__ == "__main__":
