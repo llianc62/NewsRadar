@@ -444,16 +444,13 @@ function highlightActivePreset() {
   });
 }
 
-// ── Search with debounce ──
+// ── Search with manual button trigger ──
 (function() {
   var input = document.getElementById('search-input');
   var clear = document.getElementById('search-clear');
-  var spinner = document.getElementById('search-spinner');
-  var timer = null;
-  var lastValue = input.value;
+  var searchBtn = document.getElementById('search-btn');
 
   function doSearch(value) {
-    // Avoid duplicate navigation for same value
     var params = new URLSearchParams(window.location.search);
     var current = params.get('search') || '';
     if (value === current) return;
@@ -467,53 +464,32 @@ function highlightActivePreset() {
     window.location.search = params.toString();
   }
 
-  function scheduleSearch(val) {
-    clearTimeout(timer);
-    if (spinner) spinner.style.display = 'block';
-    if (clear) clear.style.display = 'none';
-    timer = setTimeout(function() {
-      lastValue = val;
-      if (spinner) spinner.style.display = 'none';
-      if (clear) clear.style.display = 'flex';
+  // 手动触发搜索
+  window.triggerSearch = function() {
+    var val = input.value;
+    if (val) {
       doSearch(val);
-    }, 5000);
-  }
+    }
+  };
 
+  // 输入时仅控制清除按钮显隐，不自动搜索
   input.addEventListener('input', function() {
     var val = this.value;
     if (clear) clear.style.display = val.length > 0 ? 'flex' : 'none';
-
-    if (val === '') {
-      // Clear immediately — no need to wait
-      clearTimeout(timer);
-      lastValue = '';
-      if (spinner) spinner.style.display = 'none';
-      if (clear) clear.style.display = 'none';
-      doSearch('');
-      return;
-    }
-
-    if (val === lastValue) return;
-    scheduleSearch(val);
   });
 
+  // 清空搜索
   window.clearSearch = function() {
     input.value = '';
-    lastValue = '';
     if (clear) clear.style.display = 'none';
-    if (spinner) spinner.style.display = 'none';
-    clearTimeout(timer);
     doSearch('');
   };
 
+  // 键盘快捷键
   input.addEventListener('keydown', function(e) {
     if (e.key === 'Enter') {
       e.preventDefault();
       var val = this.value;
-      clearTimeout(timer);
-      lastValue = val;
-      if (spinner) spinner.style.display = 'none';
-      if (val.length > 0 && clear) clear.style.display = 'flex';
       doSearch(val);
     }
     if (e.key === 'Escape' && this.value) {
