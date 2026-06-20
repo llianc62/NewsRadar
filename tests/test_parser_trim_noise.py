@@ -1,22 +1,8 @@
 """Tests for HtmlParser._trim_noise — head/tail noise trimming."""
 
 import pytest
+from tests.helpers import make_html
 from news.parser import HtmlParser
-
-
-def _make_html(body: str, head_noise: str = "", tail_noise: str = "") -> str:
-    """Build a minimal HTML page with optional head/tail noise around body."""
-    return f"""<!DOCTYPE html>
-<html>
-<head><title>Test Article</title></head>
-<body>
-<article>
-{head_noise}
-{body}
-{tail_noise}
-</article>
-</body>
-</html>"""
 
 
 class TestTrimNoise:
@@ -25,7 +11,7 @@ class TestTrimNoise:
     def test_keeps_paragraph_body(self):
         """Body paragraphs should be fully retained."""
         body = "<p>" + "新闻正文内容。" * 20 + "</p>"
-        html = _make_html(body)
+        html = make_html(body)
         parser = HtmlParser()
         result = parser._trim_noise(html)
         assert result is not None
@@ -40,7 +26,7 @@ class TestTrimNoise:
 <p>版权所有 © 2024 某某网</p>
 <p><a href="/about">关于我们</a> | <a href="/contact">联系我们</a></p>
 </footer>"""
-        html = _make_html(body, tail_noise=tail)
+        html = make_html(body, tail_noise=tail)
         parser = HtmlParser()
         result = parser._trim_noise(html)
         assert result is not None
@@ -54,7 +40,7 @@ class TestTrimNoise:
 </nav>
 <p>面包屑：首页 &gt; 新闻</p>"""
         body = "<p>" + "新闻正文内容。" * 20 + "</p>"
-        html = _make_html(body, head_noise=head)
+        html = make_html(body, head_noise=head)
         parser = HtmlParser()
         result = parser._trim_noise(html)
         assert result is not None
@@ -65,7 +51,7 @@ class TestTrimNoise:
         """Share button text before body should be trimmed."""
         head = '<p>分享到：<a href="#">微信</a> <a href="#">微博</a></p>'
         body = "<p>" + "新闻正文内容。" * 20 + "</p>"
-        html = _make_html(body, head_noise=head)
+        html = make_html(body, head_noise=head)
         parser = HtmlParser()
         result = parser._trim_noise(html)
         assert result is not None
@@ -73,7 +59,7 @@ class TestTrimNoise:
 
     def test_short_page_degrades_to_none(self):
         """Page with too few blocks should return None."""
-        html = _make_html("<p>短。</p>")
+        html = make_html("<p>短。</p>")
         parser = HtmlParser()
         result = parser._trim_noise(html)
         assert result is None
@@ -88,7 +74,7 @@ class TestTrimNoise:
         """Body with an h1 heading should be kept — h1 has highest priority."""
         head = "<p>短导航</p>"
         body = "<h1>重要标题</h1><p>" + "正文内容。" * 20 + "</p>"
-        html = _make_html(body, head_noise=head)
+        html = make_html(body, head_noise=head)
         parser = HtmlParser()
         result = parser._trim_noise(html)
         assert result is not None
@@ -98,7 +84,7 @@ class TestTrimNoise:
         """h2 should be used as start signal when no h1 or long paragraph exists."""
         head = "<p>短导航</p>"
         body = "<h2>重要标题</h2><p>短正文。</p>"
-        html = _make_html(body, head_noise=head)
+        html = make_html(body, head_noise=head)
         parser = HtmlParser()
         result = parser._trim_noise(html)
         assert result is not None
@@ -108,7 +94,7 @@ class TestTrimNoise:
         """A block with high link density should be treated as noise."""
         head = '<p><a href="/a">链接1</a> <a href="/b">链接2</a> <a href="/c">链接3</a></p>'
         body = "<p>" + "正文内容。" * 20 + "</p>"
-        html = _make_html(body, head_noise=head)
+        html = make_html(body, head_noise=head)
         parser = HtmlParser()
         result = parser._trim_noise(html)
         assert result is not None
@@ -119,7 +105,7 @@ class TestTrimNoise:
         body = "<p>" + "正文内容。" * 20 + "</p>"
         body += '<figure><img src="https://example.com/photo.jpg" alt="配图"></figure>'
         body += "<p>" + "更多内容。" * 20 + "</p>"
-        html = _make_html(body)
+        html = make_html(body)
         parser = HtmlParser()
         result = parser._trim_noise(html)
         assert result is not None
@@ -131,7 +117,7 @@ class TestTrimNoise:
         body = "<p>" + "正文内容。" * 20 + "</p>"
         body += '<p><img src="https://example.com/chart.png" alt="图表"></p>'
         body += "<p>" + "更多内容。" * 20 + "</p>"
-        html = _make_html(body)
+        html = make_html(body)
         parser = HtmlParser()
         result = parser._trim_noise(html)
         assert result is not None
