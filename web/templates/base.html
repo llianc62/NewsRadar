@@ -289,18 +289,13 @@
       // 如果不在 hot-news 或 news detail 页面，不弹 toast
       if (path.indexOf('/hot-news') !== 0 && path.indexOf('/news/') !== 0) return;
 
-      // 根据 category 显示不同 toast
+      // 仅 crawl/sync 任务触发时弹 toast；article fetch 由 update 事件处理
       if (notif.category === 'crawl' || notif.category === 'sync') {
         showAppToast(
           notif.title,
           notif.summary || '任务已触发，正在执行…',
           'info'
         );
-      } else {
-        if (!shownIds[notif.id]) {
-          shownIds[notif.id] = true;
-          showToast(notif);
-        }
       }
     });
 
@@ -316,11 +311,22 @@
 
       if (path.indexOf('/hot-news') !== 0 && path.indexOf('/news/') !== 0) return;
 
-      // 任务完成/失败 — toast
-      var kind = notif.status === 'completed' ? 'done' : 'fail';
-      var sub = notif.status === 'completed'
-        ? (notif.summary || '任务完成')
-        : (notif.error_message || '任务失败');
+      // 任务状态变更 — toast
+      var kind, sub;
+      if (notif.status === 'completed') {
+        kind = 'done';
+        sub = notif.summary || (
+          notif.category === 'crawl' || notif.category === 'sync'
+            ? '任务完成' : '抓取完成');
+      } else if (notif.status === 'running') {
+        kind = 'info';
+        sub = notif.summary || '执行中…';
+      } else {
+        kind = 'fail';
+        sub = notif.error_message || (
+          notif.category === 'crawl' || notif.category === 'sync'
+            ? '任务失败' : '抓取失败');
+      }
 
       // 抽屉打开则刷新列表
       var drawer = document.getElementById('notify-drawer');

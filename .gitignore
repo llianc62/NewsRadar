@@ -15,6 +15,7 @@ dist/
 .agents/
 .design/
 .planning/
+.playwright-mcp/
 
 skills-lock.json
 .mcp.json

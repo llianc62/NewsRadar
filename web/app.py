@@ -539,7 +539,8 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
                         break
                     try:
                         data = await asyncio.wait_for(queue.get(), timeout=30.0)
-                        yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                        event_type = data.get("type", "message")
+                        yield f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
                     except asyncio.TimeoutError:
                         yield ": keepalive\n\n"
             finally:
