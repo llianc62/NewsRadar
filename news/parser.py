@@ -84,6 +84,9 @@ class HtmlParser:
         """
         result = None
 
+        if not html or not html.strip():
+            return None
+
         # 1. SPA embedded data first — __NEXT_DATA__ / __SSR__ / JSON-LD
         #    These carry clean article HTML without nav/footer/sidebar noise.
         result = self._extract_spa_data(html, url)
@@ -698,6 +701,13 @@ class HtmlParser:
             # 剥离 <blockquote> 标签以免 trafilatura 丢弃其中的 <img>
             # （华尔街见闻等站点用 <blockquote> 包裹后半段数据罗列内容）
             content = re.sub(r'</?blockquote[^>]*>', '', content)
+            # SPA JSON 中的 HTML 片段缺少 <html>/<body> 上下文，trafilatura
+            # 在此类片段中只能识别包裹在 <p> 或 <article> 内的 <img>，裸
+            # <img> 或包裹在 <figure>/<div>/<blockquote>/<section> 中的
+            # 均会被丢弃（澎湃新闻等 Next.js 站点的 content 中 <img> 直接
+            # 夹在 <p> 之间）。统一包裹一层 <p> 解决此问题；对已在 <p>
+            # 内的 <img> 无副作用（双层 <p> 输出一致）。
+            content = re.sub(r'(<img[^>]*>)', r'<p>\1</p>', content)
             # content is HTML — convert to Markdown
             markdown = None
             extracted = self._extract_with_trafilatura(content, url, skip_trim=True)
