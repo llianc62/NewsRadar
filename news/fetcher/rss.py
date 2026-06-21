@@ -22,7 +22,7 @@ import feedparser
 import requests
 
 from news.fetcher.fetcher import Fetcher
-from utils import DEFAULT_TIMEZONE
+from utils import DEFAULT_TIMEZONE, http_get_with_retry
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -422,8 +422,11 @@ class RssFetcher(Fetcher):
             - error: error description string, or None on success.
         """
         try:
-            response = self._session.get(feed.url, timeout=self._timeout)
-            response.raise_for_status()
+            response, http_error = http_get_with_retry(
+                self._session, feed.url, self._timeout, label=feed.name
+            )
+            if response is None:
+                return [], http_error
 
             parsed_items = self._parser.parse(response.text, feed.url)
 

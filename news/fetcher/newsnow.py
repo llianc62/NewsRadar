@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import requests
 
 from news.fetcher.fetcher import Fetcher
+from utils import MAX_IMMEDIATE_RETRIES
 
 # Default request headers (Chrome UA, Accept JSON, zh-CN)
 _DEFAULT_HEADERS = {
@@ -49,13 +50,13 @@ class NewsFetcher:
     def fetch_data(
         self,
         id_info: Union[str, Tuple[str, str]],
-        max_retries: int = 2,
+        max_retries: int = MAX_IMMEDIATE_RETRIES - 1,  # was 2
     ) -> Tuple[Optional[str], str, str]:
         """Fetch data for a single platform with exponential backoff.
 
         Args:
             id_info: Platform ID string, or (platform_id, alias) tuple.
-            max_retries: Maximum retry attempts (default 2 = up to 3 total).
+            max_retries: Maximum retry attempts (default = up to 3 total).
 
         Returns:
             (response_text, platform_id, alias) tuple.
