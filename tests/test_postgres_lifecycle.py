@@ -80,6 +80,7 @@ class TestInitSchema:
             [False],   # _schema_ready: tables don't exist
             [True],    # migration 001: idx_fulltext has content
             [True],    # migration 002: idx_fulltext_trgm exists
+            [True],    # migration 003: failed_tasks table exists
         ]
 
         pg_unconnected.init_schema()
@@ -99,6 +100,7 @@ class TestInitSchema:
             [True],   # _schema_ready: tables exist
             [True],   # migration 001: ok
             [True],   # migration 002: ok
+            [True],   # migration 003: ok
         ]
 
         pg_unconnected.init_schema()
@@ -120,6 +122,7 @@ class TestRunMigrations:
         mock_cursor.fetchone.side_effect = [
             [idx_fulltext_with_content],
             [idx_trgm_exists],
+            [True],  # migration 003: failed_tasks table exists
         ]
         return mock_cursor
 
@@ -162,7 +165,7 @@ class TestRunMigrations:
 
         # Reset mock for second call
         mock_cur2 = MagicMock()
-        mock_cur2.fetchone.side_effect = [[True], [True]]
+        mock_cur2.fetchone.side_effect = [[True], [True], [True]]
         pg_unconnected._pool.getconn.return_value.cursor.return_value.__enter__.return_value = mock_cur2
 
         pg_unconnected._run_migrations()

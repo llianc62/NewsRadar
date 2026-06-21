@@ -237,6 +237,43 @@ class PostgreSQL:
                     )
                     conn.commit()
                     print("[DB] Migration complete: idx_fulltext_trgm created.")
+
+                # Migration 003: create failed_tasks table for failure recording & lazy retry
+                cur.execute(
+                    """SELECT EXISTS (
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_schema = 'public'
+                          AND table_name = 'failed_tasks'
+                    )"""
+                )
+                has_failed_tasks = cur.fetchone()[0]
+                if not has_failed_tasks:
+                    print("[DB] Migrating: creating failed_tasks table...")
+                    cur.execute(
+                        """CREATE TABLE IF NOT EXISTS failed_tasks (
+                            id              BIGSERIAL PRIMARY KEY,
+                            task_type       VARCHAR(50) NOT NULL,
+                            context         JSONB NOT NULL DEFAULT '{}',
+                            retry_times     INTEGER NOT NULL DEFAULT 0,
+                            max_retry       INTEGER NOT NULL DEFAULT 3,
+                            last_retry      TIMESTAMPTZ DEFAULT NULL,
+                            status          VARCHAR(20) NOT NULL DEFAULT 'pending'
+                                                CHECK (status IN ('pending', 'failed', 'completed')),
+                            created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                            updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                        )"""
+                    )
+                    cur.execute(
+                        """CREATE UNIQUE INDEX IF NOT EXISTS idx_failed_tasks_dedup
+                           ON failed_tasks (task_type, (context->>'url'))
+                           WHERE status = 'pending'"""
+                    )
+                    cur.execute(
+                        """CREATE INDEX IF NOT EXISTS idx_failed_tasks_status
+                           ON failed_tasks (status, task_type, retry_times)"""
+                    )
+                    conn.commit()
+                    print("[DB] Migration complete: failed_tasks table created.")
         finally:
             self._pool.putconn(conn)
 
@@ -984,3 +1021,161 @@ class PostgreSQL:
                     (article_id, image_url, original_url, width, height, file_size, sort_order),
                 )
                 return cur.fetchone()[0]
+
+    # ── Failed tasks (failure recording & lazy retry) ──────────────
+
+    def record_failure(
+        self,
+        task_type: str,
+        context: dict,
+        max_retry: int = 3,
+    ) -> Optional[int]:
+        """Record a failed task for later retry.
+
+        Uses ``INSERT ... ON CONFLICT DO NOTHING`` so duplicate pending
+        tasks for the same URL + task_type are silently ignored.
+
+        Returns:
+            The new task ``id``, or ``None`` if a pending task for the
+            same URL + task_type already exists.
+        """
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO failed_tasks (task_type, context, max_retry)
+                       VALUES (%s, %s, %s)
+                       ON CONFLICT (task_type, (context->>'url'))
+                       WHERE status = 'pending'
+                       DO NOTHING
+                       RETURNING id""",
+                    (task_type, json.dumps(context), max_retry),
+                )
+                row = cur.fetchone()
+                return row[0] if row else None
+
+    def get_pending_failures(
+        self,
+        task_type: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return pending failed tasks where retry_times < max_retry.
+
+        Args:
+            task_type: Optional filter.  When ``None``, returns all types.
+        """
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                if task_type:
+                    cur.execute(
+                        """SELECT id, task_type, context, retry_times, max_retry,
+                                  last_retry, status, created_at, updated_at
+                           FROM failed_tasks
+                           WHERE status = 'pending'
+                             AND retry_times < max_retry
+                             AND task_type = %s
+                           ORDER BY created_at""",
+                        (task_type,),
+                    )
+                else:
+                    cur.execute(
+                        """SELECT id, task_type, context, retry_times, max_retry,
+                                  last_retry, status, created_at, updated_at
+                           FROM failed_tasks
+                           WHERE status = 'pending'
+                             AND retry_times < max_retry
+                           ORDER BY created_at"""
+                    )
+                rows = cur.fetchall()
+                return [
+                    {
+                        "id": r[0],
+                        "task_type": r[1],
+                        "context": r[2],
+                        "retry_times": r[3],
+                        "max_retry": r[4],
+                        "last_retry": r[5],
+                        "status": r[6],
+                        "created_at": r[7],
+                        "updated_at": r[8],
+                    }
+                    for r in rows
+                ]
+
+    def article_has_content(self, url: str) -> bool:
+        """Check whether any article with *url* already has non-empty content.
+
+        Used to skip content_fetch retry when the article was already
+        fetched successfully through the normal crawl path.
+        """
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT 1 FROM news_articles
+                       WHERE url = %s
+                         AND content IS NOT NULL
+                         AND content != ''
+                       LIMIT 1""",
+                    (url,),
+                )
+                return cur.fetchone() is not None
+
+    def mark_failure_completed(self, task_id: int) -> None:
+        """Mark a failed task as successfully retried."""
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE failed_tasks
+                       SET status = 'completed',
+                           updated_at = NOW()
+                       WHERE id = %s""",
+                    (task_id,),
+                )
+
+    def mark_failure_retried(self, task_id: int, error: str = "") -> None:
+        """Increment retry_times and set last_retry.
+
+        If retry_times reaches max_retry after increment, set status to
+        ``'failed'`` (permanent).
+        """
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE failed_tasks
+                       SET retry_times = retry_times + 1,
+                           last_retry = NOW(),
+                           updated_at = NOW(),
+                           status = CASE
+                               WHEN retry_times + 1 >= max_retry
+                               THEN 'failed'
+                               ELSE 'pending'
+                           END
+                       WHERE id = %s""",
+                    (task_id,),
+                )
+
+    def find_articles_by_image_url(self, image_url: str) -> List[int]:
+        """Return article IDs whose content contains *image_url*."""
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT id FROM news_articles
+                       WHERE content LIKE %s""",
+                    (f"%{image_url}%",),
+                )
+                return [r[0] for r in cur.fetchall()]
+
+    def update_article_image_url(
+        self,
+        article_id: int,
+        old_url: str,
+        new_path: str,
+    ) -> None:
+        """Replace *old_url* with *new_path* in an article's content."""
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """UPDATE news_articles
+                       SET content = REPLACE(content, %s, %s),
+                           updated_at = NOW()
+                       WHERE id = %s""",
+                    (old_url, new_path, article_id),
+                )
