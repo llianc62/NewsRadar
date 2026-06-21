@@ -30,7 +30,10 @@ from news.parser import HtmlParser
 from news.images import ImageProcessor
 from news.models import NewsData, NewsItem
 from storage.files import LocalStorage, S3Storage
-from utils import format_date_today, format_datetime_now, format_time_now, sanitize_filename
+from utils import (
+    format_date_today, format_datetime_now, format_time_now, sanitize_filename,
+    http_get_with_retry,
+)
 
 class OutputStyle(Enum):
     MARKDOWN = "markdown"
@@ -74,6 +77,7 @@ class Crawler:
         cfg = config.get("crawler", {})
         self.max_workers = cfg.get("max_workers", 8)
         self.timeout = cfg.get("timeout", 30)
+        self.max_retry = cfg.get("max_retry", 3)
 
         self.parser = parser or HtmlParser(config)
 
@@ -343,7 +347,7 @@ class Crawler:
         Sets ``item["content"]`` (Markdown) and metadata fields
         (title, author, published_at, summary, category, tags).
         """
-        valid = [it for it in items if it.get("url")]
+        valid = [it for it in items if it.get("url") and not it.get("content")]
         if not valid:
             return
 
@@ -378,11 +382,12 @@ class Crawler:
         if not url:
             return False
 
-        try:
-            resp = self.session().get(url, timeout=self.timeout)
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            print(f"[Crawler] HTTP error for {url}: {e}")
+        resp, error = http_get_with_retry(
+            self.session(), url, self.timeout, label=url
+        )
+        if resp is None:
+            print(f"[Crawler] HTTP error for {url}: {error}")
+            self._record_content_fetch_failure(item, error)
             return False
 
         # Pure text parsing — no image processing
@@ -443,7 +448,15 @@ class Crawler:
 
         print(f"[Crawler] Phase 2 — downloading {len(url_map)} unique images")
         processor = self._get_image_processor()
+        # Save original url_map for failure recording (preserves target_dir)
+        _original_url_map = dict(url_map)
         url_map = processor.download(url_map, storage=image_storage)
+
+        # Record failures for lazy retry
+        self._record_image_download_failures(
+            _original_url_map, url_map
+        )
+
         if not url_map:
             print("[Crawler] Phase 2 done (no images downloaded)")
             return
@@ -476,6 +489,203 @@ class Crawler:
         # HTML img: <img src="url">
         urls.extend(re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', markdown, re.IGNORECASE))
         return urls
+
+    def _record_content_fetch_failure(
+        self, item: Dict[str, Any], error: str,
+    ) -> None:
+        """Record a failed content fetch to the ``failed_tasks`` table."""
+        context = {
+            "url": item.get("url", ""),
+            "source_id": item.get("source_id", ""),
+            "source_type": item.get("source_type", ""),
+            "source_name": item.get("source_name", ""),
+            "title": item.get("title", ""),
+            "rank": item.get("rank", 0),
+            "guid": item.get("guid", ""),
+            "mobile_url": item.get("mobile_url", ""),
+            "published_at": item.get("published_at", ""),
+        }
+        try:
+            pg = self._get_pg_db()
+            task_id = pg.record_failure("content_fetch", context, self.max_retry)
+            if task_id:
+                print(f"[Crawler] Recorded content_fetch failure: {item.get('url')}")
+        except Exception as e:
+            print(f"[Crawler] Failed to record content_fetch failure: {e}")
+
+    def _record_image_download_failures(
+        self,
+        original_url_map: Dict[str, str],
+        results: Dict[str, str],
+    ) -> None:
+        """For each image URL where result is ``""``, record a failure.
+
+        Args:
+            original_url_map: ``{url: target_dir}`` (pre-download, for context).
+            results: ``{url: saved_path_or_""}`` (post-download, for checking).
+        """
+        for url, saved_path in results.items():
+            if saved_path:
+                continue
+            context = {
+                "url": url,
+                "target_dir": original_url_map.get(url, ""),
+            }
+            try:
+                pg = self._get_pg_db()
+                pg.record_failure("image_download", context, self.max_retry)
+                print(f"[Crawler] Recorded image_download failure: {url}")
+            except Exception as e:
+                print(f"[Crawler] Failed to record image_download failure: {e}")
+
+    def _retry_content_fetch_failures(self) -> List[Dict[str, Any]]:
+        """Retry previously failed content_fetch tasks.
+
+        Queries ``failed_tasks`` for pending content_fetch tasks, calls
+        ``_download_and_parse`` for each, and returns successfully
+        retried items as dicts.
+        """
+        pg = self._get_pg_db()
+        tasks = pg.get_pending_failures(task_type="content_fetch")
+        if not tasks:
+            return []
+
+        print(f"[Crawler] Retrying {len(tasks)} content_fetch failures...")
+        retried: List[Dict[str, Any]] = []
+
+        for task in tasks:
+            ctx = task["context"]
+            url = ctx.get("url", "")
+            if not url:
+                pg.mark_failure_completed(task["id"])
+                continue
+
+            # Prevent duplicate download: check if article already has content
+            if pg.article_has_content(url):
+                pg.mark_failure_completed(task["id"])
+                print(f"[Crawler] Article already has content, skip retry: {url}")
+                continue
+
+            # Reconstruct item dict from context
+            item: Dict[str, Any] = {
+                "url": url,
+                "source_id": ctx.get("source_id", ""),
+                "source_type": ctx.get("source_type", ""),
+                "source_name": ctx.get("source_name", ""),
+                "title": ctx.get("title", ""),
+                "rank": ctx.get("rank", 0),
+                "guid": ctx.get("guid", ""),
+                "mobile_url": ctx.get("mobile_url", ""),
+                "published_at": ctx.get("published_at", ""),
+                "summary": "",
+                "author": "",
+                "content": "",
+                "category": "",
+                "tags": [],
+                "ranks": [],
+            }
+
+            success = self._download_and_parse(item)
+            if success:
+                pg.mark_failure_completed(task["id"])
+                retried.append(item)
+                print(f"[Crawler] Retry success (content_fetch): {url}")
+            else:
+                pg.mark_failure_retried(task["id"], error="HTTP failed after retries")
+                print(f"[Crawler] Retry failed (content_fetch): {url}")
+
+        return retried
+
+    def _retry_image_download_failures(self) -> Dict[str, int]:
+        """Retry previously failed image_download tasks.
+
+        Downloads each failed image, updates article content with the
+        new image path, and marks the task completed.
+
+        Must be called AFTER articles are persisted.
+        """
+        pg = self._get_pg_db()
+        tasks = pg.get_pending_failures(task_type="image_download")
+        if not tasks:
+            return {"total": 0, "success": 0}
+
+        print(f"[Crawler] Retrying {len(tasks)} image_download failures...")
+        processor = self._get_image_processor()
+        storage = self._resource_storage
+
+        total = len(tasks)
+        success = 0
+
+        for task in tasks:
+            ctx = task["context"]
+            url = ctx.get("url", "")
+            target_dir = ctx.get("target_dir", "")
+
+            if not url:
+                pg.mark_failure_completed(task["id"])
+                continue
+
+            result = processor.download({url: target_dir}, storage)
+            saved_path = result.get(url, "")
+
+            if saved_path:
+                pg.mark_failure_completed(task["id"])
+                success += 1
+
+                # Update article content — replace old URL with new path
+                article_ids = pg.find_articles_by_image_url(url)
+                for article_id in article_ids:
+                    pg.update_article_image_url(article_id, url, saved_path)
+
+                print(f"[Crawler] Retry success (image_download): {url}")
+            else:
+                pg.mark_failure_retried(task["id"], error="Image download failed")
+                print(f"[Crawler] Retry failed (image_download): {url}")
+
+        return {"total": total, "success": success}
+
+    def retry_failed_tasks(self, with_image: bool = True) -> dict:
+        """Retry previously failed content_fetch and image_download tasks.
+
+        Called by the daemon AFTER ``fetch_all`` in each crawl cycle.
+        Does NOT modify ``fetch_all`` — lazy retry is a separate step.
+
+        Returns a summary dict with counts.
+        """
+        print("\n[Crawler] === Lazy retry: checking failed tasks ===")
+        result = {
+            "content_retried": 0,
+            "content_success": 0,
+            "image_retried": 0,
+            "image_success": 0,
+        }
+
+        # 1. Retry content_fetch failures
+        try:
+            retried_items = self._retry_content_fetch_failures()
+            result["content_retried"] = len(retried_items)
+
+            if retried_items:
+                # Enrich + persist retried items
+                self.enrich_content(*retried_items, with_image=with_image)
+                self.persist(
+                    *retried_items, output_style=OutputStyle.POSTGRESQL
+                )
+                result["content_success"] = len(retried_items)
+        except Exception as e:
+            print(f"[Crawler] Content retry error (non-fatal): {e}")
+
+        # 2. Retry image_download failures (must be AFTER persist)
+        if with_image:
+            try:
+                img_result = self._retry_image_download_failures()
+                result["image_retried"] = img_result["total"]
+                result["image_success"] = img_result["success"]
+            except Exception as e:
+                print(f"[Crawler] Image retry error (non-fatal): {e}")
+
+        print(f"[Crawler] Lazy retry done: {result}")
+        return result
 
     # ═══════════════════════════════════════════════════════════════════
     # Internal — persistence (single entry point)
