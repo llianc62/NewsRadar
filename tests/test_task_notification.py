@@ -171,7 +171,7 @@ class TestTriggerEndpoints:
             notif = [n for n in _notifications if n["id"] == notif_id][0]
         assert notif["category"] == "crawl"
         assert notif["title"] == "新闻抓取"
-        assert notif["status"] == "pending"
+        assert notif["status"] == "running"
         assert notif["article_id"] == 0
 
 

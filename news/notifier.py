@@ -191,11 +191,11 @@ def run_notifier(config: dict) -> None:
 
     from news.keywords import load_frequency_words, match_and_group
     from storage.sqlite import Sqlite
-    from utils import format_date_folder, format_time_display, DEFAULT_TIMEZONE
+    from utils import format_date_today, format_time_now, DEFAULT_TIMEZONE
 
     timezone = config.get("app", {}).get("timezone", DEFAULT_TIMEZONE)
-    date = format_date_folder(timezone)
-    time_str = format_time_display(timezone)
+    date = format_date_today(timezone)
+    time_str = format_time_now(timezone)
 
     print(f"=== Notifier === {date} {time_str}")
 

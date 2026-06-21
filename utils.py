@@ -16,12 +16,12 @@ def get_configured_time(timezone: str = DEFAULT_TIMEZONE) -> datetime:
     return datetime.now(tz)
 
 
-def format_date_folder(timezone: str = DEFAULT_TIMEZONE) -> str:
+def format_date_today(timezone: str = DEFAULT_TIMEZONE) -> str:
     """Get today's date as YYYY-MM-DD."""
     return get_configured_time(timezone).strftime("%Y-%m-%d")
 
 
-def format_time_display(timezone: str = DEFAULT_TIMEZONE) -> str:
+def format_time_now(timezone: str = DEFAULT_TIMEZONE) -> str:
     """Get current time as HH:MM."""
     return get_configured_time(timezone).strftime("%H:%M")
 

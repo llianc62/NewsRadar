@@ -164,9 +164,13 @@ def _run_refetch(article_id: int, crawler, notif: dict, db) -> None:
         if article is None:
             raise ValueError("文章不存在")
         crawler.enrich_content(article, with_image=True)
-        content = article.get("content", "")
-        # 直接更新 content 字段，跳过 UPSERT 的内容保留逻辑
-        db.update_article_content(article_id, content)
+        # 更新 content 和 published_at；SQL 层 COALESCE(NULLIF(%s, ''), col)
+        # 保证其余空字符串字段不覆盖旧值
+        db.update_article_full(
+            article_id,
+            content=article.get("content", ""),
+            published_at=article.get("published_at", ""),
+        )
         notif["status"] = "completed"
     except Exception as e:
         notif["status"] = "failed"
@@ -521,12 +525,16 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
 
     @app.post("/api/trigger/crawl")
     async def trigger_crawl():
-        """Manually trigger a crawl job with notification."""
+        """Manually trigger a crawl job.  Returns 409 if a crawl is already running."""
         queue = app.state.queues.get("crawl")
         if queue is None:
             return JSONResponse({"ok": False, "error": "not available"}, status_code=404)
 
-        notif = _add_notification(0, "新闻抓取", "pending", category="crawl")
+        lock = app.state.queues.get("crawl_lock")
+        if lock and lock.locked():
+            return JSONResponse({"ok": False, "error": "已有抓取任务正在执行"}, status_code=409)
+
+        notif = _add_notification(0, "新闻抓取", "running", category="crawl")
 
         def on_complete(success: bool, summary: str):
             with _notification_lock:
@@ -539,12 +547,16 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
 
     @app.post("/api/trigger/sync")
     async def trigger_sync():
-        """Manually trigger a cloud sync job with notification."""
+        """Manually trigger a cloud sync job.  Returns 409 if a sync is already running."""
         queue = app.state.queues.get("sync")
         if queue is None:
             return JSONResponse({"ok": False, "error": "not available"}, status_code=404)
 
-        notif = _add_notification(0, "云端同步", "pending", category="sync")
+        lock = app.state.queues.get("sync_lock")
+        if lock and lock.locked():
+            return JSONResponse({"ok": False, "error": "已有同步任务正在执行"}, status_code=409)
+
+        notif = _add_notification(0, "云端同步", "running", category="sync")
 
         def on_complete(success: bool, summary: str):
             with _notification_lock:

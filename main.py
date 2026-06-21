@@ -62,6 +62,10 @@ class NewsRadarDaemon:
         self._crawl_queue: asyncio.Queue = asyncio.Queue()
         self._sync_queue: asyncio.Queue = asyncio.Queue()
 
+        # ── Locks (prevent duplicate trigger while job is running) ──
+        self._crawl_lock = asyncio.Lock()
+        self._sync_lock = asyncio.Lock()
+
     # ── Helpers ──────────────────────────────────────────────────
 
     async def _run_in_thread(self, func, *args):
@@ -80,28 +84,38 @@ class NewsRadarDaemon:
 
     # ── Timer ────────────────────────────────────────────────────
 
-    async def _timer(self, queue: asyncio.Queue, interval_min: int, name: str) -> None:
-        """Put None into *queue* every *interval_min* minutes to wake the Worker."""
+    async def _timer(self, queue: asyncio.Queue, interval_min: int,
+                     name: str, lock: asyncio.Lock) -> None:
+        """Put None into *queue* every *interval_min* minutes to wake the Worker.
+
+        Skips the put if *lock* is held, meaning the Worker is still running
+        the previous job.
+        """
         print(f"[Timer/{name}] every {interval_min} min")
         while not self._shutdown_event.is_set():
             await self._sleep_or_shutdown(interval_min * 60)
-            if not self._shutdown_event.is_set():
+            if not self._shutdown_event.is_set() and not lock.locked():
                 await queue.put(None)   # None = timer-triggered, no notification
 
     # ── Worker ───────────────────────────────────────────────────
 
-    async def _worker(self, name: str, queue: asyncio.Queue, job) -> None:
-        """Wait for an item from *queue*, then execute *job*.
+    async def _worker(self, name: str, queue: asyncio.Queue, job,
+                      lock: asyncio.Lock) -> None:
+        """Wait for an item from *queue*, then execute *job* under *lock*.
 
         queue item ``None`` → timer-triggered, skip notification.
         queue item ``Callable`` → manual trigger, call it on completion.
+
+        The lock is held for the entire job duration, preventing duplicate
+        triggers from queueing while the job is still running.
         """
         print(f"[Worker/{name}] ready")
         while not self._shutdown_event.is_set():
             callback = await self._wait_queue(queue)
             if callback is None and self._shutdown_event.is_set():
                 break
-            await self._try_run_job(name, job, callback)
+            async with lock:
+                await self._try_run_job(name, job, callback)
 
     async def _wait_queue(self, queue: asyncio.Queue) -> Any:
         """Block until queue has data or shutdown is requested.
@@ -199,16 +213,18 @@ class NewsRadarDaemon:
         queues = {
             "crawl": self._crawl_queue,
             "sync": self._sync_queue,
+            "crawl_lock": self._crawl_lock,
+            "sync_lock": self._sync_lock,
         }
         s3_config = self.config.get("storage", {}).get("resource", {})
-        web_crawler = Crawler(self.config, pg_db=self.db)
-        app = create_app(self.db, s3_config, queues=queues, crawler=web_crawler)
+        crawler = Crawler(self.config, pg_db=self.db)
+        app = create_app(self.db, s3_config, queues=queues, crawler=crawler)
         web_task = asyncio.create_task(self._serve_web(app), name="web")
 
         # 4. Launch Workers (wait for signal → execute job → loop)
-        for coro in [
-            lambda: self._worker("Crawl", self._crawl_queue, self._crawl_job),
-            lambda: self._worker("Sync", self._sync_queue, self._sync_job),
+        for coro, lock in [
+            (lambda: self._worker("Crawl", self._crawl_queue, self._crawl_job, self._crawl_lock), self._crawl_lock),
+            (lambda: self._worker("Sync", self._sync_queue, self._sync_job, self._sync_lock), self._sync_lock),
         ]:
             t = asyncio.create_task(coro(), name=coro.__name__)
             self._bg_tasks.append(t)
@@ -217,11 +233,11 @@ class NewsRadarDaemon:
         crawl_interval = self.config.get("crawler", {}).get("daemon_interval_minutes", 60)
         sync_interval = self.config.get("crawler", {}).get("sync_interval_minutes", 60)
 
-        for queue, interval, name in [
-            (self._crawl_queue, crawl_interval, "Crawl"),
-            (self._sync_queue, sync_interval, "Sync"),
+        for queue, interval, name, lock in [
+            (self._crawl_queue, crawl_interval, "Crawl", self._crawl_lock),
+            (self._sync_queue, sync_interval, "Sync", self._sync_lock),
         ]:
-            t = asyncio.create_task(self._timer(queue, interval, name), name=f"timer_{name}")
+            t = asyncio.create_task(self._timer(queue, interval, name, lock), name=f"timer_{name}")
             self._bg_tasks.append(t)
 
         # 6. Manually trigger both on startup (fire immediately)

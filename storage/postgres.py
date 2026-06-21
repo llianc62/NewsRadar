@@ -940,10 +940,10 @@ class PostgreSQL:
                     """UPDATE news_articles
                        SET title = COALESCE(NULLIF(%s, ''), title),
                            content = %s,
-                           published_at = COALESCE(%s, published_at),
-                           author = %s,
-                           summary = %s,
-                           category = %s,
+                           published_at = COALESCE(NULLIF(%s, ''), published_at),
+                           author = COALESCE(NULLIF(%s, ''), author),
+                           summary = COALESCE(NULLIF(%s, ''), summary),
+                           category = COALESCE(NULLIF(%s, ''), category),
                            tags = COALESCE(%s, tags),
                            updated_at = NOW()
                        WHERE id = %s""",

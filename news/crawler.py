@@ -20,6 +20,7 @@ import time
 import requests
 
 from enum import Enum
+from datetime import datetime
 from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -29,7 +30,7 @@ from news.parser import HtmlParser
 from news.images import ImageProcessor
 from news.models import NewsData, NewsItem
 from storage.files import LocalStorage, S3Storage
-from utils import format_date_folder, format_datetime_now, format_time_display, sanitize_filename
+from utils import format_date_today, format_datetime_now, format_time_now, sanitize_filename
 
 class OutputStyle(Enum):
     MARKDOWN = "markdown"
@@ -236,7 +237,9 @@ class Crawler:
         # ── Persistence ────────────────────────────────────────────
         if with_content:
             # Phase 1: download HTML + parse Markdown
-            self._run_batch_parse([item])
+            item["content"] = parsed["markdown"]
+            if not item["tags"] and item.get("content"):
+                item["tags"] = _extract_keywords_textrank(item["content"])
 
             # Phase 2: batch image download (if requested)
             if with_image:
@@ -263,8 +266,8 @@ class Crawler:
         content parsing.
         """
         timezone = self._config["app"]["timezone"]
-        date = format_date_folder(timezone)
-        time_str = format_time_display(timezone)
+        date = format_date_today(timezone)
+        time_str = format_time_now(timezone)
 
         print(f"=== Crawler === {date} {time_str}")
         all_items: List[Dict[str, Any]] = []
@@ -423,12 +426,15 @@ class Crawler:
         for item in items:
             if not item.get("content"):
                 continue
-            created_at = item.get("created_at")
-            article_date = created_at.strftime("%Y-%m-%d")
+            published_at = item.get("published_at", "")
+            if published_at:
+                published_date = datetime.fromisoformat(published_at).strftime("%Y-%m-%d")
+            else:
+                published_date = format_date_today()
             for url in self._extract_image_urls(item["content"]):
                 if url in url_map:
                     continue
-                target_dir = f"news/{article_date}/images"
+                target_dir = f"news/{published_date}/images"
                 url_map[url] = target_dir
 
         if not url_map:
@@ -500,7 +506,7 @@ class Crawler:
     ) -> NewsData:
         """Build a :class:`NewsData` from a list of item dicts."""
         tz = self._config.get("app", {}).get("timezone", "Asia/Shanghai")
-        date = format_date_folder(tz)
+        date = format_date_today(tz)
 
         by_source: Dict[str, List[NewsItem]] = {}
         for d in items:

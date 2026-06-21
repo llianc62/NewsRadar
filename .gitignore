@@ -25,6 +25,9 @@ skills-lock.json
 output/
 data/
 
+.coverage
+news/parser.py,cover
+
 temp.md
 task_plan.md
 findings.md

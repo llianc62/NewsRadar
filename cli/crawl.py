@@ -20,11 +20,11 @@ def crawl():
     from pathlib import Path
 
     from storage.s3 import S3Client
-    from utils import format_date_folder
+    from utils import format_date_today
 
     config = load_config("config.yaml")
     tz = config["app"]["timezone"]
-    date = format_date_folder(tz)
+    date = format_date_today(tz)
     data_dir = config["storage"]["local"].get("data_dir", "output")
     db_path = Path(data_dir) / "db" / f"{date}.db"
 
