@@ -46,10 +46,11 @@ class TestFilterDefaults:
         assert "sentiment_score < 67" in sql
 
     def test_keyword_filter(self, db, mock_cursor):
-        db.get_recent_news(keyword="芯片")
+        db.get_recent_news(keywords=["芯片"])
         sql, params = capture_sql(mock_cursor)
-        assert "ANY(tags)" in sql
-        assert "芯片" in params
+        assert "ILIKE" in sql
+        assert "array_to_string(tags, ' ')" in sql
+        assert "%芯片%" in params
 
     def test_date_from_filter(self, db, mock_cursor):
         db.get_recent_news(date_from="2026-06-19")
@@ -70,7 +71,7 @@ class TestFilterDefaults:
             tier=1,
             category="tech",
             sentiment="positive",
-            keyword="芯片",
+            keywords=["芯片"],
             search="AI",
             date_from="2026-06-19",
             date_to="2026-06-21",
@@ -79,13 +80,14 @@ class TestFilterDefaults:
         assert "tier = %s" in sql
         assert "category = %s" in sql
         assert "sentiment_score >= 67" in sql
-        assert "ANY(tags)" in sql
+        assert "ILIKE" in sql
+        assert "array_to_string(tags, ' ')" in sql
         assert "plainto_tsquery" in sql  # "AI" 不含 CJK → FTS
         assert "published_at" in sql
         # params 包含所有过滤值
         assert 1 in params
         assert "tech" in params
-        assert "芯片" in params
+        assert "%芯片%" in params
         assert "AI" in params
 
     def test_pagination_params_appended_last(self, db, mock_cursor):

@@ -529,7 +529,7 @@ class PostgreSQL:
         category: Optional[str] = None,
         min_confidence: Optional[int] = None,
         sentiment: Optional[str] = None,
-        keyword: Optional[str] = None,
+        keywords: Optional[List[str]] = None,
         search: Optional[str] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
@@ -555,9 +555,14 @@ class PostgreSQL:
             conditions.append("sentiment_score <= 33")
         elif sentiment == "neutral":
             conditions.append("sentiment_score > 33 AND sentiment_score < 67")
-        if keyword is not None:
-            conditions.append("%s = ANY(tags)")
-            params.append(keyword)
+        if keywords:
+            for kw in keywords:
+                conditions.append(
+                    "(title || ' ' || COALESCE(summary, '')"
+                    " || ' ' || COALESCE(content, '')"
+                    " || ' ' || array_to_string(tags, ' ')) ILIKE %s"
+                )
+                params.append(f"%{kw}%")
         if search is not None:
             if _contains_cjk(search):
                 conditions.append(
@@ -604,7 +609,7 @@ class PostgreSQL:
         category: Optional[str] = None,
         min_confidence: Optional[int] = None,
         sentiment: Optional[str] = None,
-        keyword: Optional[str] = None,
+        keywords: Optional[List[str]] = None,
         search: Optional[str] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
@@ -631,9 +636,14 @@ class PostgreSQL:
             conditions.append("sentiment_score <= 33")
         elif sentiment == "neutral":
             conditions.append("sentiment_score > 33 AND sentiment_score < 67")
-        if keyword is not None:
-            conditions.append("%s = ANY(tags)")
-            params.append(keyword)
+        if keywords:
+            for kw in keywords:
+                conditions.append(
+                    "(title || ' ' || COALESCE(summary, '')"
+                    " || ' ' || COALESCE(content, '')"
+                    " || ' ' || array_to_string(tags, ' ')) ILIKE %s"
+                )
+                params.append(f"%{kw}%")
         if search is not None:
             if _contains_cjk(search):
                 conditions.append(
@@ -668,7 +678,7 @@ class PostgreSQL:
     def get_sentiment_counts(
         self,
         tier: Optional[int] = None,
-        keyword: Optional[str] = None,
+        keywords: Optional[List[str]] = None,
         search: Optional[str] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
@@ -680,9 +690,14 @@ class PostgreSQL:
         if tier is not None:
             conditions.append("tier = %s")
             params.append(tier)
-        if keyword is not None:
-            conditions.append("%s = ANY(tags)")
-            params.append(keyword)
+        if keywords:
+            for kw in keywords:
+                conditions.append(
+                    "(title || ' ' || COALESCE(summary, '')"
+                    " || ' ' || COALESCE(content, '')"
+                    " || ' ' || array_to_string(tags, ' ')) ILIKE %s"
+                )
+                params.append(f"%{kw}%")
         if search is not None:
             if _contains_cjk(search):
                 conditions.append(
@@ -776,7 +791,7 @@ class PostgreSQL:
     def get_high_impact_count(
         self,
         tier: Optional[int] = None,
-        keyword: Optional[str] = None,
+        keywords: Optional[List[str]] = None,
         search: Optional[str] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
@@ -791,9 +806,14 @@ class PostgreSQL:
         if tier is not None:
             conditions.append("tier = %s")
             params.append(tier)
-        if keyword is not None:
-            conditions.append("%s = ANY(tags)")
-            params.append(keyword)
+        if keywords:
+            for kw in keywords:
+                conditions.append(
+                    "(title || ' ' || COALESCE(summary, '')"
+                    " || ' ' || COALESCE(content, '')"
+                    " || ' ' || array_to_string(tags, ' ')) ILIKE %s"
+                )
+                params.append(f"%{kw}%")
         if search is not None:
             if _contains_cjk(search):
                 conditions.append(

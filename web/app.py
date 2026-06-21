@@ -8,6 +8,7 @@ import threading
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import List, Optional
 
 import mistune
 from fastapi import FastAPI, Query, Request
@@ -304,7 +305,7 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
         page: int = Query(1, ge=1),
         tier: int = Query(None, ge=0, le=4),
         sentiment: str = Query(None),
-        keyword: str = Query(None),
+        keyword: List[str] = Query(None),
         search: str = Query(None),
         date_from: str = Query(None),
         date_to: str = Query(None),
@@ -314,6 +315,7 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
         per_page = page_size  # 使用用户选择的每页条数
         offset = (page - 1) * per_page
         tier_filter = tier if tier and tier > 0 else None
+        keyword = keyword or []  # normalize None → [] for template iteration
 
         # ── Date range defaults ──
         from datetime import date as date_type
@@ -331,12 +333,12 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
         # ── Data ──
         articles = db.get_recent_news(
             limit=per_page, offset=offset,
-            tier=tier_filter, sentiment=sentiment, keyword=keyword,
+            tier=tier_filter, sentiment=sentiment, keywords=keyword,
             search=search,
             date_from=date_from, date_to=date_to,
         )
         total = db.get_news_count(
-            tier=tier_filter, sentiment=sentiment, keyword=keyword,
+            tier=tier_filter, sentiment=sentiment, keywords=keyword,
             search=search,
             date_from=date_from, date_to=date_to,
         )
@@ -344,7 +346,7 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
         # 统计类查询不传 search 参数，保持筛选组件数值稳定
         stats_data = db.get_stats(date_from=date_from, date_to=date_to)
         sentiment_counts = db.get_sentiment_counts(
-            tier=tier_filter, keyword=keyword,
+            tier=tier_filter, keywords=keyword,
             date_from=date_from, date_to=date_to,
         )
         keyword_list = db.get_keyword_counts(
@@ -352,7 +354,7 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
             date_from=date_from, date_to=date_to,
         )
         high_impact = db.get_high_impact_count(
-            tier=tier_filter, keyword=keyword,
+            tier=tier_filter, keywords=keyword,
             date_from=date_from, date_to=date_to,
         )
 
@@ -399,11 +401,12 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
                 "remove_url": _remove_filter(request, "sentiment"),
             })
         if keyword:
-            active_filters.append({
-                "label": keyword,
-                "type": "keyword",
-                "remove_url": _remove_filter(request, "keyword"),
-            })
+            for kw in keyword:
+                active_filters.append({
+                    "label": kw,
+                    "type": "keyword",
+                    "remove_url": _remove_filter(request, "keyword", kw),
+                })
         if search:
             active_filters.append({
                 "label": f"搜索: {search}",
@@ -454,7 +457,7 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
             active_filters=active_filters,
             current_tier=tier_filter,
             current_sentiment=sentiment,
-            current_keyword=keyword,
+            current_keywords=keyword,
             current_search=search,
             # Content
             masonry_cards=masonry_cards,
@@ -754,17 +757,26 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
 
 # ── Helpers ──────────────────────────────────────────────────────
 
-def _remove_filter(request, key: str) -> str:
-    """Return a URL with the given query param removed, preserving others."""
+def _remove_filter(request, key: str, value: Optional[str] = None) -> str:
+    """Return a URL with the given query param removed, preserving others.
+
+    When *value* is given (multi-value params like ``keyword``), only that
+    specific value is removed; other values for the same key are kept.
+    """
     from urllib.parse import urlencode
-    params = dict(request.query_params)
-    params.pop(key, None)
-    params["page"] = "1"
+
+    params: list[tuple[str, str]] = []
+    for k, v in request.query_params.multi_items():
+        if k == key and value is not None:
+            if v == value:
+                continue  # skip this specific value
+        elif k == key:
+            continue  # skip all values for this key
+        params.append((k, v))
+    params.append(("page", "1"))
     # Clean up empty params
-    for k in ("tier", "sentiment", "keyword", "search", "date_from", "date_to"):
-        if not params.get(k):
-            params.pop(k, None)
-    qs = urlencode(params) if params else ""
+    non_empty = [(k, v) for k, v in params if v]
+    qs = urlencode(non_empty) if non_empty else ""
     base = str(request.url).split("?")[0]
     return f"{base}?{qs}" if qs else base
 

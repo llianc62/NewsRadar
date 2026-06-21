@@ -248,7 +248,7 @@
     {% if total_pages > 1 %}
     <div class="pagination-bar">
       {% if current_page > 1 %}
-      <a href="?page={{ current_page - 1 }}&amp;page_size={{ current_page_size }}{% if current_tier %}&amp;tier={{ current_tier }}{% endif %}{% if current_sentiment %}&amp;sentiment={{ current_sentiment }}{% endif %}{% if current_keyword %}&amp;keyword={{ current_keyword }}{% endif %}{% if current_search %}&amp;search={{ current_search }}{% endif %}{% if current_date_from %}&amp;date_from={{ current_date_from }}{% endif %}{% if current_date_to %}&amp;date_to={{ current_date_to }}{% endif %}"
+      <a href="?page={{ current_page - 1 }}&amp;page_size={{ current_page_size }}{% if current_tier %}&amp;tier={{ current_tier }}{% endif %}{% if current_sentiment %}&amp;sentiment={{ current_sentiment }}{% endif %}{% for kw in current_keywords %}&amp;keyword={{ kw }}{% endfor %}{% if current_search %}&amp;search={{ current_search }}{% endif %}{% if current_date_from %}&amp;date_from={{ current_date_from }}{% endif %}{% if current_date_to %}&amp;date_to={{ current_date_to }}{% endif %}"
          class="pg-btn arr">&lsaquo;</a>
       {% else %}
       <span class="pg-btn arr disabled">&lsaquo;</span>
@@ -260,13 +260,13 @@
         {% elif pn == current_page %}
         <span class="pg-btn active">{{ pn }}</span>
         {% else %}
-        <a href="?page={{ pn }}&amp;page_size={{ current_page_size }}{% if current_tier %}&amp;tier={{ current_tier }}{% endif %}{% if current_sentiment %}&amp;sentiment={{ current_sentiment }}{% endif %}{% if current_keyword %}&amp;keyword={{ current_keyword }}{% endif %}{% if current_search %}&amp;search={{ current_search }}{% endif %}{% if current_date_from %}&amp;date_from={{ current_date_from }}{% endif %}{% if current_date_to %}&amp;date_to={{ current_date_to }}{% endif %}"
+        <a href="?page={{ pn }}&amp;page_size={{ current_page_size }}{% if current_tier %}&amp;tier={{ current_tier }}{% endif %}{% if current_sentiment %}&amp;sentiment={{ current_sentiment }}{% endif %}{% for kw in current_keywords %}&amp;keyword={{ kw }}{% endfor %}{% if current_search %}&amp;search={{ current_search }}{% endif %}{% if current_date_from %}&amp;date_from={{ current_date_from }}{% endif %}{% if current_date_to %}&amp;date_to={{ current_date_to }}{% endif %}"
            class="pg-btn">{{ pn }}</a>
         {% endif %}
       {% endfor %}
 
       {% if current_page < total_pages %}
-      <a href="?page={{ current_page + 1 }}&amp;page_size={{ current_page_size }}{% if current_tier %}&amp;tier={{ current_tier }}{% endif %}{% if current_sentiment %}&amp;sentiment={{ current_sentiment }}{% endif %}{% if current_keyword %}&amp;keyword={{ current_keyword }}{% endif %}{% if current_search %}&amp;search={{ current_search }}{% endif %}{% if current_date_from %}&amp;date_from={{ current_date_from }}{% endif %}{% if current_date_to %}&amp;date_to={{ current_date_to }}{% endif %}"
+      <a href="?page={{ current_page + 1 }}&amp;page_size={{ current_page_size }}{% if current_tier %}&amp;tier={{ current_tier }}{% endif %}{% if current_sentiment %}&amp;sentiment={{ current_sentiment }}{% endif %}{% for kw in current_keywords %}&amp;keyword={{ kw }}{% endfor %}{% if current_search %}&amp;search={{ current_search }}{% endif %}{% if current_date_from %}&amp;date_from={{ current_date_from }}{% endif %}{% if current_date_to %}&amp;date_to={{ current_date_to }}{% endif %}"
          class="pg-btn arr">&rsaquo;</a>
       {% else %}
       <span class="pg-btn arr disabled">&rsaquo;</span>
