@@ -1,11 +1,13 @@
 # coding=utf-8
 """Time formatting and URL normalization utilities."""
 
+import time
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import pytz
+import requests
 
 DEFAULT_TIMEZONE = "Asia/Shanghai"
 # ── Time utilities ──────────────────────────────────────────────
@@ -105,3 +107,38 @@ def normalize_url(url: str, platform_id: str = "") -> str:
         return urlunparse(new_parsed)
     except Exception:
         return url
+
+
+# ── HTTP retry helper ─────────────────────────────────────────────
+
+MAX_IMMEDIATE_RETRIES = 3
+
+
+def http_get_with_retry(
+    session: requests.Session,
+    url: str,
+    timeout: int = 30,
+    label: str = "",
+) -> Tuple[Optional[requests.Response], Optional[str]]:
+    """HTTP GET with exponential backoff retry.
+
+    Args:
+        session: ``requests.Session`` to use.
+        url: Target URL.
+        timeout: Request timeout in seconds.
+        label: Human-readable label for log messages (defaults to url).
+
+    Returns:
+        ``(response, None)`` on success, ``(None, error_message)`` on
+        final failure after exhausting all retries.
+    """
+    display = label or url
+    for attempt in range(1, MAX_IMMEDIATE_RETRIES + 1):
+        try:
+            resp = session.get(url, timeout=timeout)
+            resp.raise_for_status()
+            return resp, None
+        except requests.RequestException as e:
+            if attempt == MAX_IMMEDIATE_RETRIES:
+                return None, str(e)
+            time.sleep(2 ** attempt)  # 2s, 4s
