@@ -167,17 +167,34 @@ class NewsRadarDaemon:
     # ── Jobs (the actual work — no duplication) ──────────────────
 
     async def _crawl_job(self) -> dict:
-        """Fetch news (with content) → save to PostgreSQL."""
+        """Fetch news (with content) → save to PostgreSQL → retry failures."""
         crawler = Crawler(self.config, pg_db=self.db)
+
+        # 1. Normal fetch
         result = await self._run_in_thread(
             crawler.fetch_all, OutputStyle.POSTGRESQL, True, True
         )
         total = result.get("total", 0) if result else 0
-        return {
-            "success": True,
-            "summary": f"抓取完成，共 {total} 条新闻" if total > 0 else "抓取完成，无新新闻",
-            "count": total,
-        }
+
+        # 2. Retry previously failed tasks (separate from fetch_all)
+        retry_result = await self._run_in_thread(
+            crawler.retry_failed_tasks
+        )
+
+        # Merge summaries
+        parts = []
+        if total > 0:
+            parts.append(f"抓取 {total} 条")
+        else:
+            parts.append("抓取完成，无新新闻")
+        if retry_result:
+            cs = retry_result.get("content_success", 0)
+            iss = retry_result.get("image_success", 0)
+            if cs or iss:
+                parts.append(f"重试成功 content={cs} image={iss}")
+        summary = "，".join(parts)
+
+        return {"success": True, "summary": summary, "count": total}
 
     async def _sync_job(self) -> dict:
         """Sync cloud SQLite data into PostgreSQL."""
