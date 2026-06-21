@@ -5,6 +5,7 @@ import json
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests as _requests
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -378,3 +379,162 @@ class TestUpdateArticleImageUrl:
         assert call_args[1][0] == "https://example.com/old.jpg"
         assert call_args[1][1] == "/media/news/abc.jpg"
         assert call_args[1][2] == 100
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Integration tests (require PostgreSQL + test infrastructure)
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _httpbin_reachable() -> bool:
+    """Check if test URLs are reachable for integration tests."""
+    try:
+        # Content fetch test URL
+        resp = _requests.get(
+            "https://example.com/",
+            timeout=10,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        if resp.status_code != 200:
+            return False
+        # Image download test URL
+        resp = _requests.get(
+            "https://www.python.org/static/img/python-logo.png",
+            timeout=10,
+        )
+        return resp.status_code == 200 and "image" in resp.headers.get("Content-Type", "")
+    except Exception:
+        return False
+
+
+@pytest.fixture(scope="module")
+def integration_pg_db():
+    """PostgreSQL instance connected to the real test database.
+
+    The schema is initialised (including the ``failed_tasks`` table)
+    before tests, and the pool is closed afterwards.
+    """
+    from config.loader import load_config
+    from storage.postgres import PostgreSQL
+
+    config = load_config("config.yaml")
+    db = PostgreSQL(config["postgresql"])
+    db.connect()
+    db.init_schema()
+    yield db
+    db.close()
+
+
+@pytest.fixture(scope="module")
+def integration_crawler(integration_pg_db):
+    """Crawler wired to the real PostgreSQL database.
+
+    Shares the same ``integration_pg_db`` instance that tests use for assertions.
+    """
+    from config.loader import load_config
+    from news.crawler import Crawler
+
+    config = load_config("config.yaml")
+    c = Crawler(config, pg_db=integration_pg_db)
+    yield c
+    c.close()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _httpbin_reachable(), reason="External test URLs not reachable")
+class TestRetryFailedTasksIntegration:
+    """End-to-end tests for retry_failed_tasks flow."""
+
+    @staticmethod
+    def _cleanup_test_data(db, urls):
+        """Remove test data (articles + failed_tasks) for the given URLs."""
+        with db.get_conn() as conn:
+            with conn.cursor() as cur:
+                for url in urls:
+                    cur.execute(
+                        "DELETE FROM failed_tasks WHERE context->>'url' = %s",
+                        (url,),
+                    )
+                    cur.execute(
+                        "DELETE FROM news_articles WHERE url = %s",
+                        (url,),
+                    )
+
+    def test_retry_content_fetch_flow(self, integration_pg_db, integration_crawler):
+        """Pending content_fetch task -> retry -> success -> article persisted."""
+        test_url = "https://example.com/"
+        context = {
+            "url": test_url,
+            "source_id": "test",
+            "source_type": "rss",
+            "source_name": "Test Source",
+            "title": "Test Article",
+            "rank": 0,
+            "guid": "test-guid-001",
+            "mobile_url": "",
+            "published_at": "",
+        }
+        try:
+            integration_pg_db.record_failure("content_fetch", context)
+            result = integration_crawler.retry_failed_tasks(with_image=False)
+            assert result["content_retried"] >= 1, (
+                f"Expected content_retried >= 1, got {result}"
+            )
+            assert integration_pg_db.article_has_content(test_url), (
+                "Article should have content after successful retry"
+            )
+        finally:
+            self._cleanup_test_data(integration_pg_db, [test_url])
+
+    def test_retry_image_download_flow(self, integration_pg_db, integration_crawler):
+        """Pending image_download task -> retry -> success -> content updated."""
+        article_url = "https://example.com/test-image-article"
+        image_url = "https://www.python.org/static/img/python-logo.png"
+
+        try:
+            # Insert an article that references the image URL in its content
+            with integration_pg_db.get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """INSERT INTO news_articles
+                           (source_id, source_name, source_type, tier, url,
+                            title, content, crawled_from)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                           ON CONFLICT DO NOTHING""",
+                        (
+                            "test", "Test Source", "rss", 4,
+                            article_url, "Test Image Article",
+                            f"Some content with image: {image_url}",
+                            "local",
+                        ),
+                    )
+
+            # Record image download failure
+            integration_pg_db.record_failure(
+                "image_download",
+                {"url": image_url, "target_dir": "news/test/images"},
+            )
+
+            result = integration_crawler.retry_failed_tasks(with_image=True)
+            assert result["image_retried"] >= 1, (
+                f"Expected image_retried >= 1, got {result}"
+            )
+
+            # Verify the content was updated (image URL replaced with local path)
+            with integration_pg_db.get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT content FROM news_articles WHERE url = %s",
+                        (article_url,),
+                    )
+                    row = cur.fetchone()
+            assert row is not None, "Article should exist"
+            updated_content = row[0]
+            assert "images/" in updated_content, (
+                "Content should contain local image path after retry"
+            )
+            assert image_url not in updated_content, (
+                "Original image URL should have been replaced"
+            )
+        finally:
+            self._cleanup_test_data(integration_pg_db, [article_url, image_url])
