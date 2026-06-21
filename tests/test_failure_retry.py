@@ -353,13 +353,13 @@ class TestFindArticlesByImageUrl:
         assert result == []
 
     def test_find_articles_by_image_url_sql(self, pg_db, mock_conn_cursor):
-        """Verifies the LIKE query includes the image URL."""
+        """Verifies the query uses position() for exact substring matching."""
         mock_conn_cursor.fetchall.return_value = []
         pg_db.find_articles_by_image_url("https://example.com/test.png")
         call_args = mock_conn_cursor.execute.call_args[0]
         sql = call_args[0]
-        assert "content LIKE" in sql
-        assert call_args[1][0] == "%https://example.com/test.png%"
+        assert "position(" in sql
+        assert call_args[1][0] == "https://example.com/test.png"
 
 
 class TestUpdateArticleImageUrl:

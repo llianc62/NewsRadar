@@ -1160,8 +1160,8 @@ class PostgreSQL:
             with conn.cursor() as cur:
                 cur.execute(
                     """SELECT id FROM news_articles
-                       WHERE content LIKE %s""",
-                    (f"%{image_url}%",),
+                       WHERE position(%s in content) > 0""",
+                    (image_url,),
                 )
                 return [r[0] for r in cur.fetchall()]
 
