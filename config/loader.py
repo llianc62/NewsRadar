@@ -59,6 +59,11 @@ def _load_crawler_config(raw: Dict) -> Dict:
     crawler = raw.get("crawler", {})
     return {
         "daemon_interval_minutes": crawler.get("daemon_interval_minutes", 60),
+        "sync_interval_minutes": crawler.get("sync_interval_minutes", 60),
+        "max_retry": _get_env_int("CRAWLER_MAX_RETRY")
+        or crawler.get("max_retry", 3),
+        "max_workers": crawler.get("max_workers", 8),
+        "timeout": crawler.get("timeout", 30),
         "newsnow": _load_newsnow_config(raw),
         "rss": _load_rss_config(raw),
     }
