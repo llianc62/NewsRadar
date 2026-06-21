@@ -22,24 +22,34 @@
 
 ## Architecture
 
+惰性重试**不侵入 `fetch_all`**，而是封装为独立的 `retry_failed_tasks()` 方法，由 daemon 的 `_crawl_job` 在 `fetch_all` 之后显式调用。
+
 ```
-fetch_all()
+_crawl_job()                          ← main.py daemon
 │
-├── 1. Hot-list + RSS 拉取 → all_items
+├── 1. crawler.fetch_all(POSTGRESQL, with_content=True, with_image=True)
+│       │
+│       ├── Hot-list + RSS 拉取 → all_items
+│       ├── enrich_content(*all_items, with_image)
+│       │     ├── Phase 1: _download_and_parse       ← 即时重试 3 次，失败记录到 failed_tasks
+│       │     └── Phase 2: _run_batch_image_download ← 即时重试 3 次，失败记录到 failed_tasks
+│       └── persist(*all_items)  → PostgreSQL
 │
-├── 2. _retry_content_fetch_failures()  ← 查询 pending content_fetch 任务
-│       └── 重建 item dict → 合并到 all_items
-│
-├── 3. enrich_content(*all_items, with_image)
-│       ├── Phase 1: _download_and_parse       ← 即时重试 3 次，失败记录到 failed_tasks
-│       └── Phase 2: _run_batch_image_download ← 即时重试 3 次，失败记录到 failed_tasks
-│
-├── 4. persist(*all_items)  → PostgreSQL
-│
-└── 5. _retry_image_download_failures()  ← 查询 pending image_download 任务
-        └── 成功 → 替换文章 content 中的图片 URL → mark completed
-            └── 失败 → retry_times++ / mark failed
+└── 2. crawler.retry_failed_tasks()   ← 独立方法，处理跨周期惰性重试
+        │
+        ├── _retry_content_fetch_failures()  ← 查询 pending content_fetch 任务
+        │     └── 成功 item → enrich_content → persist
+        │
+        └── _retry_image_download_failures()  ← 查询 pending image_download 任务
+              └── 成功 → 替换文章 content 中的图片 URL → mark completed
+              └── 失败 → retry_times++ / mark failed
 ```
+
+**设计理由：**
+
+- `fetch_all` 保持纯粹：只做正常抓取流程，不混入重试逻辑
+- `retry_failed_tasks` 是独立入口：daemon 可决定是否/何时调用重试
+- Cloud CI 模式（`cli/crawl.py`）不调用 `retry_failed_tasks`，即时重试在函数内部生效
 
 ### Key Design Decisions
 
@@ -122,7 +132,6 @@ CREATE INDEX IF NOT EXISTS idx_failed_tasks_status
 
 ```yaml
 crawler:
-  max_immediate_retries: 3    # 单次调用的即时重试次数
   max_retry: 3                # 跨周期惰性重试最大次数（failed_tasks 默认值）
 ```
 
@@ -130,14 +139,14 @@ crawler:
 
 | Env | Default | Description |
 |-----|---------|-------------|
-| `CRAWLER_MAX_IMMEDIATE_RETRIES` | `3` | 单次 HTTP/图片下载的即时重试次数 |
 | `CRAWLER_MAX_RETRY` | `3` | 惰性重试最大周期数 |
+
+即时重试写死 3 次，不走配置。
 
 ### 2.3 Crawler 初始化
 
 ```python
 cfg = config.get("crawler", {})
-self.max_immediate_retries = cfg.get("max_immediate_retries", 3)
 self.max_retry = cfg.get("max_retry", 3)
 ```
 
@@ -145,62 +154,85 @@ self.max_retry = cfg.get("max_retry", 3)
 
 ## 3. Immediate Retry（即时重试）
 
-### 3.1 `_download_and_parse` (news/crawler.py)
+### 3.0 通用 HTTP GET 重试 Helper（utils.py）
 
-在现有 `requests.get()` 外层包 for 循环，递增退避（1s, 2s, 4s）。
+Crawler 和 ImageProcessor 都需要 HTTP GET+退避重试，提取到 `utils.py`，写死 3 次：
+
+```python
+MAX_IMMEDIATE_RETRIES = 3
+
+def http_get_with_retry(session, url, timeout=30, label=""):
+    """HTTP GET with exponential backoff retry.
+    Returns (response, None) on success, (None, error_msg) on final failure."""
+    for attempt in range(1, MAX_IMMEDIATE_RETRIES + 1):
+        try:
+            resp = session.get(url, timeout=timeout)
+            resp.raise_for_status()
+            return resp, None
+        except requests.RequestException as e:
+            if attempt == MAX_IMMEDIATE_RETRIES:
+                return None, str(e)
+            time.sleep(2 ** attempt)  # 2s, 4s
+```
+
+### 3.1 `_download_and_parse` — 即时重试 + 失败记录 (news/crawler.py)
+
+使用 `http_get_with_retry` 替换原有 `requests.get()`。失败时在内部直接调用 `_record_content_fetch_failure`。
 
 ```
 flow:
-  for attempt in 1..max_immediate_retries:
-      try GET url
-        → success: break
-        → failure: if last attempt → record failure, return False
-                   else sleep(2^attempt) and continue
+  resp, error = http_get_with_retry(session, url, timeout, label=url)
+  if resp is None → _record_content_fetch_failure(item, error) → return False
   parse html
   return True
 ```
 
-### 3.1b `_run_batch_parse` 去重保护
+惰性重试（`_retry_content_fetch_failures`）也调用同一个 `_download_and_parse`，即时重试逻辑自动复用。
 
-已有 content 的 item 不应再次下载（例如刚从 `_retry_content_fetch_failures` 成功返回的 item）：
+### 3.1b `_run_batch_parse` 去重保护
 
 ```python
 # 只处理有 url 且无 content 的 item
 valid = [it for it in items if it.get("url") and not it.get("content")]
 ```
 
-失败记录只在 `_download_and_parse` 内部完成——调用方无需感知。
-
 ### 3.2 `ImageProcessor._download_and_save` (news/images.py)
 
-同理，在 HTTP GET 和存储操作外层各包 for 循环。
+HTTP GET 改用 `http_get_with_retry`；存储操作也加 for 循环重试（MinIO 临时不可用）。返回 None 表示失败，**不在此层记录**——ImageProcessor 无 PG 访问。
 
-注意：存储失败（`storage.save` 异常）也需要重试——可能是 MinIO 临时不可用。
+### 3.3 `_run_batch_image_download` — 图片下载失败记录 (news/crawler.py)
+
+`ImageProcessor.download()` 返回 `{url: saved_path_or_""}`。**在 Crawler 层遍历结果，值为 "" 的调用 `_record_image_download_failures` 记录到 `failed_tasks`：**
 
 ```
 flow:
-  for attempt in 1..max_immediate_retries:
-      try GET image_url
-        → success: break
-        → failure: if last attempt → return None
-                   else sleep and continue
-  
-  for attempt in 1..max_immediate_retries:
-      try storage.save(data, target_path, content_type)
-        → success: return relative_path
-        → failure: if last attempt → return None
-                   else sleep and continue
+  url_map = processor.download(url_map, storage=image_storage)
+  for url, saved_path in url_map.items():
+      if not saved_path:
+          _record_image_download_failures(...)  ← ★ 失败记录
 ```
 
-### 3.3 ImageProcessor 构造函数扩展
+### 3.4 ImageProcessor 构造函数
+
+无需新增参数（即时重试写死 3）：
 
 ```python
-def __init__(self, max_workers=8, max_immediate_retries=3):
+def __init__(self, max_workers: int = 8):
     self._max_workers = max_workers
-    self._max_immediate_retries = max_immediate_retries
 ```
 
-Crawler 创建 ImageProcessor 时传入配置值。
+### 3.5 Fetcher API 调用 — 即时重试 (news/fetcher/)
+
+**NewsnowFetcher.fetch_data** 已有 `max_retries=2`（共 3 次），改为使用 `MAX_IMMEDIATE_RETRIES` 常量，与项目其他地方统一。
+
+**RssFetcher.fetch_feed** 目前无重试，`requests.get()` 改为 `http_get_with_retry`：
+
+```
+flow:
+  resp, error = http_get_with_retry(self._session, feed.url, self._timeout, label=feed.name)
+  if resp is None → return [], error
+  parse feed...
+```
 
 ---
 
@@ -357,34 +389,78 @@ for each task:
 
 `_retry_image_download_failures` 需要调用 `ImageProcessor.download()`。该方法接受 `url_map: Dict[str, str]`，可以传入单张图片的 map。
 
-### 5.4 fetch_all 集成
+### 5.4 `retry_failed_tasks` — 独立惰性重试入口 (Crawler)
+
+惰性重试封装为独立方法，不侵入 `fetch_all`。由 daemon 的 `_crawl_job` 调用。
 
 ```python
-def fetch_all(self, output_style, with_content=False, with_image=False):
-    all_items = []
+def retry_failed_tasks(self, with_image: bool = True) -> dict:
+    """Retry previously failed content_fetch and image_download tasks.
 
-    # Hot-list + RSS (unchanged)
-    ...
+    Called by the daemon AFTER ``fetch_all`` in each crawl cycle.
+    Returns a summary dict with counts.
+    """
+    result = {"content_retried": 0, "content_success": 0,
+              "image_retried": 0, "image_success": 0}
 
-    # Retry failed content fetches from previous cycles
-    # Returns item dicts that succeeded this time
-    retried = self._retry_content_fetch_failures()
-    all_items.extend(retried)
+    # 1. Retry content_fetch failures from previous cycles
+    #    Returns item dicts that succeeded this time (content already parsed)
+    retried_items = self._retry_content_fetch_failures()
+    result["content_retried"] = len(retried_items)
 
-    # Enrich (includes image download + failure recording)
-    if with_content:
-        self.enrich_content(*all_items, with_image=with_image)
+    if retried_items:
+        # Re-run enrichment — _run_batch_parse skips items with existing content,
+        # so only image download runs for retried items
+        self.enrich_content(*retried_items, with_image=with_image)
+        # Persist retried items
+        self.persist(*retried_items, output_style=OutputStyle.POSTGRESQL)
+        result["content_success"] = len(retried_items)
 
-    # Persist
-    self.persist(*all_items, output_style=output_style)
-
-    # Retry previously failed image downloads
-    # Must be AFTER persist so articles exist in DB
+    # 2. Retry image_download failures
+    #    Must be AFTER persist so articles exist in DB for URL replacement
     if with_image:
-        self._retry_image_download_failures()
+        img_result = self._retry_image_download_failures()
+        result["image_retried"] = img_result["total"]
+        result["image_success"] = img_result["success"]
 
-    return {...}
+    return result
 ```
+
+### 5.5 `_crawl_job` 集成 (main.py)
+
+```python
+async def _crawl_job(self) -> dict:
+    """Fetch news (with content) → save to PostgreSQL → retry failures."""
+    crawler = Crawler(self.config, pg_db=self.db)
+
+    # 1. Normal fetch
+    result = await self._run_in_thread(
+        crawler.fetch_all, OutputStyle.POSTGRESQL, True, True
+    )
+    total = result.get("total", 0) if result else 0
+
+    # 2. Retry previously failed tasks (separate from fetch_all)
+    retry_result = await self._run_in_thread(
+        crawler.retry_failed_tasks
+    )
+
+    # Merge summaries
+    parts = []
+    if total > 0:
+        parts.append(f"抓取 {total} 条")
+    else:
+        parts.append("抓取完成，无新新闻")
+    if retry_result:
+        cs = retry_result.get("content_success", 0)
+        iss = retry_result.get("image_success", 0)
+        if cs or iss:
+            parts.append(f"重试成功 content={cs} image={iss}")
+    summary = "，".join(parts)
+
+    return {"success": True, "summary": summary, "count": total}
+```
+
+> **Cloud CI 模式不调用 `retry_failed_tasks`** — `cli/crawl.py` 调用 `fetch_all` 后即结束。惰性重试仅 daemon 模式生效。
 
 ---
 
@@ -425,10 +501,14 @@ Cloud CI 使用 SQLite，不做惰性重试。即时重试在函数内部生效�
 
 | File | Change |
 |------|--------|
-| `news/crawler.py` | 新增 `max_immediate_retries`/`max_retry` 配置；`_download_and_parse` 加即时重试；新增 `_record_content_fetch_failure`、`_record_image_download_failures`、`_retry_content_fetch_failures`、`_retry_image_download_failures`；`fetch_all` 集成重试流程 |
-| `news/images.py` | `ImageProcessor.__init__` 接受 `max_immediate_retries`；`_download_and_save` 加即时重试 |
-| `storage/postgres.py` | 新增 `record_failure`、`get_pending_failures`、`mark_failure_completed`、`mark_failure_retried`、`find_articles_by_image_url`、`update_article_image_url` 方法；`_run_migrations` 新增 failed_tasks DDL |
-| `config/loader.py` | 新增 `CRAWLER_MAX_IMMEDIATE_RETRIES`、`CRAWLER_MAX_RETRY` env 映射 |
+| `utils.py` | 新增 `MAX_IMMEDIATE_RETRIES` 常量 + `http_get_with_retry` 函数 |
+| `news/crawler.py` | `_download_and_parse` 改用 `http_get_with_retry` + 内部记录失败；`_run_batch_parse` 跳过已有 content 的 item；`_run_batch_image_download` 追加调用 `_record_image_download_failures`；新增 `_record_content_fetch_failure`、`_record_image_download_failures`、`_retry_content_fetch_failures`、`_retry_image_download_failures`、**`retry_failed_tasks`**（惰性重试独立入口）；`fetch_all` **不集成**重试逻辑；新增 `max_retry` 配置 |
+| `main.py` | `_crawl_job` 在 `fetch_all` 后追加调用 `crawler.retry_failed_tasks()` |
+| `news/fetcher/newsnow.py` | `fetch_data` 改用 `MAX_IMMEDIATE_RETRIES` 常量 |
+| `news/fetcher/rss.py` | `fetch_feed` 改用 `http_get_with_retry` |
+| `news/images.py` | `_download_and_save` 改用 `http_get_with_retry` + save 重试；`ImageProcessor.__init__` 无需新增参数 |
+| `storage/postgres.py` | 新增 `record_failure`、`get_pending_failures`、`article_has_content`、`mark_failure_completed`、`mark_failure_retried`、`find_articles_by_image_url`、`update_article_image_url`；`_run_migrations` 新增 failed_tasks DDL |
+| `config/loader.py` | 新增 `CRAWLER_MAX_RETRY` env 映射 |
 
 ---
 

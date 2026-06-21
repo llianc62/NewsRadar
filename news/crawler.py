@@ -644,7 +644,7 @@ class Crawler:
 
         return {"total": total, "success": success}
 
-    def retry_failed_tasks(self, with_image: bool = True) -> dict:
+    def retry_failed_tasks(self) -> dict:
         """Retry previously failed content_fetch and image_download tasks.
 
         Called by the daemon AFTER ``fetch_all`` in each crawl cycle.
@@ -667,7 +667,7 @@ class Crawler:
 
             if retried_items:
                 # Enrich + persist retried items
-                self.enrich_content(*retried_items, with_image=with_image)
+                self.enrich_content(*retried_items, with_image=True)
                 self.persist(
                     *retried_items, output_style=OutputStyle.POSTGRESQL
                 )
@@ -676,13 +676,12 @@ class Crawler:
             print(f"[Crawler] Content retry error (non-fatal): {e}")
 
         # 2. Retry image_download failures (must be AFTER persist)
-        if with_image:
-            try:
-                img_result = self._retry_image_download_failures()
-                result["image_retried"] = img_result["total"]
-                result["image_success"] = img_result["success"]
-            except Exception as e:
-                print(f"[Crawler] Image retry error (non-fatal): {e}")
+        try:
+            img_result = self._retry_image_download_failures()
+            result["image_retried"] = img_result["total"]
+            result["image_success"] = img_result["success"]
+        except Exception as e:
+            print(f"[Crawler] Image retry error (non-fatal): {e}")
 
         print(f"[Crawler] Lazy retry done: {result}")
         return result
