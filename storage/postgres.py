@@ -1126,7 +1126,8 @@ class PostgreSQL:
                     """UPDATE failed_tasks
                        SET status = 'completed',
                            updated_at = NOW()
-                       WHERE id = %s""",
+                       WHERE id = %s
+                         AND status = 'pending'""",
                     (task_id,),
                 )
 
@@ -1148,7 +1149,8 @@ class PostgreSQL:
                                THEN 'failed'
                                ELSE 'pending'
                            END
-                       WHERE id = %s""",
+                       WHERE id = %s
+                         AND status = 'pending'""",
                     (task_id,),
                 )
 
