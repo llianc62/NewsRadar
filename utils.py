@@ -132,7 +132,6 @@ def http_get_with_retry(
         ``(response, None)`` on success, ``(None, error_message)`` on
         final failure after exhausting all retries.
     """
-    display = label or url
     for attempt in range(1, MAX_IMMEDIATE_RETRIES + 1):
         try:
             resp = session.get(url, timeout=timeout)
