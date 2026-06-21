@@ -21,11 +21,15 @@ Usage::
 """
 
 import re
+import time
+
 import requests
 
 from typing import Dict, Optional
 from urllib.parse import unquote, urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from utils import http_get_with_retry
 
 from storage import FileStorage
 
@@ -148,31 +152,41 @@ class ImageProcessor:
     ) -> Optional[str]:
         """Download *url* and save directly to *target_path* (full S3 key).
 
+        HTTP GET uses exponential backoff (3 attempts).  Save also retries
+        up to 3 times for transient storage errors.
+
         Returns ``"images/xxx.jpg"`` (relative path for content
         replacement) on success, or ``None`` on failure.
         """
-        try:
-            resp = self.session.get(url, timeout=30)
-            resp.raise_for_status()
-            content_type = (
-                resp.headers.get("Content-Type", "image/jpeg")
-                .split(";")[0]
-                .strip()
-            )
-            image_data = resp.content
-        except requests.RequestException as e:
-            print(f"[ImageProcessor] HTTP error for {url}: {e}")
+        # Phase 1: HTTP download with retry
+        resp, error = http_get_with_retry(
+            self.session, url, timeout=30, label=url
+        )
+        if resp is None:
+            print(f"[ImageProcessor] HTTP error for {url}: {error}")
             return None
 
+        content_type = (
+            resp.headers.get("Content-Type", "image/jpeg")
+            .split(";")[0]
+            .strip()
+        )
+        image_data = resp.content
+
+        # Phase 2: Save with retry (MinIO may be temporarily unavailable)
         ext = self.EXT_MAP.get(content_type, ".jpg")
         filename = self._extract_filename(url, ext)
         file_path = f"{target_path}/{filename}"
-        try:
-            storage.save(image_data, file_path, content_type)
-            return f"images/{filename}"
-        except Exception as e:
-            print(f"[ImageProcessor] Save failed [{url}]: {e}")
-            return None
+
+        for attempt in range(1, 4):  # 3 attempts
+            try:
+                storage.save(image_data, file_path, content_type)
+                return f"images/{filename}"
+            except Exception as e:
+                if attempt == 3:
+                    print(f"[ImageProcessor] Save failed [{url}]: {e}")
+                    return None
+                time.sleep(2 ** attempt)
 
     def _extract_filename(self, url: str, default_ext: str) -> str:
         """Extract original filename from image *url*, falling back to
