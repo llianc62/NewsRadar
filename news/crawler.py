@@ -243,7 +243,7 @@ class Crawler:
             # Phase 1: download HTML + parse Markdown
             item["content"] = parsed["markdown"]
             if not item["tags"] and item.get("content"):
-                item["tags"] = _extract_keywords_textrank(item["content"])
+                item["tags"] = self._extract_keywords(item["content"])
 
             # Phase 2: batch image download (if requested)
             if with_image:
@@ -403,7 +403,7 @@ class Crawler:
         item["category"] = parsed.get("category", "")
         item["tags"] = parsed.get("tags", [])
         if not item["tags"] and item.get("content"):
-            item["tags"] = _extract_keywords_textrank(item["content"])
+            item["tags"] = self._extract_keywords(item["content"])
         return True
 
     def _run_batch_image_download(
@@ -1048,6 +1048,130 @@ class Crawler:
 
         return NewsData(date=date_str, items=items)
 
+    # ── Keyword extraction (jieba TF-IDF / TextRank fallback) ──────
+
+    def _extract_keywords(self, content: str, topk: int = 5) -> list[str]:
+        """从 Markdown 正文提取关键词，TF-IDF 优先，TextRank 兜底。
+
+        与模块级 :func:`_extract_keywords_textrank` 的区别：
+        本方法会尝试加载数据库构建的自定义 IDF 语料，使 TF-IDF 能自动
+        压低"在大多数文章都出现"的通用词（如 公司/企业/项目）。
+        如果 IDF 语料不可用，回退到 TextRank + 专有名词过滤。
+
+        Args:
+            content: Markdown 格式的 article body。
+            topk: 最多返回的关键词数量。
+
+        Returns:
+            关键词列表，或空列表。
+        """
+        text = clean_markdown(content)
+        if len(text) < 50:
+            return []
+
+        try:
+            import jieba.analyse
+        except ImportError:
+            return []
+
+        # ── TF-IDF (优先) ──────────────────────────────────────────
+        idf_path = self._ensure_idf_corpus()
+        if idf_path is not None:
+            try:
+                # jieba TF-IDF 的默认 IDF 基于通用语料（新闻），
+                # 自定义 IDF 在默认 IDF 基础上进一步压低高频通用词
+                default_idf = jieba.analyse.idf_path
+                jieba.analyse.set_idf_path(idf_path)
+                keywords = jieba.analyse.tfidf(
+                    text,
+                    topK=topk,
+                    withWeight=False,
+                    allowPOS=('ns', 'nr', 'nt', 'nz'),
+                )
+                # 恢复默认 IDF 路径（如有）
+                if default_idf:
+                    jieba.analyse.set_idf_path(default_idf)
+                if keywords:
+                    return keywords
+            except Exception:
+                pass
+
+        # ── TextRank (兜底) ─────────────────────────────────────────
+        return extract_keywords_textrank(content, topk=topk)
+
+    def _ensure_idf_corpus(self) -> Optional[str]:
+        """确保自定义 IDF 语料文件存在，不存在则从数据库构建。
+
+        Returns:
+            IDF 文件路径，或 None 当数据库无可用文章或构建失败。
+        """
+        if os.path.exists(_IDF_PATH):
+            return _IDF_PATH
+
+        # ── 从数据库收集文章正文 ──────────────────────────────────
+        contents: List[str] = []
+        try:
+            db = self._get_pg_db()
+        except Exception:
+            return None
+
+        try:
+            with db.get_conn() as conn:
+                with conn.cursor() as cur:
+                    # 只取有正文的文章，最多 2000 篇（足够 IDF 统计收敛）
+                    cur.execute(
+                        "SELECT content FROM news_articles "
+                        "WHERE content IS NOT NULL AND content != '' "
+                        "ORDER BY created_at DESC LIMIT 2000"
+                    )
+                    rows = cur.fetchall()
+        except Exception as e:
+            print(f"[Crawler] IDF corpus query failed: {e}")
+            return None
+
+        for (body,) in rows:
+            cleaned = clean_markdown(body)
+            if len(cleaned) >= 50:
+                contents.append(cleaned)
+
+        if len(contents) < 10:
+            # 样本太少，IDF 统计不可靠
+            return None
+
+        # ── 分词 + 文档频率统计 ───────────────────────────────────
+        try:
+            import jieba
+        except ImportError:
+            return None
+
+        df: Dict[str, int] = {}
+        for text in contents:
+            # 每篇文章只计一次（文档频率，不是词频）
+            words = set(jieba.cut(text))
+            for w in words:
+                if len(w) < 2:
+                    continue
+                df[w] = df.get(w, 0) + 1
+
+        total_docs = len(contents)
+
+        # ── 写入 IDF 文件 ─────────────────────────────────────────
+        os.makedirs(os.path.dirname(_IDF_PATH), exist_ok=True)
+        try:
+            import math
+            with open(_IDF_PATH, "w", encoding="utf-8") as f:
+                for word, count in df.items():
+                    idf = math.log(total_docs / count)
+                    f.write(f"{word} {idf:.6f}\n")
+            print(
+                f"[Crawler] Built IDF corpus: {len(df)} words "
+                f"from {total_docs} articles → {_IDF_PATH}"
+            )
+            return _IDF_PATH
+        except OSError as e:
+            print(f"[Crawler] Failed to write IDF corpus: {e}")
+            return None
+
     def close(self) -> None:
         """Close connections, thread pools, and resources."""
         if self._executor is not None:
@@ -1067,41 +1191,50 @@ class Crawler:
             self._sqlite = None
 
 
-# ── Keyword extraction (jieba TextRank fallback) ─────────────────
+# ── Keyword extraction (jieba TF-IDF / TextRank fallback) ─────────
 
-def _extract_keywords_textrank(content: str, topk: int = 5) -> list[str]:
-    """从 Markdown 正文提取关键词，用作 tags fallback。
+# Path to custom IDF corpus — built once from database articles so
+# TF-IDF can penalise words that appear in nearly every document
+# ("公司", "企业", "项目") and reward distinctive ones.
+_IDF_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "jieba_idf.txt")
 
-    仅当页面元数据（meta keywords / JSON-LD）无 tags 时调用。
-    使用 jieba TextRank 算法 + 词性过滤，适合中文新闻正文。
+
+def clean_markdown(content: str) -> str:
+    """Remove Markdown syntax noise for cleaner NLP input."""
+    text = re.sub(r'!\[.*?\]\(.*?\)', '', content)          # 图片
+    text = re.sub(r'\[([^\]]*)\]\(.*?\)', r'\1', text)      # 链接保留文字
+    text = re.sub(r'[#*>`|~\-_]', ' ', text)                # 格式标记
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def extract_keywords_textrank(content: str, topk: int = 5) -> list[str]:
+    """从 Markdown 正文提取关键词，使用 jieba TextRank + 专有名词过滤。
+
+    保留为模块级函数以保证向后兼容（测试直接调用）。
+    新代码优先使用 :meth:`Crawler._extract_keywords` 以利用 TF-IDF 语料。
 
     Args:
         content: Markdown 格式的 article body。
         topk: 最多返回的关键词数量。
 
     Returns:
-        关键词列表（可能少于 *topk* 当正文信息量不足时），
-        或空列表当正文过短或无法提取。
+        关键词列表，或空列表当正文过短或无法提取。
     """
-    # ── 清洗 Markdown 语法 ──────────────────────────────────────
-    text = re.sub(r'!\[.*?\]\(.*?\)', '', content)          # 图片
-    text = re.sub(r'\[([^\]]*)\]\(.*?\)', r'\1', text)      # 链接保留文字
-    text = re.sub(r'[#*>`|~\-_]', ' ', text)                # 格式标记
-    text = re.sub(r'\s+', ' ', text).strip()
-
+    text = clean_markdown(content)
     if len(text) < 50:
         return []
 
-    # ── jieba TextRank ─────────────────────────────────────────
     try:
         import jieba.analyse
     except ImportError:
         return []
 
+    # 只保留专有名词类：地名/人名/机构名/其他专名
+    # 去掉 n (普通名词) 和 vn (动名词) — 它们产生"公司""企业""项目"等无辨识度通用词
     keywords = jieba.analyse.textrank(
         text,
         topK=topk,
         withWeight=False,
-        allowPOS=('ns', 'n', 'vn', 'nr', 'nt', 'nz'),
+        allowPOS=('ns', 'nr', 'nt', 'nz'),
     )
     return keywords
