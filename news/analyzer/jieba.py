@@ -6,6 +6,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from news.analyzer.analyzer import Analyzer
+from news.crawler import clean_markdown
 
 # 词典文件默认路径
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
@@ -131,6 +132,106 @@ class JiebaAnalyzer(Analyzer):
 
     # ── Sentiment (Task 6 实现) ────────────────────────────────────
 
+    def _ensure_dicts(self) -> None:
+        """惰性加载情感词典。"""
+        if self._positive_dict is not None:
+            return
+        self._positive_dict = _load_dict(
+            os.path.join(_DATA_DIR, "senti_positive.txt"))
+        self._negative_dict = _load_dict(
+            os.path.join(_DATA_DIR, "senti_negative.txt"))
+        self._degree_dict = _load_dict(
+            os.path.join(_DATA_DIR, "senti_degree.txt"))
+        self._negation_set = set()
+        neg_path = os.path.join(_DATA_DIR, "senti_negation.txt")
+        try:
+            with open(neg_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        self._negation_set.add(line)
+        except FileNotFoundError:
+            pass
+
     def analyze_sentiment(self, items: list) -> None:
-        """TODO: Task 6 实现。"""
-        raise NotImplementedError("analyze_sentiment will be implemented in Task 6")
+        """计算情感分。原地修改 item["sentiment_score"]。
+
+        仅处理 dict 形式的 item（与 Crawler 中 item dict 一致）。
+        """
+        self._ensure_dicts()
+
+        import jieba
+
+        for item in items:
+            title = item.get("title") or ""
+            content = item.get("content") or ""
+            # content 含 markdown 语法，先清理
+            content = clean_markdown(content)
+            text = title + " " + content
+
+            if not text.strip():
+                item["sentiment_score"] = 50
+                continue
+
+            # jieba 分词
+            words = jieba.lcut(text)
+
+            # 逐词评分
+            pos_score, neg_score = self._score_words(words)
+
+            # 映射到 0-100
+            item["sentiment_score"] = self._to_sentiment_score(pos_score, neg_score)
+
+    def _score_words(self, words: list) -> tuple:
+        """遍历分词结果，返回 (pos_score, neg_score)。"""
+        pos = 0.0
+        neg = 0.0
+        negation_active = 0  # 否定词作用窗口（剩余词数）
+        degree_multiplier = 1.0
+
+        for w in words:
+            # 程度副词：修改当前乘数
+            if w in self._degree_dict:
+                degree_multiplier = self._degree_dict[w]
+                continue
+
+            # 否定词：翻转后续 3 词的极性
+            if w in self._negation_set:
+                negation_active = 3
+                continue
+
+            # 正面词
+            if w in self._positive_dict:
+                weight = self._positive_dict[w] * degree_multiplier
+                if negation_active > 0:
+                    neg += weight  # 否定 → 归入负面
+                    negation_active -= 1
+                else:
+                    pos += weight
+
+            # 负面词
+            elif w in self._negative_dict:
+                weight = self._negative_dict[w] * degree_multiplier
+                if negation_active > 0:
+                    pos += weight  # 否定 → 归入正面
+                    negation_active -= 1
+                else:
+                    neg += weight
+
+            # 窗口递减（非情感词也消耗窗口）
+            elif negation_active > 0:
+                negation_active -= 1
+
+            # 重置乘数（每个词只用一次）
+            degree_multiplier = 1.0
+
+        return pos, neg
+
+    @staticmethod
+    def _to_sentiment_score(pos: float, neg: float) -> int:
+        """将正负得分映射到 0-100。"""
+        if pos + neg == 0:
+            return 50  # 中性
+        net = pos - neg
+        scaled = math.tanh(net / 5.0) * 50.0  # -50 ~ +50
+        return round(50 + scaled)  # 0-100
