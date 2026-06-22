@@ -78,11 +78,13 @@ class JiebaAnalyzer(Analyzer):
         """Process heat score for hotlist items of one source.
 
         db_map 格式: {url: {"heat_score": int, "ranks": [[int,int],...]}}
+
+        items: list[dict] — 与 Crawler.fetch_all 传递的 item dict 一致。
         """
-        valid_items = [it for it in items if it.ranks]
+        valid_items = [it for it in items if it.get("ranks")]
 
         # ① Compare sets
-        this_urls = {item.url for item in valid_items if item.url}
+        this_urls = {item["url"] for item in valid_items if item.get("url")}
         db_urls = set(db_map.keys())
 
         new_urls = this_urls - db_urls
@@ -91,23 +93,23 @@ class JiebaAnalyzer(Analyzer):
 
         # ② First appearance — percentile
         for item in valid_items:
-            if item.url in new_urls:
-                r, t = item.ranks[0]
-                item.heat_score = round(
+            if item["url"] in new_urls:
+                r, t = item["ranks"][0]
+                item["heat_score"] = round(
                     max(0, min(100, (1 - r / t) * 100))
                 )
-                item.ranks = [[r, t]]
+                item["ranks"] = [[r, t]]
 
         # ③ Still on list — delta adjustment
         for item in valid_items:
-            if item.url in existing_urls:
-                prev = db_map[item.url]
-                item.heat_score = self._calc_heat_score(
+            if item["url"] in existing_urls:
+                prev = db_map[item["url"]]
+                item["heat_score"] = self._calc_heat_score(
                     prev_heat=prev["heat_score"],
                     prev_ranks=prev["ranks"],
-                    new_ranks_entry=item.ranks[0],
+                    new_ranks_entry=item["ranks"][0],
                 )
-                item.ranks = (prev["ranks"] or []) + [item.ranks[0]]
+                item["ranks"] = (prev["ranks"] or []) + [item["ranks"][0]]
 
         # ④ Dropped from list — ×0.7 decay (requires DB write)
         if dropped_urls and self._db is not None:
@@ -153,24 +155,39 @@ class JiebaAnalyzer(Analyzer):
         except FileNotFoundError:
             pass
 
-    def analyze_sentiment(self, items: list) -> None:
-        """计算情感分。原地修改 item["sentiment_score"]。
+    @staticmethod
+    def _get_value(item, key, default=None):
+        """获取 item 属性，兼容 dict 和 NewsItem。"""
+        if isinstance(item, dict):
+            return item.get(key, default)
+        return getattr(item, key, default)
 
-        仅处理 dict 形式的 item（与 Crawler 中 item dict 一致）。
+    @staticmethod
+    def _set_value(item, key, value):
+        """设置 item 属性，兼容 dict 和 NewsItem。"""
+        if isinstance(item, dict):
+            item[key] = value
+        else:
+            setattr(item, key, value)
+
+    def analyze_sentiment(self, items: list) -> None:
+        """计算情感分。原地修改 sentiment_score。
+
+        兼容 dict 和 NewsItem 两种输入。
         """
         self._ensure_dicts()
 
         import jieba
 
         for item in items:
-            title = item.get("title") or ""
-            content = item.get("content") or ""
+            title = self._get_value(item, "title") or ""
+            content = self._get_value(item, "content") or ""
             # content 含 markdown 语法，先清理
             content = clean_markdown(content)
             text = title + " " + content
 
             if not text.strip():
-                item["sentiment_score"] = 50
+                self._set_value(item, "sentiment_score", 50)
                 continue
 
             # jieba 分词
@@ -180,7 +197,7 @@ class JiebaAnalyzer(Analyzer):
             pos_score, neg_score = self._score_words(words)
 
             # 映射到 0-100
-            item["sentiment_score"] = self._to_sentiment_score(pos_score, neg_score)
+            self._set_value(item, "sentiment_score", self._to_sentiment_score(pos_score, neg_score))
 
     def _score_words(self, words: list) -> tuple:
         """遍历分词结果，返回 (pos_score, neg_score)。"""
