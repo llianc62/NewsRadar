@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from storage.postgres import PostgreSQL
+from news.analyzer.jieba import JiebaAnalyzer
 
 
 class TestCalcHeatScore:
@@ -15,27 +15,27 @@ class TestCalcHeatScore:
 
     def test_first_appearance_top_rank(self):
         """#1/20 → 95."""
-        score = PostgreSQL._calc_heat_score(None, [], [1, 20])
+        score = JiebaAnalyzer._calc_heat_score(None, [], [1, 20])
         assert score == 95
 
     def test_first_appearance_mid_rank(self):
         """#7/20 → 65."""
-        score = PostgreSQL._calc_heat_score(None, [], [7, 20])
+        score = JiebaAnalyzer._calc_heat_score(None, [], [7, 20])
         assert score == 65
 
     def test_first_appearance_bottom_rank(self):
         """#20/20 → 0."""
-        score = PostgreSQL._calc_heat_score(None, [], [20, 20])
+        score = JiebaAnalyzer._calc_heat_score(None, [], [20, 20])
         assert score == 0
 
     def test_first_appearance_50_total_top(self):
         """#1/50 → 98."""
-        score = PostgreSQL._calc_heat_score(None, [], [1, 50])
+        score = JiebaAnalyzer._calc_heat_score(None, [], [1, 50])
         assert score == 98
 
     def test_first_appearance_prev_heat_none(self):
         """prev_heat=None with valid ranks still counts as first."""
-        score = PostgreSQL._calc_heat_score(None, [[7, 20]], [5, 20])
+        score = JiebaAnalyzer._calc_heat_score(None, [[7, 20]], [5, 20])
         assert score == 75
 
     # ── Still on list: rank up ──────────────────────────────────────
@@ -43,20 +43,20 @@ class TestCalcHeatScore:
     def test_rank_up_increases_heat(self):
         """#7/20 → #5/20: 65% → 75%, +10pp → +3 heat."""
         prev_ranks = [[7, 20]]
-        score = PostgreSQL._calc_heat_score(65, prev_ranks, [5, 20])
+        score = JiebaAnalyzer._calc_heat_score(65, prev_ranks, [5, 20])
         assert score == 68  # 65 + round(10 * 0.3) = 68
 
     def test_rank_up_big_jump(self):
         """#20/20 → #1/20: 0% → 95%, +95pp → +28 heat."""
         prev_ranks = [[20, 20]]
-        score = PostgreSQL._calc_heat_score(0, prev_ranks, [1, 20])
+        score = JiebaAnalyzer._calc_heat_score(0, prev_ranks, [1, 20])
         assert score == 28  # 0 + round(95 * 0.3) = 28
 
     def test_rank_up_multi_round(self):
         """Accumulates across multiple rounds."""
         prev_ranks = [[7, 20], [5, 20]]  # last is [5,20]
         # prev_heat=68, #5→#2: 75%→90%, delta=15, 68+15*0.3=72.5→72
-        score = PostgreSQL._calc_heat_score(68, prev_ranks, [2, 20])
+        score = JiebaAnalyzer._calc_heat_score(68, prev_ranks, [2, 20])
         assert score == 72
 
     # ── Still on list: rank down ────────────────────────────────────
@@ -64,14 +64,14 @@ class TestCalcHeatScore:
     def test_rank_down_decreases_heat(self):
         """#5/20 → #8/20: 75% → 60%, -15pp → -4.5 → -4 heat."""
         prev_ranks = [[5, 20]]
-        score = PostgreSQL._calc_heat_score(75, prev_ranks, [8, 20])
+        score = JiebaAnalyzer._calc_heat_score(75, prev_ranks, [8, 20])
         assert score == 70  # 75 + round(-15 * 0.3) = 75 - 4 = 71? No.
         # 75 - 4.5 = 70.5. Python round(70.5) = 70 (banker's rounding)
 
     def test_rank_down_severe(self):
         """#1/20 → #15/20: 95% → 25%, -70pp → -21 heat."""
         prev_ranks = [[1, 20]]
-        score = PostgreSQL._calc_heat_score(95, prev_ranks, [15, 20])
+        score = JiebaAnalyzer._calc_heat_score(95, prev_ranks, [15, 20])
         assert score == 74  # 95 + round(-70 * 0.3) = 74
 
     # ── Still on list: no change ────────────────────────────────────
@@ -79,7 +79,7 @@ class TestCalcHeatScore:
     def test_same_rank_no_change(self):
         """Same rank → heat unchanged."""
         prev_ranks = [[5, 20]]
-        score = PostgreSQL._calc_heat_score(75, prev_ranks, [5, 20])
+        score = JiebaAnalyzer._calc_heat_score(75, prev_ranks, [5, 20])
         assert score == 75
 
     # ── Different total sizes ────────────────────────────────────────
@@ -87,7 +87,7 @@ class TestCalcHeatScore:
     def test_total_changes_between_rounds(self):
         """#5/20 (75%) → #5/50 (90%): ranking stronger in larger pool."""
         prev_ranks = [[5, 20]]
-        score = PostgreSQL._calc_heat_score(75, prev_ranks, [5, 50])
+        score = JiebaAnalyzer._calc_heat_score(75, prev_ranks, [5, 50])
         assert score == 80  # 75 + round(15 * 0.3) = 80
 
     # ── Clamp boundaries ────────────────────────────────────────────
@@ -95,13 +95,13 @@ class TestCalcHeatScore:
     def test_clamp_to_100(self):
         """Heat cannot exceed 100."""
         prev_ranks = [[5, 20]]
-        score = PostgreSQL._calc_heat_score(99, prev_ranks, [1, 20])
+        score = JiebaAnalyzer._calc_heat_score(99, prev_ranks, [1, 20])
         assert score == 100  # 99 + 6 = 105 → clamped to 100
 
     def test_clamp_to_0(self):
         """Heat cannot go below 0."""
         prev_ranks = [[10, 20]]
-        score = PostgreSQL._calc_heat_score(1, prev_ranks, [20, 20])
+        score = JiebaAnalyzer._calc_heat_score(1, prev_ranks, [20, 20])
         assert score == 0
 
     # ── Rounding ────────────────────────────────────────────────────
@@ -111,7 +111,7 @@ class TestCalcHeatScore:
         prev_ranks = [[7, 20]]
         # 65% → 70%: delta=5, 5*0.3=1.5, 65+1.5=66.5
         # Python round(66.5)=66 (banker's rounding: ties to even)
-        score = PostgreSQL._calc_heat_score(65, prev_ranks, [6, 20])
+        score = JiebaAnalyzer._calc_heat_score(65, prev_ranks, [6, 20])
         assert score == 66
 
 
