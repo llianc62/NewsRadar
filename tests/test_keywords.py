@@ -23,21 +23,21 @@ def _test_config():
 # ── _clean_markdown 单元测试 ───────────────────────────────────────
 
 def test_clean_markdown_strips_images():
-    from news.crawler import clean_markdown
+    from news.analyzer.jieba import clean_markdown
     text = clean_markdown("特朗普 ![图片](https://example.com/img.png) 访问北京")
     assert "example.com" not in text
     assert "img.png" not in text
 
 
 def test_clean_markdown_strips_links():
-    from news.crawler import clean_markdown
+    from news.analyzer.jieba import clean_markdown
     text = clean_markdown("[特朗普](https://example.com/trump) 访问北京")
     assert "example.com" not in text
     assert "特朗普" in text
 
 
 def test_clean_markdown_strips_formatting():
-    from news.crawler import clean_markdown
+    from news.analyzer.jieba import clean_markdown
     text = clean_markdown("**特朗普** 访问 `北京`")
     assert "*" not in text
     assert "`" not in text
@@ -46,44 +46,44 @@ def test_clean_markdown_strips_formatting():
 # ── _extract_keywords_textrank 单元测试 ────────────────────────────
 
 def test_strips_markdown_images():
-    from news.crawler import extract_keywords_textrank
+    from news.analyzer.jieba import extract_keywords_textrank
     content = "特朗普 ![图片](https://example.com/img.png) 访问北京"
     tags = extract_keywords_textrank(content)
     assert not any("example" in t or "http" in t or "img" in t for t in tags)
 
 
 def test_strips_markdown_links():
-    from news.crawler import extract_keywords_textrank
+    from news.analyzer.jieba import extract_keywords_textrank
     content = "[特朗普](https://example.com/trump) 访问北京"
     tags = extract_keywords_textrank(content)
     assert not any("example" in t or "http" in t for t in tags)
 
 
 def test_strips_markdown_formatting():
-    from news.crawler import extract_keywords_textrank
+    from news.analyzer.jieba import extract_keywords_textrank
     content = "**特朗普** 访问 `北京`"
     tags = extract_keywords_textrank(content)
     assert not any("*" in t or "`" in t for t in tags)
 
 
 def test_empty_content_returns_empty():
-    from news.crawler import extract_keywords_textrank
+    from news.analyzer.jieba import extract_keywords_textrank
     assert extract_keywords_textrank("") == []
 
 
 def test_short_content_returns_empty():
-    from news.crawler import extract_keywords_textrank
+    from news.analyzer.jieba import extract_keywords_textrank
     assert extract_keywords_textrank("短。") == []
     assert extract_keywords_textrank("今天天气不错。明天可能下雨。") == []
 
 
 def test_whitespace_only_returns_empty():
-    from news.crawler import extract_keywords_textrank
+    from news.analyzer.jieba import extract_keywords_textrank
     assert extract_keywords_textrank("   \n  \t  ") == []
 
 
 def test_extracts_from_chinese_news():
-    from news.crawler import extract_keywords_textrank
+    from news.analyzer.jieba import extract_keywords_textrank
     content = (
         "美国前总统特朗普在G7峰会期间与日本首相高市早苗会谈，"
         "双方讨论了贸易和安全议题。特朗普表示将继续推动双边合作，"
@@ -96,7 +96,7 @@ def test_extracts_from_chinese_news():
 
 
 def test_topk_respected():
-    from news.crawler import extract_keywords_textrank
+    from news.analyzer.jieba import extract_keywords_textrank
     content = (
         "美国前总统特朗普在G7峰会期间与日本首相高市早苗会谈，"
         "双方讨论了贸易和安全议题。会谈持续约两小时。"
@@ -106,7 +106,7 @@ def test_topk_respected():
 
 
 def test_no_duplicate_tags():
-    from news.crawler import extract_keywords_textrank
+    from news.analyzer.jieba import extract_keywords_textrank
     content = (
         "美国前总统特朗普在G7峰会期间与日本首相高市早苗会谈，"
         "双方讨论了贸易和安全议题。" * 3
@@ -138,7 +138,8 @@ def test_crawler_extract_keywords_with_idf_file(monkeypatch, tmp_path):
     """有 IDF 文件时优先使用 TF-IDF"""
     import storage.s3
     monkeypatch.setattr(storage.s3.S3Client, "_ensure_bucket", lambda self: None)
-    from news.crawler import Crawler, _IDF_PATH
+    from news.crawler import Crawler
+    from news.analyzer.jieba import _IDF_PATH
 
     # 构造一个 IDF 文件，使 "公司" 的 IDF 极低（通用词）
     idf_content = """特朗普 5.0
@@ -153,7 +154,7 @@ G7 5.5
 
     # 临时替换 _IDF_PATH
     monkeypatch.setattr(
-        "news.crawler._IDF_PATH", str(idf_file),
+        "news.analyzer.jieba._IDF_PATH", str(idf_file),
     )
 
     crawler = Crawler(_test_config())

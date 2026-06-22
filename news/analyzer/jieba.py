@@ -3,16 +3,56 @@
 
 import math
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from news.analyzer.analyzer import Analyzer
-from news.parser import clean_markdown
 
 # 词典文件默认路径
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
 
+# IDF 语料路径 — 从数据库文章构建，供 TF-IDF 压低通用词使用
+_IDF_PATH = os.path.join(_DATA_DIR, "jieba_idf.txt")
 
-def _load_dict(filepath: str) -> Dict[str, float]:
+
+def clean_markdown(content: str) -> str:
+    """Remove Markdown syntax noise for cleaner NLP input."""
+    text = re.sub(r'!\[.*?\]\(.*?\)', '', content)          # 图片
+    text = re.sub(r'\[([^\]]*)\]\(.*?\)', r'\1', text)      # 链接保留文字
+    text = re.sub(r'[#*>`|~\-_]', ' ', text)                # 格式标记
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def extract_keywords_textrank(content: str, topk: int = 5) -> list[str]:
+    """从 Markdown 正文提取关键词，使用 jieba TextRank + 专有名词过滤。
+
+    Args:
+        content: Markdown 格式的 article body。
+        topk: 最多返回的关键词数量。
+
+    Returns:
+        关键词列表，或空列表当正文过短或无法提取。
+    """
+    text = clean_markdown(content)
+    if len(text) < 50:
+        return []
+
+    try:
+        import jieba.analyse
+    except ImportError:
+        return []
+
+    # 只保留专有名词类：地名/人名/机构名/其他专名
+    keywords = jieba.analyse.textrank(
+        text,
+        topK=topk,
+        withWeight=False,
+        allowPOS=('ns', 'nr', 'nt', 'nz'),
+    )
+    return keywords
+
+
+def _load_words(filepath: str) -> Dict[str, float]:
     """Load a word-weight dictionary file.
 
     Format: one entry per line — ``word  weight`` (space-separated).
@@ -138,11 +178,11 @@ class JiebaAnalyzer(Analyzer):
         """惰性加载情感词典。"""
         if self._positive_dict is not None:
             return
-        self._positive_dict = _load_dict(
+        self._positive_dict = _load_words(
             os.path.join(_DATA_DIR, "senti_positive.txt"))
-        self._negative_dict = _load_dict(
+        self._negative_dict = _load_words(
             os.path.join(_DATA_DIR, "senti_negative.txt"))
-        self._degree_dict = _load_dict(
+        self._degree_dict = _load_words(
             os.path.join(_DATA_DIR, "senti_degree.txt"))
         self._negation_set = set()
         neg_path = os.path.join(_DATA_DIR, "senti_negation.txt")
@@ -252,3 +292,110 @@ class JiebaAnalyzer(Analyzer):
         net = pos - neg
         scaled = math.tanh(net / 5.0) * 50.0  # -50 ~ +50
         return round(50 + scaled)  # 0-100
+
+    # ── Keyword extraction ─────────────────────────────────────────
+
+    def extract_keywords(self, content: str, topk: int = 5) -> list[str]:
+        """从 Markdown 正文提取关键词，TF-IDF 优先，TextRank 兜底。
+
+        尝试加载数据库构建的自定义 IDF 语料，使 TF-IDF 能自动
+        压低"在大多数文章都出现"的通用词（如 公司/企业/项目）。
+        如果 IDF 语料不可用，回退到 TextRank + 专有名词过滤。
+        """
+        text = clean_markdown(content)
+        if len(text) < 50:
+            return []
+
+        try:
+            import jieba.analyse
+        except ImportError:
+            return []
+
+        # ── TF-IDF (优先) ──────────────────────────────────────────
+        idf_path = self._ensure_idf_corpus()
+        if idf_path is not None:
+            try:
+                default_idf = jieba.analyse.idf_path
+                jieba.analyse.set_idf_path(idf_path)
+                keywords = jieba.analyse.tfidf(
+                    text,
+                    topK=topk,
+                    withWeight=False,
+                    allowPOS=('ns', 'nr', 'nt', 'nz'),
+                )
+                if default_idf:
+                    jieba.analyse.set_idf_path(default_idf)
+                if keywords:
+                    return keywords
+            except Exception:
+                pass
+
+        # ── TextRank (兜底) ─────────────────────────────────────────
+        return extract_keywords_textrank(content, topk=topk)
+
+    def _ensure_idf_corpus(self) -> Optional[str]:
+        """确保自定义 IDF 语料文件存在，不存在则从数据库构建。
+
+        Returns:
+            IDF 文件路径，或 None 当数据库无可用文章或构建失败。
+        """
+        if os.path.exists(_IDF_PATH):
+            return _IDF_PATH
+
+        if self._db is None:
+            return None
+
+        # ── 从数据库收集文章正文 ──────────────────────────────────
+        contents: List[str] = []
+        try:
+            with self._db.get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT content FROM news_articles "
+                        "WHERE content IS NOT NULL AND content != '' "
+                        "ORDER BY created_at DESC LIMIT 2000"
+                    )
+                    rows = cur.fetchall()
+        except Exception as e:
+            print(f"[Analyzer] IDF corpus query failed: {e}")
+            return None
+
+        for (body,) in rows:
+            cleaned = clean_markdown(body)
+            if len(cleaned) >= 50:
+                contents.append(cleaned)
+
+        if len(contents) < 10:
+            return None
+
+        # ── 分词 + 文档频率统计 ───────────────────────────────────
+        try:
+            import jieba
+        except ImportError:
+            return None
+
+        df: Dict[str, int] = {}
+        for text in contents:
+            words = set(jieba.cut(text))
+            for w in words:
+                if len(w) < 2:
+                    continue
+                df[w] = df.get(w, 0) + 1
+
+        total_docs = len(contents)
+
+        # ── 写入 IDF 文件 ─────────────────────────────────────────
+        os.makedirs(os.path.dirname(_IDF_PATH), exist_ok=True)
+        try:
+            with open(_IDF_PATH, "w", encoding="utf-8") as f:
+                for word, count in df.items():
+                    idf = math.log(total_docs / count)
+                    f.write(f"{word} {idf:.6f}\n")
+            print(
+                f"[Analyzer] Built IDF corpus: {len(df)} words "
+                f"from {total_docs} articles → {_IDF_PATH}"
+            )
+            return _IDF_PATH
+        except OSError as e:
+            print(f"[Analyzer] Failed to write IDF corpus: {e}")
+            return None
