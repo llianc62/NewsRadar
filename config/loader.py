@@ -178,6 +178,14 @@ def _load_web_config(raw: Dict) -> Dict:
     }
 
 
+def _load_analyzer_config(raw: Dict) -> Dict:
+    analyzer = raw.get("analyzer", {})
+    return {
+        "enabled": analyzer.get("enabled", True),
+        "backend": analyzer.get("backend", "jieba"),
+    }
+
+
 # =========================================================================
 # Main loader
 # =========================================================================
@@ -209,6 +217,7 @@ def load_config(path: str = "config.yaml") -> Dict[str, Any]:
         "storage": _load_storage_config(raw),
         "postgresql": _load_postgresql_config(raw),
         "web": _load_web_config(raw),
+        "analyzer": _load_analyzer_config(raw),
     }
 
     _print_config_sources(config)
