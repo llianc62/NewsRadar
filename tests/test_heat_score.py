@@ -115,8 +115,9 @@ class TestCalcHeatScore:
         assert score == 66
 
 
+@pytest.mark.skip(reason="Superseded by JiebaAnalyzer.analyze_heat — see test_analyzer.py")
 class TestProcessHotlistHeat:
-    """Tests for _process_hotlist_heat using mocked DB."""
+    """Tests for _process_hotlist_heat using mocked DB (removed from PostgreSQL)."""
 
     @staticmethod
     def _make_db_row(url, heat_score, ranks):

@@ -106,6 +106,9 @@ class Crawler:
         # Image processor (lazy) — shared across fetch calls
         self._image_processor: Optional[ImageProcessor] = None
 
+        # Analyzer (lazy) — shared analyzer instance
+        self._analyzer: Any = None
+
     # ── HTTP session ─────────────────────────────────────────────────
 
     @staticmethod
@@ -167,6 +170,39 @@ class Crawler:
                 max_workers=MAX_IMAGE_PROCESSOR_WORKERS
                 )
         return self._image_processor
+
+    def _get_analyzer(self):
+        if self._analyzer is None:
+            from news.analyzer import create_analyzer
+            self._analyzer = create_analyzer(self._config, db=self._get_pg_db())
+        return self._analyzer
+
+    def _query_today_hotlist(self, source_id: str) -> dict:
+        """查询当天该 source 的 DB 快照，供 analyze_heat 使用。
+
+        Returns:
+            {url: {"heat_score": int, "ranks": list}}
+        """
+        import psycopg2.extras
+
+        pg = self._get_pg_db()
+        db_map: dict = {}
+        with pg.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """SELECT url, heat_score, ranks
+                       FROM news_articles
+                       WHERE source_id = %s
+                         AND source_type = 'hotlist'
+                         AND crawled_at::date = CURRENT_DATE""",
+                    (source_id,),
+                )
+                for row in cur.fetchall():
+                    db_map[row["url"]] = {
+                        "heat_score": row["heat_score"],
+                        "ranks": row["ranks"] if row["ranks"] else [],
+                    }
+        return db_map
 
     def _build_source_tiers(self) -> dict:
         """Build ``{source_id: {tier, priority}}`` mapping from config."""
@@ -297,6 +333,29 @@ class Crawler:
         # ── Enrichment ─────────────────────────────────────────────
         if with_content:
             self.enrich_content(*all_items, with_image=with_image)
+
+        # ── Analysis ───────────────────────────────────────────────
+        analyzer = self._get_analyzer()
+        if analyzer is not None:
+            # Sentiment: analyze items that have content body
+            contentful = [it for it in all_items if it.get("content")]
+            if contentful:
+                analyzer.analyze_sentiment(contentful)
+
+            # Heat: group hotlist items by source, query DB snapshots,
+            # then process
+            hotlist_items = [it for it in all_items
+                           if isinstance(it, dict) and it.get("source_type") == "hotlist"]
+            if hotlist_items:
+                # Group by source_id
+                by_source: Dict[str, list] = {}
+                for it in hotlist_items:
+                    sid = it.get("source_id", "")
+                    by_source.setdefault(sid, []).append(it)
+
+                for sid, items in by_source.items():
+                    db_map = self._query_today_hotlist(sid)
+                    analyzer.analyze_heat(sid, items, db_map)
 
         # ── Persistence ────────────────────────────────────────────
         self.persist(*all_items, output_style=output_style)
@@ -740,6 +799,7 @@ class Crawler:
                 tags=d.get("tags", []),
                 ranks=d.get("ranks", []),
                 heat_score=d.get("heat_score", 0),
+                sentiment_score=d.get("sentiment_score", 0),
                 crawled_at=format_datetime_now(tz),
             ))
 
