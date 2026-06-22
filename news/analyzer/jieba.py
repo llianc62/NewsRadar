@@ -15,7 +15,7 @@ _DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
 _IDF_PATH = os.path.join(_DATA_DIR, "jieba_idf.txt")
 
 
-def clean_markdown(content: str) -> str:
+def clean_markdown_syntax(content: str) -> str:
     """Remove Markdown syntax noise for cleaner NLP input."""
     text = re.sub(r'!\[.*?\]\(.*?\)', '', content)          # 图片
     text = re.sub(r'\[([^\]]*)\]\(.*?\)', r'\1', text)      # 链接保留文字
@@ -33,7 +33,7 @@ def extract_keywords_textrank(content: str, topk: int = 5) -> list[str]:
     Returns:
         关键词列表，或空列表当正文过短或无法提取。
     """
-    text = clean_markdown(content)
+    text = clean_markdown_syntax(content)
     if len(text) < 50:
         return []
 
@@ -52,7 +52,7 @@ def extract_keywords_textrank(content: str, topk: int = 5) -> list[str]:
     return keywords
 
 
-def _load_words(filepath: str) -> Dict[str, float]:
+def _load_dict(filepath: str) -> Dict[str, float]:
     """Load a word-weight dictionary file.
 
     Format: one entry per line — ``word  weight`` (space-separated).
@@ -178,11 +178,11 @@ class JiebaAnalyzer(Analyzer):
         """惰性加载情感词典。"""
         if self._positive_dict is not None:
             return
-        self._positive_dict = _load_words(
+        self._positive_dict = _load_dict(
             os.path.join(_DATA_DIR, "senti_positive.txt"))
-        self._negative_dict = _load_words(
+        self._negative_dict = _load_dict(
             os.path.join(_DATA_DIR, "senti_negative.txt"))
-        self._degree_dict = _load_words(
+        self._degree_dict = _load_dict(
             os.path.join(_DATA_DIR, "senti_degree.txt"))
         self._negation_set = set()
         neg_path = os.path.join(_DATA_DIR, "senti_negation.txt")
@@ -223,7 +223,7 @@ class JiebaAnalyzer(Analyzer):
             title = self._get_value(item, "title") or ""
             content = self._get_value(item, "content") or ""
             # content 含 markdown 语法，先清理
-            content = clean_markdown(content)
+            content = clean_markdown_syntax(content)
             text = title + " " + content
 
             if not text.strip():
@@ -302,7 +302,7 @@ class JiebaAnalyzer(Analyzer):
         压低"在大多数文章都出现"的通用词（如 公司/企业/项目）。
         如果 IDF 语料不可用，回退到 TextRank + 专有名词过滤。
         """
-        text = clean_markdown(content)
+        text = clean_markdown_syntax(content)
         if len(text) < 50:
             return []
 
@@ -361,7 +361,7 @@ class JiebaAnalyzer(Analyzer):
             return None
 
         for (body,) in rows:
-            cleaned = clean_markdown(body)
+            cleaned = clean_markdown_syntax(body)
             if len(cleaned) >= 50:
                 contents.append(cleaned)
 

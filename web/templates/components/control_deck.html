@@ -33,12 +33,12 @@
     <div class="deck-sentiment">
       <div class="deck-sentiment-header">
         <span class="deck-sentiment-label">情绪分布</span>
-        <span class="deck-sentiment-numbers">利空 {{ sentiment_counts.negative }} · 中性 {{ sentiment_counts.neutral }} · 利好 {{ sentiment_counts.positive }}</span>
+        <span class="deck-sentiment-numbers">利好 {{ sentiment_counts.positive }} · 中性 {{ sentiment_counts.neutral }} · 利空 {{ sentiment_counts.negative }}</span>
       </div>
       <div class="deck-sentiment-track">
-        <div class="ds-red" style="width:{{ sentiment_pct.negative_pct }}%"></div>
+        <div class="ds-red" style="width:{{ sentiment_pct.positive_pct }}%"></div>
         <div class="ds-neutral" style="width:{{ sentiment_pct.neutral_pct }}%"></div>
-        <div class="ds-green" style="width:{{ sentiment_pct.positive_pct }}%"></div>
+        <div class="ds-green" style="width:{{ sentiment_pct.negative_pct }}%"></div>
       </div>
     </div>
 

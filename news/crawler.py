@@ -342,9 +342,9 @@ class Crawler:
         analyzer = self._get_analyzer()
         if analyzer is not None:
             # Sentiment: analyze items that have content body
-            contentful = [it for it in all_items if it.get("content")]
-            if contentful:
-                analyzer.analyze_sentiment(contentful)
+            contentful_items = [it for it in all_items if it.get("content")]
+            if contentful_items:
+                analyzer.analyze_sentiment(contentful_items)
 
             # Heat: group hotlist items by source, query DB snapshots,
             # then process

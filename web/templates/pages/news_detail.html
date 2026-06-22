@@ -26,7 +26,7 @@
     </div>
 
     <!-- Title -->
-    <h1 style="font-size: 26px; font-weight: 700; line-height: 1.45; color: var(--text); margin-bottom: 12px;">
+    <h1 class="article-title" style="font-family: 'Newsreader', 'Noto Serif SC', serif; font-size: 32px; font-weight: 600; line-height: 1.25; color: var(--text);">
       {{ article.title }}
     </h1>
 
@@ -40,11 +40,11 @@
     {% endif %}
   </header>
 
-  <!-- Divider -->
-  <div style="height: 1px; background: var(--border); margin-bottom: 24px;"></div>
+  <!-- Separator -->
+  <hr style="border: none; height: 2px; background: var(--border); margin: 8px 0 28px;">
 
   <!-- Content -->
-  <div class="article-body" style="font-size: 15px; line-height: 1.9; color: var(--text);">
+  <div class="article-body" style="font-family: 'Newsreader', 'Noto Serif SC', serif; font-size: 17px; line-height: 1.95; color: var(--text);">
     {% if article.content %}
       {{ article.content | markdown }}
     {% elif article.summary %}
@@ -84,18 +84,37 @@
 
 <style>
 /* ── Markdown body styling ── */
+/* ── Title accent bar ── */
+.article-title {
+  position: relative;
+  padding-bottom: 18px;
+  margin-bottom: 24px !important;
+}
+.article-title::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: 48px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
 .article-body h1, .article-body h2, .article-body h3,
 .article-body h4, .article-body h5, .article-body h6 {
-  font-weight: 700;
+  font-family: 'Newsreader', 'Noto Serif SC', serif;
+  font-weight: 600;
   color: var(--text);
-  margin: 28px 0 12px;
-  line-height: 1.4;
+  margin: 32px 0 14px;
+  line-height: 1.3;
+  letter-spacing: -0.2px;
 }
-.article-body h1 { font-size: 24px; }
-.article-body h2 { font-size: 20px; }
-.article-body h3 { font-size: 17px; }
+.article-body h1 { font-size: 26px; }
+.article-body h2 { font-size: 22px; }
+.article-body h3 { font-size: 18px; }
 .article-body h4 { font-size: 15px; color: var(--text-muted); }
-.article-body p { margin-bottom: 16px; }
+.article-body p { margin-bottom: 20px; }
 .article-body strong { font-weight: 700; }
 .article-body em { font-style: italic; }
 .article-body del { text-decoration: line-through; opacity: 0.7; }
@@ -213,7 +232,7 @@
 /* ── Delete: confirm modal ── */
 .modal-overlay {
   position: fixed; inset: 0; z-index: 400;
-  background: rgba(26, 26, 26, 0.32);
+  background: var(--overlay);
   backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
   display: flex; align-items: center; justify-content: center;
   opacity: 0; pointer-events: none;
@@ -272,7 +291,7 @@
 }
 .btn-ghost { background: transparent; color: var(--text-soft, var(--text-muted)); border-color: var(--border); }
 .btn-ghost:hover { color: var(--text); background: var(--bg-warm); }
-.btn-danger { background: var(--red); color: #fff; box-shadow: 0 1px 2px rgba(217,56,56,0.25); }
+.btn-danger { background: var(--red); color: #fff; box-shadow: 0 1px 2px rgba(201,58,58,0.25); }
 .btn-danger:hover { background: #b82828; box-shadow: 0 4px 12px rgba(217,56,56,0.3); }
 .btn-danger:active { transform: scale(0.98); }
 .btn-danger:disabled { opacity: 0.6; cursor: not-allowed; }

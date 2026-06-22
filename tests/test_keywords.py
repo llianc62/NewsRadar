@@ -23,22 +23,22 @@ def _test_config():
 # ── _clean_markdown 单元测试 ───────────────────────────────────────
 
 def test_clean_markdown_strips_images():
-    from news.analyzer.jieba import clean_markdown
-    text = clean_markdown("特朗普 ![图片](https://example.com/img.png) 访问北京")
+    from news.analyzer.jieba import clean_markdown_syntax
+    text = clean_markdown_syntax("特朗普 ![图片](https://example.com/img.png) 访问北京")
     assert "example.com" not in text
     assert "img.png" not in text
 
 
 def test_clean_markdown_strips_links():
-    from news.analyzer.jieba import clean_markdown
-    text = clean_markdown("[特朗普](https://example.com/trump) 访问北京")
+    from news.analyzer.jieba import clean_markdown_syntax
+    text = clean_markdown_syntax("[特朗普](https://example.com/trump) 访问北京")
     assert "example.com" not in text
     assert "特朗普" in text
 
 
 def test_clean_markdown_strips_formatting():
-    from news.analyzer.jieba import clean_markdown
-    text = clean_markdown("**特朗普** 访问 `北京`")
+    from news.analyzer.jieba import clean_markdown_syntax
+    text = clean_markdown_syntax("**特朗普** 访问 `北京`")
     assert "*" not in text
     assert "`" not in text
 

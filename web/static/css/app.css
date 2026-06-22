@@ -4,24 +4,27 @@
 
 /* ── Design Tokens ── */
 :root {
-  --bg: #faf9f6;
-  --bg-warm: #f5f2ed;
+  --bg: #ffffff;
+  --bg-warm: #f5f5f5;
   --surface: #ffffff;
-  --surface-hover: #fefcf9;
-  --border: #e8e4dd;
-  --border-light: #f0ece5;
-  --text: #1a1816;
-  --text-secondary: #6b6560;
-  --text-muted: #9c958e;
+  --surface-hover: #fafafa;
+  --border: #e5e5e5;
+  --border-light: #f0f0f0;
+  --text: #1a1a1a;
+  --text-secondary: #666666;
+  --text-muted: #999999;
   --accent: #f25f0f;
   --accent-light: #fff5f0;
   --accent-glow: rgba(242, 95, 15, 0.12);
-  --amber: #e6a817;
+  --accent-hover: #d1580c;
+  --overlay: rgba(0, 0, 0, 0.35);
+  --amber: #b8860b;
   --amber-light: #fffbed;
-  --green: #2d9a4e;
+  --green: #2d7a3e;
   --green-light: #eaf7ef;
-  --red: #d93838;
+  --red: #c93a3a;
   --red-light: #fdf0f0;
+  --red-hover: #a62a2a;
   --blue: #2b6fcf;
   --blue-light: #eef5fd;
   --purple: #7c3aed;
