@@ -41,7 +41,7 @@ class TestBuildRow:
             crawl_date="2026-06-21",
             crawled_from="local",
         )
-        assert len(row) == 20
+        assert len(row) == 21
 
     def test_field_positions(self):
         """Verify key field positions in the tuple."""

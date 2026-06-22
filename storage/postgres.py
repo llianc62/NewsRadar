@@ -42,7 +42,8 @@ _COLUMNS = """title, source_id, source_name, source_type,
         guid, published_at, summary, author,
         content, category, tags,
         crawled_from,
-        crawled_at, ranks, heat_score"""
+        crawled_at, ranks, heat_score,
+        sentiment_score"""
 
 _INSERT_PREFIX = f"INSERT INTO news_articles ({_COLUMNS}) VALUES %s"
 
@@ -459,7 +460,7 @@ class PostgreSQL:
         crawl_date: str,
         crawled_from: str,
     ) -> Tuple:
-        """Convert a NewsItem into a 20-element tuple for batch INSERT."""
+        """Convert a NewsItem into a 21-element tuple for batch INSERT."""
         ts_crawled = _to_timestamptz(item.crawled_at, crawl_date)
         ts_pub = _to_timestamptz(item.published_at, None)
 
@@ -484,6 +485,7 @@ class PostgreSQL:
             ts_crawled,
             json.dumps(item.ranks) if item.ranks else '[]',
             item.heat_score,
+            item.sentiment_score,
         )
 
     # ── Heat score ──────────────────────────────────────────────────
