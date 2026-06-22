@@ -58,3 +58,33 @@ class TestAnalyzeSentiment:
         items = [{"title": "", "content": ""}]
         analyzer.analyze_sentiment(items)
         assert items[0]["sentiment_score"] == 50
+
+
+class TestCreateAnalyzer:
+    """Tests for create_analyzer factory."""
+
+    def test_creates_jieba_analyzer(self):
+        """backend=jieba → JiebaAnalyzer."""
+        from news.analyzer import create_analyzer
+        from news.analyzer.jieba import JiebaAnalyzer
+
+        cfg = {"analyzer": {"enabled": True, "backend": "jieba"}}
+        a = create_analyzer(cfg)
+        assert isinstance(a, JiebaAnalyzer)
+
+    def test_disabled_returns_none(self):
+        """enabled=false → None."""
+        from news.analyzer import create_analyzer
+
+        cfg = {"analyzer": {"enabled": False, "backend": "jieba"}}
+        a = create_analyzer(cfg)
+        assert a is None
+
+    def test_missing_config_returns_jieba_by_default(self):
+        """缺失 analyzer config → 默认返回 JiebaAnalyzer（enabled=True）。"""
+        from news.analyzer import create_analyzer
+        from news.analyzer.jieba import JiebaAnalyzer
+
+        cfg = {}
+        a = create_analyzer(cfg)
+        assert isinstance(a, JiebaAnalyzer)
