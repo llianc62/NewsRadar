@@ -16,7 +16,7 @@ def _make_test_item(**overrides):
         mobile_url="",
         guid="",
         rank=1,
-        ranks=[1],
+        ranks=[[1, 20]],
         summary="summary",
         author="author",
         content="content",
@@ -32,7 +32,7 @@ def _make_test_item(**overrides):
 class TestBuildRow:
     """Tests for PostgreSQL._build_row static method."""
 
-    def test_returns_19_element_tuple(self):
+    def test_returns_20_element_tuple(self):
         row = PostgreSQL._build_row(
             _make_test_item(),
             source_id="src1",
@@ -41,7 +41,7 @@ class TestBuildRow:
             crawl_date="2026-06-21",
             crawled_from="local",
         )
-        assert len(row) == 19
+        assert len(row) == 20
 
     def test_field_positions(self):
         """Verify key field positions in the tuple."""
@@ -58,7 +58,7 @@ class TestBuildRow:
         assert row[14] == "tech"            # category
         assert row[15] == ["AI", "ML"]      # tags
         assert row[16] == "local"           # crawled_from
-        assert row[18] == [1]               # ranks
+        assert row[18] == '[[1, 20]]'       # ranks (jsonb → json.dumps)
 
     def test_none_category_becomes_none(self):
         row = PostgreSQL._build_row(

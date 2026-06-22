@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS news_articles (
     confidence      INTEGER DEFAULT NULL CHECK (confidence BETWEEN 0 AND 100),
     category        VARCHAR(50) DEFAULT NULL,
     rank            SMALLINT DEFAULT NULL,
-    ranks           SMALLINT[] DEFAULT '{}',
+    ranks           JSONB DEFAULT '[]',
     crawled_from    VARCHAR(10) NOT NULL DEFAULT 'local' CHECK (crawled_from IN ('local', 'cloud')),
     is_analyzed     BOOLEAN NOT NULL DEFAULT FALSE,
     published_at     TIMESTAMPTZ DEFAULT NULL,

@@ -739,6 +739,7 @@ class Crawler:
                 category=d.get("category", ""),
                 tags=d.get("tags", []),
                 ranks=d.get("ranks", []),
+                heat_score=d.get("heat_score", 0),
                 crawled_at=format_datetime_now(tz),
             ))
 
@@ -1035,6 +1036,7 @@ class Crawler:
                 url=row.get("url", ""),
                 mobile_url=row.get("mobile_url", ""),
                 rank=row.get("rank") or 0,
+                heat_score=row.get("heat_score") or 0,
                 guid=row.get("guid", ""),
                 published_at=row.get("published_at", ""),
                 summary=row.get("summary", ""),

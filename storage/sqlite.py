@@ -80,6 +80,7 @@ class Sqlite:
         migrations = [
             "ALTER TABLE news_items ADD COLUMN category TEXT DEFAULT ''",
             "ALTER TABLE news_items ADD COLUMN tags TEXT DEFAULT ''",
+            "ALTER TABLE news_items ADD COLUMN heat_score INTEGER DEFAULT NULL",
         ]
         for stmt in migrations:
             try:
@@ -131,10 +132,12 @@ class Sqlite:
                         """INSERT OR IGNORE INTO news_items
                            (title, source_id, source_name, source_type,
                             tier, priority, url, mobile_url, rank,
+                            heat_score,
                             guid, published_at, summary, author,
                             category, tags, created_at)
                            VALUES (
                             ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                            ?,
                             ?, ?, ?, ?, ?, ?, ?
                            )""",
                         (
@@ -147,6 +150,7 @@ class Sqlite:
                             item.url,
                             item.mobile_url,
                             item.rank,
+                            item.heat_score,
                             item.guid,
                             item.published_at,
                             item.summary,

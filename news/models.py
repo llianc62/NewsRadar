@@ -24,7 +24,8 @@ class NewsItem:
     author: str = ""
     category: str = ""
     tags: List[str] = field(default_factory=list)
-    ranks: List[int] = field(default_factory=list)
+    ranks: List = field(default_factory=list)  # [[rank, total], ...]
+    heat_score: int = 0     # 热度值 0-100
     published_at: str = ""
     crawled_at: str = ""
 

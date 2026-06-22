@@ -141,7 +141,10 @@ class NewsFetcher:
                     else:
                         published_date = datetime.now().strftime("%Y-%m-%d")
 
-                    for index, item in enumerate(data.get("items", []), 1):
+                    raw_items = data.get("items", [])
+                    total = len(raw_items)
+
+                    for index, item in enumerate(raw_items, 1):
                         title = item.get("title")
                         # Skip invalid titles (None, float, empty)
                         if (
@@ -154,11 +157,13 @@ class NewsFetcher:
                         url = item.get("url", "")
                         mobile_url = item.get("mobileUrl", "")
 
+                        rank_entry = [index, total]
+
                         if title in results[id_value]:
-                            results[id_value][title]["ranks"].append(index)
+                            results[id_value][title]["ranks"].append(rank_entry)
                         else:
                             results[id_value][title] = {
-                                "ranks": [index],
+                                "ranks": [rank_entry],
                                 "url": url,
                                 "mobileUrl": mobile_url,
                                 "published_at": published_date,
@@ -243,7 +248,7 @@ class NewsnowFetcher(Fetcher):
                     "source_type": "hotlist",
                     "url": info.get("url", ""),
                     "mobile_url": info.get("mobileUrl", ""),
-                    "rank": ranks[0] if ranks else 99,
+                    "rank": ranks[0][0] if ranks else 99,
                     "guid": "",
                     "published_at": info.get("published_at", ""),
                     "summary": "",
@@ -252,6 +257,9 @@ class NewsnowFetcher(Fetcher):
                     "category": "",
                     "tags": [],
                     "ranks": ranks,
+                    "heat_score": round(
+                        max(0, min(100, (1 - ranks[0][0] / ranks[0][1]) * 100))
+                    ) if ranks else 0,
                 })
 
         return items

@@ -319,27 +319,46 @@ class HtmlParser:
         return ""
 
     @staticmethod
-    def _beautify_markdown_formatting(markdown: str) -> str:
-        """Remove UI noise that trafilatura picks up from interactive
-        widgets (e.g. praise button ``- +1`` on thepaper.cn). Normalize
-        ``**`` bold markers for consistency.
+    def _handle_markdown_bold(markdown: str) -> str:
+        """Normalize ``**`` bold markers: strip internal spaces, add
+        external spaces where markers abut text.
 
-        1. Strip stray spaces *inside* the markers so all bold is
-           ``**text**`` (fixes asymmetric ``**text **`` etc.).
-        2. Insert a space *outside* when the marker abuts external
-           text (e.g. ``是**text**普`` → ``是 **text** 普``).
-        3. praise button ``- +1`` on thepaper.cn.
+        Splits on ``**`` so bold spans are tracked explicitly — plain
+        regex cannot distinguish opening-``**`` from closing-``**``,
+        causing adjacent bold spans (``**a**文字**b**``) to be mangled.
         """
+        parts = markdown.split("**")
+        if len(parts) < 2:
+            return markdown
 
-        # Remove UI noise
+        # Odd indices are bold content — strip stray leading/trailing spaces.
+        for i in range(1, len(parts), 2):
+            parts[i] = parts[i].strip()
+
+        # Rebuild, inserting a space between ** and abutting text.
+        result = [parts[0]]
+        for i in range(1, len(parts)):
+            prev, cur = parts[i - 1], parts[i]
+            if i % 2 == 1:          # entering bold
+                if prev and not prev[-1].isspace():
+                    result.append(" ")
+                result.append(f"**{cur}")
+            else:                   # leaving bold
+                result.append("**")
+                need_space = cur and not cur[0].isspace()
+                if need_space or (not cur and i + 1 < len(parts)):
+                    result.append(" ")
+                result.append(cur)
+
+        return "".join(result)
+
+    @staticmethod
+    def _beautify_markdown_formatting(markdown: str) -> str:
+        """Post-process trafilatura output: normalize bold formatting and
+        remove praise-button noise (``- +1``) from thepaper.cn widgets.
+        """
         markdown = re.sub(r"^- \+1\n+(?=# )", "", markdown, count=1)
-        # Normalize internal spacing: strip spaces between ** and content
-        markdown = re.sub(r"\*\* +", "**", markdown)
-        markdown = re.sub(r" +\*\*", "**", markdown)
-        # Add external spacing: space between **...** and adjacent text
-        markdown = re.sub(r"([^\s*])(\*\*.*?\*\*)", r"\1 \2", markdown)
-        markdown = re.sub(r"(\*\*.*?\*\*)([^\s*])", r"\1 \2", markdown)
-        return markdown
+        return HtmlParser._handle_markdown_bold(markdown)
 
     @staticmethod
     def _extract_markdown_heading(markdown: str) -> str:

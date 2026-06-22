@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS news_items (
     url TEXT DEFAULT '',
     mobile_url TEXT DEFAULT '',
     rank INTEGER,
+    heat_score INTEGER DEFAULT NULL,
     guid TEXT,
     published_at TEXT,
     summary TEXT,

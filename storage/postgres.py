@@ -42,7 +42,7 @@ _COLUMNS = """title, source_id, source_name, source_type,
         guid, published_at, summary, author,
         content, category, tags,
         crawled_from,
-        crawled_at, ranks"""
+        crawled_at, ranks, heat_score"""
 
 _INSERT_PREFIX = f"INSERT INTO news_articles ({_COLUMNS}) VALUES %s"
 
@@ -56,6 +56,8 @@ _UPDATE_SET = """title = EXCLUDED.title,
         summary = EXCLUDED.summary,
         category = EXCLUDED.category,
         tags = EXCLUDED.tags,
+        ranks = EXCLUDED.ranks,
+        heat_score = EXCLUDED.heat_score,
         content = CASE
             WHEN news_articles.content IS NULL OR news_articles.content = ''
             THEN EXCLUDED.content
@@ -274,6 +276,29 @@ class PostgreSQL:
                     )
                     conn.commit()
                     print("[DB] Migration complete: failed_tasks table created.")
+
+                # Migration 004: change ranks column from SMALLINT[] to JSONB
+                # for heat_score tracking with [rank, total] snapshots.
+                cur.execute(
+                    """SELECT data_type
+                       FROM information_schema.columns
+                       WHERE table_schema = 'public'
+                         AND table_name = 'news_articles'
+                         AND column_name = 'ranks'"""
+                )
+                col_type = cur.fetchone()
+                if col_type and col_type[0] == 'ARRAY':
+                    print("[DB] Migrating: changing ranks from SMALLINT[] to JSONB...")
+                    cur.execute(
+                        """ALTER TABLE news_articles
+                           ALTER COLUMN ranks TYPE JSONB USING '[]'::jsonb"""
+                    )
+                    cur.execute(
+                        """ALTER TABLE news_articles
+                           ALTER COLUMN ranks SET DEFAULT '[]'::jsonb"""
+                    )
+                    conn.commit()
+                    print("[DB] Migration complete: ranks column converted to JSONB.")
         finally:
             self._pool.putconn(conn)
 
@@ -336,6 +361,17 @@ class PostgreSQL:
         """
         if source_tiers is None:
             source_tiers = {}
+
+        # Process heat scores for hotlist items (before building rows).
+        # Heat computation needs today's DB snapshot → done per source
+        # upfront so _build_row picks up the computed values.
+        for source_id, news_list in news_data.items.items():
+            hotlist_items = [
+                item for item in news_list
+                if item.source_type == "hotlist" and item.url
+            ]
+            if hotlist_items:
+                self._process_hotlist_heat(source_id, hotlist_items)
 
         # Partition items by conflict-target type
         hotlist_rows: List[Tuple] = []
@@ -423,7 +459,7 @@ class PostgreSQL:
         crawl_date: str,
         crawled_from: str,
     ) -> Tuple:
-        """Convert a NewsItem into a 19-element tuple for batch INSERT."""
+        """Convert a NewsItem into a 20-element tuple for batch INSERT."""
         ts_crawled = _to_timestamptz(item.crawled_at, crawl_date)
         ts_pub = _to_timestamptz(item.published_at, None)
 
@@ -446,8 +482,120 @@ class PostgreSQL:
             item.tags if item.tags else [],
             crawled_from,
             ts_crawled,
-            item.ranks if item.ranks else [],
+            json.dumps(item.ranks) if item.ranks else '[]',
+            item.heat_score,
         )
+
+    # ── Heat score ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _calc_heat_score(
+        prev_heat: Optional[int],
+        prev_ranks: list,       # [[7,20], [5,20]]
+        new_ranks_entry: list,  # [rank, total] from current round
+    ) -> int:
+        """Calculate heat score, returns 0-100."""
+        new_rank, new_total = new_ranks_entry
+        if not prev_ranks or prev_heat is None:
+            # First appearance: percentile
+            return round(max(0, min(100, (1 - new_rank / new_total) * 100)))
+
+        # Still on the list: incremental adjustment
+        last_r, last_t = prev_ranks[-1]
+        last_pct = (1 - last_r / last_t) * 100
+        new_pct = (1 - new_rank / new_total) * 100
+        delta = new_pct - last_pct  # percentage-point difference
+
+        return round(max(0, min(100, prev_heat + delta * 0.3)))
+
+    def _process_hotlist_heat(
+        self,
+        source_id: str,
+        items: list,
+    ) -> None:
+        """Process heat score for hotlist items of one source.
+
+        Compares this round's items against today's DB records for the
+        same source, then classifies each URL as:
+
+        - New (first appearance) → percentile-based score
+        - Existing (still on list) → delta-adjusted score
+        - Dropped (in DB but not this round) → ×0.7 decay
+
+        Items are mutated in-place: ``heat_score`` and ``ranks`` are set.
+        """
+        # Filter: only items with valid ranking data participate in heat
+        # calculation.  Items without ranks (e.g. RSS, or synced data)
+        # are skipped — they keep their existing heat_score.
+        valid_items = [it for it in items if it.ranks]
+
+        # ① Query today's DB records for this source (as previous snapshot)
+        db_map: dict = {}
+        with self.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """SELECT url, heat_score, ranks
+                       FROM news_articles
+                       WHERE source_id = %s
+                         AND source_type = 'hotlist'
+                         AND crawled_at::date = CURRENT_DATE""",
+                    (source_id,),
+                )
+                for row in cur.fetchall():
+                    db_map[row["url"]] = {
+                        "heat_score": row["heat_score"],
+                        "ranks": row["ranks"] if row["ranks"] else [],
+                    }
+
+        # ② Compare sets
+        this_urls = {item.url for item in valid_items if item.url}
+        db_urls = set(db_map.keys())
+
+        new_urls = this_urls - db_urls
+        existing_urls = this_urls & db_urls
+        dropped_urls = db_urls - this_urls
+
+        # ③ First appearance — percentile
+        for item in valid_items:
+            if item.url in new_urls:
+                r, t = item.ranks[0]
+                item.heat_score = round(
+                    max(0, min(100, (1 - r / t) * 100))
+                )
+                # Keep only the latest ranks entry for history tracking
+                item.ranks = [[r, t]]
+
+        # ④ Still on list — delta adjustment
+        for item in valid_items:
+            if item.url in existing_urls:
+                prev = db_map[item.url]
+                item.heat_score = PostgreSQL._calc_heat_score(
+                    prev_heat=prev["heat_score"],
+                    prev_ranks=prev["ranks"],
+                    new_ranks_entry=item.ranks[0],
+                )
+                item.ranks = (prev["ranks"] or []) + [item.ranks[0]]
+
+        # ⑤ Dropped from list — ×0.7 decay
+        if dropped_urls:
+            with self.get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """UPDATE news_articles
+                           SET heat_score = CAST(
+                               ROUND(GREATEST(0, LEAST(100,
+                                   COALESCE(heat_score, 0) * 0.7
+                               ))) AS INTEGER
+                           )
+                           WHERE source_id = %s
+                             AND source_type = 'hotlist'
+                             AND url = ANY(%s)""",
+                        (source_id, list(dropped_urls)),
+                    )
+            print(
+                f"[DB] Heat decay: {len(dropped_urls)} URLs dropped"
+                f" from {source_id}"
+            )
 
     def _execute_batch(
         self,

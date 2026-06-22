@@ -81,6 +81,7 @@ class TestInitSchema:
             [True],    # migration 001: idx_fulltext has content
             [True],    # migration 002: idx_fulltext_trgm exists
             [True],    # migration 003: failed_tasks table exists
+            ["jsonb"], # migration 004: ranks column already JSONB
         ]
 
         pg_unconnected.init_schema()
@@ -101,6 +102,7 @@ class TestInitSchema:
             [True],   # migration 001: ok
             [True],   # migration 002: ok
             [True],   # migration 003: ok
+            ["jsonb"], # migration 004: ranks column already JSONB
         ]
 
         pg_unconnected.init_schema()
@@ -123,6 +125,7 @@ class TestRunMigrations:
             [idx_fulltext_with_content],
             [idx_trgm_exists],
             [True],  # migration 003: failed_tasks table exists
+            ["jsonb"],  # migration 004: ranks column already JSONB
         ]
         return mock_cursor
 
@@ -165,7 +168,7 @@ class TestRunMigrations:
 
         # Reset mock for second call
         mock_cur2 = MagicMock()
-        mock_cur2.fetchone.side_effect = [[True], [True], [True]]
+        mock_cur2.fetchone.side_effect = [[True], [True], [True], ["jsonb"]]
         pg_unconnected._pool.getconn.return_value.cursor.return_value.__enter__.return_value = mock_cur2
 
         pg_unconnected._run_migrations()
