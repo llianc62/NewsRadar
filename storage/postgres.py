@@ -300,6 +300,7 @@ class PostgreSQL:
                     )
                     conn.commit()
                     print("[DB] Migration complete: ranks column converted to JSONB.")
+
         finally:
             self._pool.putconn(conn)
 
@@ -1046,6 +1047,24 @@ class PostgreSQL:
         with self.get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute("DELETE FROM news_articles WHERE id = %s", (article_id,))
+                return cur.rowcount > 0
+
+    def set_sentiment_score(self, article_id: int, score: int) -> bool:
+        """Set the sentiment score for an article (user override).
+
+        Args:
+            article_id: Article ID.
+            score: Sentiment score (0, 30, 60, 80, 100).
+
+        Returns:
+            True if the article was found and updated, False otherwise.
+        """
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE news_articles SET sentiment_score = %s WHERE id = %s",
+                    (score, article_id),
+                )
                 return cur.rowcount > 0
 
     def save_article_image(

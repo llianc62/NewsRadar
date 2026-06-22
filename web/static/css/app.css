@@ -1436,3 +1436,95 @@ a { color: inherit; text-decoration: none; }
   .action-divider { display: none; }
   .action-btn-group { width: 100%; justify-content: center; }
 }
+/* ═══════════════════════════════════════════
+   SENTIMENT SCORE POPOVER (news detail)
+   ═══════════════════════════════════════════ */
+.score-trigger-wrap {
+  position: relative;
+  /* wrapper handles :hover so moving from btn → popover stays in hover zone */
+}
+.score-popover {
+  position: absolute;
+  right: calc(100% + 16px);
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 100;
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  padding: 14px 15px;
+  opacity: 0; visibility: hidden;
+  transform: translateY(-50%) translateX(8px);
+  transition: opacity 0.2s var(--ease-out-expo),
+              visibility 0.2s var(--ease-out-expo),
+              transform 0.25s var(--ease-spring);
+}
+.score-trigger-wrap:hover .score-popover {
+  opacity: 1; visibility: visible;
+  transform: translateY(-50%) translateX(0);
+}
+.score-popover::after {
+  content: '';
+  position: absolute;
+  right: -5px; top: calc(50% - 5px);
+  width: 10px; height: 10px;
+  background: var(--surface);
+  border-right: 1px solid var(--border-light);
+  border-top: 1px solid var(--border-light);
+  transform: rotate(45deg);
+}
+
+.score-popover-header {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.8px;
+  color: var(--text-muted); text-transform: uppercase;
+  margin-bottom: 10px;
+  text-align: center;
+}
+
+/* Pill row */
+.score-pill-row { display: flex; gap: 5px; }
+
+.score-pill {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  width: 52px; padding: 12px 0 10px;
+  border: 1px solid var(--border-light);
+  border-radius: 14px;
+  background: transparent;
+  cursor: pointer; font-family: inherit;
+  transition: all 0.2s var(--ease-out-expo);
+  outline: none;
+}
+.score-pill:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 6px 16px rgba(0,0,0,0.06);
+}
+.score-pill:active { transform: scale(0.95) translateY(0); }
+
+/* A股配色：红涨绿跌 */
+.score-pill[data-score="100"] { --_sc: #cf1a1a; --_sbg: #fef2f2; }
+.score-pill[data-score="80"]  { --_sc: #e04040; --_sbg: #fff5f5; }
+.score-pill[data-score="60"]  { --_sc: #a8a29e; --_sbg: #fafaf9; }
+.score-pill[data-score="30"]  { --_sc: #22a522; --_sbg: #f5fdf5; }
+.score-pill[data-score="0"]   { --_sc: #1a7a1a; --_sbg: #f0fdf0; }
+.score-pill.selected { border-color: var(--_sc); background: var(--_sbg); }
+
+.score-pill-emoji { font-size: 18px; transition: transform 0.2s var(--ease-spring); }
+.score-pill:hover .score-pill-emoji { transform: scale(1.25); }
+
+.score-pill-num {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 14px; font-weight: 700;
+}
+.score-pill[data-score="100"] .score-pill-num { color: #cf1a1a; }
+.score-pill[data-score="80"]  .score-pill-num { color: #e04040; }
+.score-pill[data-score="60"]  .score-pill-num { color: #78716c; }
+.score-pill[data-score="30"]  .score-pill-num { color: #22a522; }
+.score-pill[data-score="0"]   .score-pill-num { color: #15803d; }
+
+.score-pill-label {
+  font-size: 9px; font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+}
+.score-pill.selected .score-pill-label { color: var(--text); }
+

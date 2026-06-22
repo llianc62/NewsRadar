@@ -31,8 +31,16 @@
     </h1>
 
     <!-- Tags -->
-    {% if article.tags %}
+    {% set sentiment_score = article.get('sentiment_score') %}
+    {% if sentiment_score is not none or article.tags %}
     <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+      {% if sentiment_score is not none and sentiment_score >= 67 %}
+      <span style="font-size: 11px; padding: 4px 10px; border-radius: 12px; background: #fef2f2; color: #cf1a1a; font-weight: 600;">利好</span>
+      {% elif sentiment_score is not none and sentiment_score <= 33 %}
+      <span style="font-size: 11px; padding: 4px 10px; border-radius: 12px; background: #f0fdf4; color: #1a7a1a; font-weight: 600;">利空</span>
+      {% elif sentiment_score is not none %}
+      <span style="font-size: 11px; padding: 4px 10px; border-radius: 12px; background: #fafaf9; color: #78716c; font-weight: 600;">中性</span>
+      {% endif %}
       {% for tag in article.tags %}
       <span style="font-size: 11px; padding: 4px 10px; border-radius: 12px; background: var(--bg-warm); color: var(--text-muted);">{{ tag }}</span>
       {% endfor %}
@@ -311,6 +319,33 @@
             title="重新抓取">
       {{ icon_svg("refresh") | safe }}
     </button>
+    <!-- Sentiment score -->
+    {% set us = article.get('sentiment_score') %}
+    <div class="score-trigger-wrap" id="scoreWrap">
+      <button class="tool-btn" title="你的看法">
+        {{ icon_svg("gauge") | safe }}
+      </button>
+      <div class="score-popover">
+        <div class="score-popover-header">你的判断</div>
+        <div class="score-pill-row">
+          <button class="score-pill{% if us == 0 %} selected{% endif %}" data-score="0" onclick="submitScore(0, this)">
+            <span class="score-pill-emoji">😤</span><span class="score-pill-num">0</span><span class="score-pill-label">强烈看空</span>
+          </button>
+          <button class="score-pill{% if us == 30 %} selected{% endif %}" data-score="30" onclick="submitScore(30, this)">
+            <span class="score-pill-emoji">😟</span><span class="score-pill-num">30</span><span class="score-pill-label">偏空</span>
+          </button>
+          <button class="score-pill{% if us == 60 %} selected{% endif %}" data-score="60" onclick="submitScore(60, this)">
+            <span class="score-pill-emoji">😐</span><span class="score-pill-num">60</span><span class="score-pill-label">中性</span>
+          </button>
+          <button class="score-pill{% if us == 80 %} selected{% endif %}" data-score="80" onclick="submitScore(80, this)">
+            <span class="score-pill-emoji">😊</span><span class="score-pill-num">80</span><span class="score-pill-label">偏多</span>
+          </button>
+          <button class="score-pill{% if us == 100 %} selected{% endif %}" data-score="100" onclick="submitScore(100, this)">
+            <span class="score-pill-emoji">🤩</span><span class="score-pill-num">100</span><span class="score-pill-label">强烈看多</span>
+          </button>
+        </div>
+      </div>
+    </div>
     <button class="tool-btn danger" id="delete-btn" onclick="openDeleteModal()" title="删除文章">
       {{ icon_svg("trash") | safe }}
     </button>
@@ -358,6 +393,51 @@ function goBack(e) {
   } else {
     window.location.href = '/hot-news';
   }
+}
+
+// ── Sentiment score ──
+var SCORE_COLORS = {
+  0:   '#1a7a1a',
+  30:  '#22a522',
+  60:  '#78716c',
+  80:  '#e04040',
+  100: '#cf1a1a',
+};
+var SCORE_LABELS = {
+  0:   '强烈看空',
+  30:  '偏空',
+  60:  '中性',
+  80:  '偏多',
+  100: '强烈看多',
+};
+var SCORE_EMOJI = {
+  0:  '😤',
+  30: '😟',
+  60: '😐',
+  80: '😊',
+  100:'🤩',
+};
+
+function submitScore(score, el) {
+  fetch('/api/news/' + ARTICLE_ID + '/sentiment-score', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ score: score }),
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.ok) {
+        // Deselect all pills, select this one
+        var wrap = document.getElementById('scoreWrap');
+        wrap.querySelectorAll('.score-pill').forEach(function(p) { p.classList.remove('selected'); });
+        el.classList.add('selected');
+        // Toast
+        showAppToast('已评分 ' + score + ' 分', SCORE_LABELS[score] + ' ' + SCORE_EMOJI[score], 'done');
+      } else {
+        showAppToast('评分失败', data.error || '请稍后重试', 'fail');
+      }
+    })
+    .catch(function() { showAppToast('网络错误', '请稍后重试', 'fail'); });
 }
 
 // ── Refetch (kept lightweight, matching prior behaviour) ──

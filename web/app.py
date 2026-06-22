@@ -61,6 +61,7 @@ ICONS = {
     "arrow-up": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 16a1 1 0 0 0 1-1v-2a1 1 0 0 1 1-1h3.293a.707.707 0 0 0 .5-1.207l-6.939-6.939a1.207 1.207 0 0 0-1.708 0l-6.94 6.94a.707.707 0 0 0 .5 1.206H8a1 1 0 0 1 1 1v2a1 1 0 0 0 1 1z"/><path d="M9 20h6"/></svg>',
     "trash": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
     "alert-triangle": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
+    "gauge": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>',
 }
 # ── Refetch state (in-memory) ─────────────────────────────────────
 
@@ -693,6 +694,32 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
 
         _refetch_executor.submit(_run_refetch, article_id, crawler, notif, db)
         return {"ok": True, "task": task}
+
+    @app.post("/api/news/{article_id}/sentiment-score")
+    async def set_user_sentiment_score(article_id: int, request: Request):
+        """Set user sentiment score for an article.
+
+        Accepts JSON ``{"score": <int>}`` where score is one of 0, 30, 60, 80, 100.
+        """
+        ALLOWED_SCORES = {0, 30, 60, 80, 100}
+        try:
+            body = await request.json()
+        except Exception:
+            return JSONResponse(
+                {"ok": False, "error": "无效的请求体"}, status_code=400,
+            )
+        score = body.get("score")
+        if score not in ALLOWED_SCORES:
+            return JSONResponse(
+                {"ok": False, "error": f"分数必须是 {sorted(ALLOWED_SCORES)} 之一"},
+                status_code=400,
+            )
+        updated = db.set_sentiment_score(article_id, score)
+        if not updated:
+            return JSONResponse(
+                {"ok": False, "error": "文章不存在"}, status_code=404,
+            )
+        return {"ok": True, "score": score}
 
     @app.delete("/api/news/{article_id}")
     async def delete_article(article_id: int):
