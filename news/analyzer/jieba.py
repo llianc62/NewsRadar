@@ -6,7 +6,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from news.analyzer.analyzer import Analyzer
-from news.crawler import clean_markdown
+from news.parser import clean_markdown
 
 # 词典文件默认路径
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")

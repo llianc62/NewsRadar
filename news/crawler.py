@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from news.fetcher import NewsnowFetcher, RssFetcher
-from news.parser import HtmlParser
+from news.parser import HtmlParser, clean_markdown
 from news.images import ImageProcessor
 from news.models import NewsData, NewsItem
 from storage.files import LocalStorage, S3Storage
@@ -1199,14 +1199,6 @@ class Crawler:
 # TF-IDF can penalise words that appear in nearly every document
 # ("公司", "企业", "项目") and reward distinctive ones.
 _IDF_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "jieba_idf.txt")
-
-
-def clean_markdown(content: str) -> str:
-    """Remove Markdown syntax noise for cleaner NLP input."""
-    text = re.sub(r'!\[.*?\]\(.*?\)', '', content)          # 图片
-    text = re.sub(r'\[([^\]]*)\]\(.*?\)', r'\1', text)      # 链接保留文字
-    text = re.sub(r'[#*>`|~\-_]', ' ', text)                # 格式标记
-    return re.sub(r'\s+', ' ', text).strip()
 
 
 def extract_keywords_textrank(content: str, topk: int = 5) -> list[str]:

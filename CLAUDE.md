@@ -72,10 +72,10 @@ Typer-based CLI with commands registered as submodules:
 
 ### Dual-storage design
 
-- **PostgreSQL** (`storage/postgres.py`) — canonical store for the local daemon. Schema with partial unique indexes for dedup (hotlist: `source_id + url`, RSS: `source_id + guid`). Full-text search via GIN index. Uses `ThreadedConnectionPool` with batch UPSERT templates — `_UPDATE_SET` preserves existing content on conflict while `_UPDATE_SET_OVERWRITE` replaces it.
-- **SQLite + S3** (`storage/sqlite.py`, `storage/s3.py`) — cloud CI backend. Each day gets its own `.db` file, uploaded to S3. The notifier downloads and queries these files.
+- **PostgreSQL** (`storage/postgres.py`) — canonical store for the local daemon. Schema with partial unique indexes for dedup (hotlist: `source_id + url`, RSS: `source_id + guid`). Full-text search via GIN index with two search paths: `to_tsvector('simple', ...)` for exact CJK matching (via pg_bigm/pg_trgm), and `ILIKE` with trigram index for fuzzy CJK search. Uses `ThreadedConnectionPool` with batch UPSERT templates — `_UPDATE_SET` preserves existing content on conflict while `_UPDATE_SET_OVERWRITE` replaces it (used for manual/articles that need full refresh).
+- **SQLite + S3** (`storage/sqlite.py`, `storage/s3.py`) — cloud CI backend. Each day gets its own `.db` file, uploaded to S3. The notifier downloads and queries these files. INSERT OR IGNORE dedup — write-once per item per day.
 - **Cloud sync** (`Crawler.sync_from_cloud`) — downloads daily SQLite DBs from S3, filters to rows newer than PG's latest cloud `crawled_at`, enriches incremental content (body + images), then merges into PostgreSQL via **UPSERT** (`skip_existing=False`, `crawled_from="cloud"`) so previously synced rows get metadata refreshed on re-crawl — not skipped.
-- **File storage** (`storage/files.py`) — unified `FileStorage` ABC with `LocalStorage` (filesystem) and `S3Storage` (MinIO/S3-compatible) implementations. Used by `ImageProcessor` for article image storage. Factory: `create_storage(config)`.
+- **File storage** (`storage/files.py`) — unified `FileStorage` ABC with `LocalStorage` (filesystem) and `S3Storage` (MinIO/S3-compatible) implementations. Two-method interface (`save`/`get`). Used by `ImageProcessor` for article image storage.
 
 ### News fetch pipeline
 
@@ -86,13 +86,41 @@ Config sources ──► NewsnowFetcher (hot-list API) ──► NewsData ──
 ```
 
 - `news/fetcher/` — `Fetcher` ABC, `NewsnowFetcher` (hot-list API with retry + jitter), `RssFetcher` (RSS 2.0 / Atom / JSON Feed 1.1)
-- `news/models.py` — `NewsItem` and `NewsData` dataclasses, plus converter functions from raw fetch results
-- `news/crawler.py` — `Crawler` class with `OutputStyle` enum (`MARKDOWN`, `HTML`, `SQLITE`, `POSTGRESQL`). Public API: `fetch()` (single URL), `fetch_all()` (all configured sources). Phased pipeline: hot-list → RSS → optional content body download → optional image download → persistence. Uses `ThreadPoolExecutor` for concurrent HTML download/parse.
-- `news/parser.py` — `HtmlParser` (trafilatura-based HTML → Markdown with lxml fallback). Boundary-detection trimming (`_trim_noise`) removes nav/copyright/footer cruft via block-level DOM analysis (`Block` dataclass). Also includes `ImageProcessor` for parallel image download.
+- `news/models.py` — `NewsItem` (dataclass, per-article) and `NewsData` (dataclass, per-day collection indexed by `source_id`), plus converter functions from raw fetch results. `NewsItem.ranks` holds `[[rank, total], ...]` history snapshots. `NewsItem.heat_score` is 0-100.
+- `news/crawler.py` — `Crawler` class with `OutputStyle` enum (`MARKDOWN`, `HTML`, `SQLITE`, `POSTGRESQL`). Public API: `fetch()` (single URL), `fetch_all()` (all configured sources), `enrich_content()` (shared by fetch_all + cloud sync), `sync_from_cloud()`, `retry_failed_tasks()`. Phased pipeline: hot-list → RSS → optional content body download (ThreadPoolExecutor) → optional image download → persistence. All lazy-init: HTTP session, DB connections, executor, image processor.
+- `news/parser.py` — `HtmlParser` (trafilatura-based HTML → Markdown with lxml fallback). Three-tier extraction: SPA embedded data (`__NEXT_DATA__`/JSON-LD) → trafilatura with noise trimming → HTML-strip fallback. Boundary-detection trimming (`_trim_noise`) removes nav/copyright/footer cruft via block-level DOM analysis (`Block` dataclass with link-density scoring). `_fix_lazy_images` converts `data-src`/`data-original` to `src`. `_beautify_markdown_formatting` normalises bold markers and strips praise-button noise.
 - `news/images.py` — `ImageProcessor` class: downloads article images concurrently via `ThreadPoolExecutor`, saves through a `FileStorage` backend, returns `{url: saved_path}` mapping for Markdown content replacement. Supports batch download with automatic Content-Type → extension detection.
 - `news/notifier.py` — HTML report generation + SMTP email. `run_notifier()` loads keywords, matches titles, sends report, marks notified.
 - `news/keywords.py` — keyword matching engine parsing `frequency_words.txt` format (`/regex/`, `!filter`, `+required`, `@N` limits, `=> Display Name`)
 - `news/constants.py` — tier labels/colors (both hex and CSS-variable forms via `TIER_COLORS` / `TIER_COLORS_CSS`), source types, sentiment thresholds (>= 67 positive, <= 33 negative) — single source of truth shared by web and notifier
+
+### Heat Score system
+
+`news_articles.heat_score` (INTEGER 0-100) tracks how "hot" a hotlist article is across crawl rounds. `ranks` column stores `[[rank, total], ...]` snapshots as JSONB for score history.
+
+Three outcomes each round, computed in `_process_hotlist_heat` before UPSERT:
+
+| Case | Rule | Formula |
+|------|------|---------|
+| **New** (first appearance) | Percentile-based | `(1 − rank/total) × 100` |
+| **Existing** (still on list) | Delta-adjusted | `prev_heat + (new_pct − old_pct) × 0.3` |
+| **Dropped** (in DB but not this round) | Decay | `prev_heat × 0.7` |
+
+`_calc_heat_score()` is a pure static method — testable without DB. Items without `ranks` (RSS, manual, cloud-synced) are skipped and keep their existing score.
+
+### Failure retry system
+
+Failed content fetches and image downloads are recorded to the `failed_tasks` table (created by Migration 003). Each task has `task_type` (`content_fetch` or `image_download`), `context` (JSONB with `url`, `source_id`, `target_dir`), `retry_times`, `max_retry` (default 3), and `status` (`pending`/`failed`/`completed`).
+
+Dedup: partial unique index on `(task_type, context->>'url') WHERE status = 'pending'` prevents duplicate pending tasks for the same URL.
+
+`Crawler.retry_failed_tasks()` — called after each fetch_all round — re-attempts pending tasks up to `max_retry` times. Successful retries mark the task `completed`; exhausted retries mark it `failed`.
+
+### Keyword extraction (jieba)
+
+`Crawler._extract_keywords()` extracts keywords from article Markdown content using jieba TF-IDF with a custom IDF corpus built from database articles. The IDF file (`data/jieba_idf.txt`) penalises ubiquitous words ("公司", "企业", "项目") and rewards distinctive ones. Falls back to `extract_keywords_textrank()` (jieba TextRank with POS filtering for proper nouns only: `ns`/`nr`/`nt`/`nz`) when the IDF corpus is unavailable.
+
+`clean_markdown()` is a module-level helper that strips Markdown syntax noise (images, links, formatting markers) before NLP processing.
 
 ### Shared utilities (`utils.py`)
 
@@ -118,7 +146,7 @@ FastAPI app factory with Jinja2 server-side rendering. Templates in `web/templat
 
 **Page routes:**
 - `/` — market overview with tier stats and source rankings
-- `/hot-news` — paginated masonry card list with filters (tier, sentiment, keyword, search, date range). URL-as-state for all filters. Supports `?all=1` to clear date filters.
+- `/hot-news` — paginated masonry card list with filters (tier, sentiment, keyword, search, date range, multi-tag). URL-as-state for all filters. Supports `?all=1` to clear date filters. Multi-tag filtering via `source_tags` param — tags are extracted from article content via jieba and stored as PostgreSQL `TEXT[]` / SQLite JSON string; the frontend renders tag chips with remove-filter buttons.
 - `/news/{article_id}` — single article detail with Markdown content rendered via mistune GFM
 
 **Content rendering:** mistune with `escape=False` (allows raw HTML in source), plugins: `strikethrough`, `footnotes`, `table`, `task_lists`. Exposed as Jinja2 `|markdown` filter. Leading H1 is stripped from detail pages to avoid duplicate titles.
@@ -145,13 +173,53 @@ Two separate S3 config sections under `storage`:
 
 Key env vars: `PG_HOST/PORT/DATABASE/USER/PASSWORD`, `CLOUD_S3_ENDPOINT_URL/BUCKET_NAME/ACCESS_KEY_ID/SECRET_ACCESS_KEY/REGION`, `RESOURCE_S3_ENDPOINT_URL/BUCKET_NAME/ACCESS_KEY_ID/SECRET_ACCESS_KEY/REGION`, `EMAIL_PASSWORD`, `NEWSNOW_EMAIL_*`, `NEWSNOW_WEB_HOST/PORT`, `CONFIG_PATH`.
 
+### Schema migrations
+
+Idempotent migrations in `PostgreSQL._run_migrations()`, run on every `init_schema()` call:
+
+| Migration | Purpose |
+|-----------|---------|
+| 001 | Rebuild `idx_fulltext` GIN index to include `content` column |
+| 002 | Create `pg_trgm` extension + `idx_fulltext_trgm` for CJK ILIKE fuzzy search |
+| 003 | Create `failed_tasks` table for failure recording + lazy retry |
+| 004 | Change `ranks` column from `SMALLINT[]` to `JSONB` for heat score history |
+
 ### Tests
 
-Four test files in `tests/`:
-- `test_parser.py` — HTML noise trimming (head navigation, footer copyright, link density pruning)
+25+ test files in `tests/`, with shared fixtures in `conftest.py` and `conftest_db.py`:
+
+**Parser tests:**
+- `test_parser_trim_noise.py` — HTML noise trimming (head navigation, footer copyright, link density pruning)
+- `test_parser_trafilatura.py` — trafilatura extraction path
+- `test_parser_fallback.py` — HTML-strip fallback extraction
+- `test_parser_spa.py` — SPA embedded data extraction (Next.js, JSON-LD)
+- `test_parser_beautify.py` — Markdown formatting normalisation
+- `test_parser_build_image.py` — image-heavy content builder
+- `test_parser_edge_cases.py` — edge cases and boundary conditions
+- `test_parser_json_helpers.py` — JSON extraction helpers
+- `test_parser_lazy_images.py` — lazy-load image fix
+
+**Storage tests:**
+- `test_postgres_write.py` — PostgreSQL INSERT/UPSERT operations
+- `test_postgres_batch.py` — batch UPSERT with execute_values
+- `test_postgres_lifecycle.py` — connection pool lifecycle
+- `test_postgres_query_methods.py` — query methods and filters
+- `test_postgres_query_filters.py` — multi-tag and search filter queries
+- `test_postgres_utils.py` — PostgreSQL utility functions
+
+**Integration tests:**
 - `test_refetch.py` — refetch API endpoint behaviour
-- `test_notification_frontend.py` — notification list/unread-count/mark-read APIs
 - `test_delete.py` — article deletion cascade
+- `test_notification_frontend.py` — notification list/unread-count/mark-read APIs
+- `test_task_notification.py` — background task notification lifecycle
+- `test_failure_retry.py` — failure recording and retry logic
+- `test_keywords.py` — keyword matching engine
+- `test_heat_score.py` — heat score calculation and delta adjustment
+
+### Design documents
+
+- `docs/heat-score-design.md` — heat score algorithm specification, data flow, migration plan
+- `docs/design/` — additional design documents
 
 ### Migration scripts
 

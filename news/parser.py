@@ -953,3 +953,11 @@ class HtmlParser:
 
         _search(data)
         return best
+
+
+def clean_markdown(content: str) -> str:
+    """Remove Markdown syntax noise for cleaner NLP input."""
+    text = re.sub(r'!\[.*?\]\(.*?\)', '', content)          # 图片
+    text = re.sub(r'\[([^\]]*)\]\(.*?\)', r'\1', text)      # 链接保留文字
+    text = re.sub(r'[#*>`|~\-_]', ' ', text)                # 格式标记
+    return re.sub(r'\s+', ' ', text).strip()
