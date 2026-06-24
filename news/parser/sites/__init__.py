@@ -7,6 +7,7 @@ from news.parser.sites.cls import ClsParser
 from news.parser.sites.ifeng import IfengParser
 from news.parser.sites.thepaper import ThepaperParser
 from news.parser.sites.wallstreetcn import WallstreetcnParser
+from news.parser.sites.zaobao import ZaobaoParser
 
 # Default parser for unregistered source_ids
 parser_registry.set_default(HtmlParser())
@@ -19,3 +20,4 @@ parser_registry.register("cls-hot", ClsParser())
 parser_registry.register("cls-depth", ClsParser())
 parser_registry.register("wallstreetcn-hot", WallstreetcnParser())
 parser_registry.register("wallstreetcn-news", WallstreetcnParser())
+parser_registry.register("zaobao", ZaobaoParser())
