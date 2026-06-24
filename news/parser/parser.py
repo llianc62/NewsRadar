@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import html as _html
 
@@ -75,7 +76,11 @@ class HtmlParser:
         # 2. 站点可覆写的解析 Hook
         result = self._extract(html, url)
 
-        # 3-4. 通用降级链
+        # 3. 通用 SPA 嵌入式 JSON 提取 (__SSR__ / __NEXT_DATA__ / JSON-LD)
+        if result is None:
+            result = self._extract_spa_data(html, url)
+
+        # 4-5. 通用降级链
         if result is None:
             result = self._extract_with_readability(html, url)
         if result is None:
@@ -103,6 +108,246 @@ class HtmlParser:
         默认行为：返回 None，走降级链。
         """
         return None
+
+    # ── SPA embedded JSON extraction (generic fallback) ─────────────
+
+    @staticmethod
+    def _build_image_markdown(html_text: str) -> str:
+        """Build markdown from image-heavy HTML when readability fails."""
+        imgs = re.findall(
+            r'<img[^>]+src=["\']([^"\']+)["\'][^>]*>',
+            html_text, re.IGNORECASE,
+        )
+        text = re.sub(r'<[^>]+>', '', html_text)
+        text = _html.unescape(text)
+        text = re.sub(r'\s+', ' ', text).strip()
+
+        parts = [f'![]({url})' for url in imgs]
+        if text:
+            parts.append(text)
+        return '\n\n'.join(parts)
+
+    def _extract_spa_data(
+        self, html_text: str, url: str = ""
+    ) -> Optional[Dict[str, Any]]:
+        """Extract content from SPA embedded JSON
+
+        (__SSR__ / __NEXT_DATA__ / JSON-LD / __NUXT__).
+
+        Tries known SPA data patterns in order.  When JSON is found, the
+        data tree is searched recursively for an object with both
+        ``title`` and ``content`` keys.
+        """
+        candidates = self._find_json_candidates(html_text)
+        for data in candidates:
+            article = self._find_article_in_json(data)
+            if article is None:
+                continue
+            content = article.get("content", "")
+            if not content or not isinstance(content, str) or len(content) < 50:
+                continue
+            # Strip <blockquote> tags so trafilatura doesn't discard <img> inside
+            content = re.sub(r'</?blockquote[^>]*>', '', content)
+            # Wrap bare <img> in <p> so trafilatura/readability preserves them
+            content = re.sub(r'(<img[^>]*>)', r'<p>\1</p>', content)
+
+            # Convert to Markdown
+            markdown = None
+            extracted = self._extract_with_readability(content, url, skip_trim=True)
+            if extracted is not None:
+                markdown = extracted["markdown"]
+            if markdown is None:
+                fallback_result = self._fallback(content, url)
+                if fallback_result is not None:
+                    markdown = fallback_result["markdown"]
+
+            # Image-heavy content
+            if not markdown or len(markdown.strip()) <= 50:
+                markdown = self._build_image_markdown(content)
+
+            if markdown and len(markdown.strip()) > 50:
+                title = article.get("title") or article.get("headline", "")
+                pub_at = article.get("datePublished") or article.get("date", "")
+                summary_val = article.get("description") or article.get("abstract", "")
+                if not summary_val:
+                    summary_val = (
+                        self._extract_meta(
+                            html_text, r'name=["\']description["\']'
+                        )
+                        or self._extract_meta(
+                            html_text,
+                            r'property=["\']og:description["\']',
+                        )
+                    )
+                category_val = ""
+                tags_val: List[str] = []
+                keywords = article.get("keywords")
+                if isinstance(keywords, str):
+                    tags_val = [
+                        k.strip()
+                        for k in keywords.split(",")
+                        if k.strip()
+                    ]
+                elif isinstance(keywords, list):
+                    tags_val = [str(k) for k in keywords if k]
+                section = article.get("articleSection")
+                if isinstance(section, str) and section:
+                    category_val = section
+
+                return self._build_result(
+                    markdown=markdown.strip(),
+                    title=title,
+                    published_at=pub_at,
+                    summary=summary_val,
+                    category=category_val,
+                    tags=tags_val,
+                )
+
+        # Fallback: JS content variables (xinhuamm.net pattern)
+        content_html = self._extract_js_content_vars(html_text)
+        if content_html:
+            markdown = None
+            extracted = self._extract_with_readability(
+                content_html, url, skip_trim=True
+            )
+            if extracted is not None:
+                markdown = extracted["markdown"]
+            if not markdown or len(markdown.strip()) <= 50:
+                markdown = self._build_image_markdown(content_html)
+            if markdown and len(markdown.strip()) > 50:
+                return self._build_result(
+                    markdown=markdown.strip(),
+                    title=self._extract_title_from_html(html_text),
+                )
+
+        return None
+
+    def _find_json_candidates(self, html_text: str):
+        """Yield parsed JSON objects from known SPA embedding patterns.
+
+        Patterns tried:
+        1. ``__SSR__ = {...}`` (Vite SSR, e.g. wallstreetcn.com)
+        2. ``__NEXT_DATA__ = {...}`` (Next.js JS assignment)
+        3. ``<script id="__NEXT_DATA__" ...>`` (Next.js script tag)
+        4. ``__NUXT__ = {...}`` (Nuxt)
+        5. ``<script type="application/ld+json">`` (JSON-LD / Schema.org)
+        """
+        for data in self._extract_bracketed_json(
+            html_text, r"__SSR__\s*=\s*(\{)"
+        ):
+            if data:
+                yield data
+
+        for data in self._extract_bracketed_json(
+            html_text, r"__NEXT_DATA__\s*=\s*(\{)"
+        ):
+            if data:
+                yield data
+
+        for data in self._extract_bracketed_json(
+            html_text,
+            r'<script[^>]*\bid=["\']__NEXT_DATA__["\'][^>]*>\s*(\{)',
+        ):
+            if data:
+                yield data
+
+        for data in self._extract_bracketed_json(
+            html_text, r"__NUXT__\s*=\s*(\{)"
+        ):
+            if data:
+                yield data
+
+        for data in self._extract_json_ld(html_text):
+            if data:
+                yield data
+
+    @staticmethod
+    def _extract_bracketed_json(html_text: str, pattern: str):
+        """Find *pattern* in *html_text*, then bracket-match to get the
+        full JSON string, parse, and return as a list (may be empty).
+
+        The *pattern* must capture the position of the opening ``{``.
+        """
+        match = re.search(pattern, html_text)
+        if not match:
+            return []
+
+        start = match.start(1)
+        depth = 0
+        end = start
+        for i in range(start, len(html_text)):
+            ch = html_text[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        if end <= start:
+            return []
+        try:
+            return [json.loads(html_text[start:end])]
+        except (json.JSONDecodeError, ValueError):
+            return []
+
+    @staticmethod
+    def _extract_json_ld(html_text: str):
+        """Yield JSON objects from ``<script type="application/ld+json">`` tags."""
+        for match in re.finditer(
+            r'<script[^>]*type=["\']application/ld\+json["\'][^>]*>'
+            r'(.*?)</script>',
+            html_text,
+            re.DOTALL,
+        ):
+            try:
+                yield json.loads(match.group(1).strip())
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+    @staticmethod
+    def _find_article_in_json(data: Any) -> Optional[Dict[str, Any]]:
+        """Recursively search for dict with ``title`` + ``content`` keys."""
+        best = None
+        best_len = 0
+
+        def _search(obj: Any) -> None:
+            nonlocal best, best_len
+            if isinstance(obj, dict):
+                title = obj.get("title") or obj.get("name") or obj.get("headline", "")
+                content = obj.get("content") or obj.get("articleBody", "")
+                if (
+                    isinstance(title, str)
+                    and isinstance(content, str)
+                    and len(title) > 0
+                    and len(content) > 100
+                ):
+                    if len(content) > best_len:
+                        best_len = len(content)
+                        best = obj
+                for v in obj.values():
+                    _search(v)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _search(item)
+
+        _search(data)
+        return best
+
+    @staticmethod
+    def _extract_js_content_vars(html_text: str) -> str:
+        """Extract HTML content from JS variable assignments.
+
+        Pattern: ``var contentTxt = "<p>...</p>"`` (xinhuamm.net CMS)
+        """
+        match = re.search(
+            r'var\s+contentTxt\s*=\s*"((?:[^"\\]|\\.)*)"',
+            html_text,
+            re.DOTALL,
+        )
+        if match:
+            return match.group(1).replace("\\/", "/").replace('\\"', '"')
+        return ""
 
     # ── readability path ───────────────────────────────────────────
 
