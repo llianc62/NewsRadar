@@ -476,7 +476,7 @@ class TestRetryFailedTasksIntegration:
         }
         try:
             integration_pg_db.record_failure("content_fetch", context)
-            result = integration_crawler.retry_failed_tasks(with_image=False)
+            result = integration_crawler.retry_failed_tasks()
             assert result["content_retried"] >= 1, (
                 f"Expected content_retried >= 1, got {result}"
             )
@@ -515,7 +515,7 @@ class TestRetryFailedTasksIntegration:
                 {"url": image_url, "target_dir": "news/test/images"},
             )
 
-            result = integration_crawler.retry_failed_tasks(with_image=True)
+            result = integration_crawler.retry_failed_tasks()
             assert result["image_retried"] >= 1, (
                 f"Expected image_retried >= 1, got {result}"
             )
