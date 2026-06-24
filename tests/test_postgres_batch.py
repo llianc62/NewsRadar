@@ -22,7 +22,6 @@ def _make_test_item(**overrides):
         content="content",
         category="tech",
         tags=["AI"],
-        crawled_at="2026-06-21T10:00:00+08:00",
         published_at="2026-06-21T08:00:00+08:00",
     )
     defaults.update(overrides)
@@ -38,15 +37,14 @@ class TestBuildRow:
             source_id="src1",
             tier=2,
             priority=5,
-            crawl_date="2026-06-21",
             crawled_from="local",
         )
-        assert len(row) == 21
+        assert len(row) == 20
 
     def test_field_positions(self):
         """Verify key field positions in the tuple."""
         item = _make_test_item(title="Position Test", category="tech", tags=["AI", "ML"])
-        row = PostgreSQL._build_row(item, "src1", 1, 10, "2026-06-21", "local")
+        row = PostgreSQL._build_row(item, "src1", 1, 10, "local")
         assert row[0] == "Position Test"   # title
         assert row[1] == "src1"             # source_id
         assert row[2] == "TestSource"       # source_name
@@ -58,35 +56,28 @@ class TestBuildRow:
         assert row[14] == "tech"            # category
         assert row[15] == ["AI", "ML"]      # tags
         assert row[16] == "local"           # crawled_from
-        assert row[18] == '[[1, 20]]'       # ranks (jsonb → json.dumps)
+        assert row[17] == '[[1, 20]]'       # ranks (jsonb → json.dumps)
 
     def test_none_category_becomes_none(self):
         row = PostgreSQL._build_row(
             _make_test_item(category=None),
-            "src1", 4, 0, "2026-06-21", "local",
+            "src1", 4, 0, "local",
         )
         assert row[14] is None
 
     def test_empty_tags_becomes_empty_list(self):
         row = PostgreSQL._build_row(
             _make_test_item(tags=None),
-            "src1", 4, 0, "2026-06-21", "local",
+            "src1", 4, 0, "local",
         )
         assert row[15] == []
 
     def test_none_published_at(self):
         row = PostgreSQL._build_row(
             _make_test_item(published_at=None),
-            "src1", 4, 0, "2026-06-21", "local",
+            "src1", 4, 0, "local",
         )
         assert row[10] is None  # ts_pub
-
-    def test_none_crawled_at(self):
-        row = PostgreSQL._build_row(
-            _make_test_item(crawled_at=None),
-            "src1", 4, 0, "2026-06-21", "local",
-        )
-        assert row[17] is None  # ts_crawled
 
 
 class TestExecuteBatch:

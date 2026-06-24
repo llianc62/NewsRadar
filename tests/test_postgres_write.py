@@ -7,7 +7,6 @@ from tests.conftest_db import capture_sql
 # 工厂函数：构造最小 NewsItem
 def _make_item(source_type="hotlist", url="https://example.com/news/1",
                source_id="src1", guid="", source_name="TestSource", title="Test Title",
-               crawled_at="2026-06-21T10:00:00+08:00",
                published_at="2026-06-21T08:00:00+08:00"):
     from news.models import NewsItem
     return NewsItem(
@@ -25,7 +24,6 @@ def _make_item(source_type="hotlist", url="https://example.com/news/1",
         content="content",
         category="tech",
         tags=["AI"],
-        crawled_at=crawled_at,
         published_at=published_at,
     )
 

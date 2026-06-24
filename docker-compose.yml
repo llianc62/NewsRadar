@@ -8,6 +8,8 @@ services:
       POSTGRES_DB: newsradar
       POSTGRES_USER: newsradar
       POSTGRES_PASSWORD: newsradar
+      TZ: Asia/Shanghai
+      PGTZ: Asia/Shanghai
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

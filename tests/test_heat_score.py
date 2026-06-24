@@ -238,7 +238,7 @@ class TestProcessHotlistHeat:
         assert items[0].heat_score == 75
 
     def test_cross_day_data_not_included(self, db, mock_cursor):
-        """Yesterday's data is excluded by WHERE crawled_at::date = CURRENT_DATE."""
+        """Yesterday's data is excluded by WHERE updated_at::date = CURRENT_DATE."""
         mock_cursor.fetchall.return_value = []  # yesterday's data excluded
 
         items = [self._make_item("Today's news", "test-source",

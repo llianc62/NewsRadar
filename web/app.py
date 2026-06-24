@@ -7,6 +7,7 @@ import asyncio
 import threading
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
@@ -165,9 +166,15 @@ def _run_refetch(article_id: int, crawler, notif: dict, db) -> None:
         article = db.get_news_by_id(article_id)
         if article is None:
             raise ValueError("文章不存在")
+
+        # 清空 content 以触发 _run_batch_parse 重新下载解析
+        # （enrich_content 跳过已有 content 的条目）
+        article["content"] = ""
+
         crawler.enrich_content(article, with_image=True)
-        # 更新 content 和 published_at；SQL 层 COALESCE(NULLIF(%s, ''), col)
-        # 保证其余空字符串字段不覆盖旧值
+
+        # update_article_full 内部会规范 published_at 为 datetime/None，
+        # 无需在此做类型转换
         db.update_article_full(
             article_id,
             content=article.get("content", ""),
@@ -436,7 +443,7 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
                 "sentiment": sentiment_label,
                 "sentiment_class": sentiment_class,
                 "keywords": article.get("tags") or [],
-                "time": _relative_time(article.get("published_at")),
+                "time": _relative_time(article.get("created_at")),
             }
 
         masonry_cards = [_to_card(a) for a in articles]
@@ -475,19 +482,19 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
         )
         return HTMLResponse(html)
 
-    def _resolve_image_paths(content: str, created_at) -> str:
+    def _resolve_image_paths(content: str, updated_at) -> str:
         """将 content 中的 ``images/xxx`` 替换为 ``/media/news/YYYY-MM-DD/images/xxx``。
 
-        日期从 *created_at* 提取（插入时一次性设置，不会随 refetch 变动）；
+        日期从 *updated_at* 提取，与 crawler.py 图片保存路径（当天日期）保持一致；
         若为空则回退到当天日期。
         """
         if not content or "images/" not in content:
             return content
-        if created_at:
-            if hasattr(created_at, "strftime"):
-                date_str = created_at.strftime("%Y-%m-%d")
+        if updated_at:
+            if hasattr(updated_at, "strftime"):
+                date_str = updated_at.strftime("%Y-%m-%d")
             else:
-                date_str = str(created_at)[:10]
+                date_str = str(updated_at)[:10]
         else:
             from datetime import date as date_type
             date_str = date_type.today().isoformat()
@@ -504,7 +511,7 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
         if article.get("content"):
             article["content"] = re.sub(r"^# .+?\n\n?", "", article["content"], count=1)
             article["content"] = _resolve_image_paths(
-                article["content"], article.get("created_at"),
+                article["content"], article.get("updated_at"),
             )
         html = render_template("pages/news_detail.html", active_page="hot-news", article=article)
         return HTMLResponse(html)

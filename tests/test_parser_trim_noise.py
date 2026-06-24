@@ -212,7 +212,7 @@ class TestTrimNoise:
 
     def test_output_wrapped_in_article(self):
         """_trim_noise output is wrapped in <html><body><article> for
-        trafilatura heading recognition."""
+        heading recognition."""
         body = "<h1>文章标题</h1><p>" + "正文内容。" * 20 + "</p>"
         html = make_html(body)
         parser = HtmlParser()

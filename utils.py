@@ -3,7 +3,7 @@
 
 import time
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import pytz
@@ -119,6 +119,7 @@ def http_get_with_retry(
     url: str,
     timeout: int = 30,
     label: str = "",
+    headers: Optional[Dict[str, str]] = None,
 ) -> Tuple[Optional[requests.Response], Optional[str]]:
     """HTTP GET with exponential backoff retry.
 
@@ -127,6 +128,7 @@ def http_get_with_retry(
         url: Target URL.
         timeout: Request timeout in seconds.
         label: Human-readable label for log messages (defaults to url).
+        headers: Optional per-request headers (merged with session headers).
 
     Returns:
         ``(response, None)`` on success, ``(None, error_message)`` on
@@ -134,7 +136,7 @@ def http_get_with_retry(
     """
     for attempt in range(1, MAX_IMMEDIATE_RETRIES + 1):
         try:
-            resp = session.get(url, timeout=timeout)
+            resp = session.get(url, timeout=timeout, headers=headers)
             resp.raise_for_status()
             return resp, None
         except requests.RequestException as e:

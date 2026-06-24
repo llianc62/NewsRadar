@@ -12,11 +12,17 @@ Usage::
     ip = ImageProcessor(max_workers=8)
     storage = LocalStorage("output")
 
-    url_map = {
-        "https://x.com/a.jpg": "news/2026-06-15/images/a.jpg",
-        "https://x.com/b.jpg": "news/2026-06-15/images/b.jpg",
+    tasks = {
+        "https://x.com/a.jpg": {
+            "target_dir": "news/2026-06-15/images",
+            "article_url": "https://x.com/post/123",
+        },
+        "https://x.com/b.jpg": {
+            "target_dir": "news/2026-06-15/images",
+            "article_url": "https://x.com/post/123",
+        },
     }
-    result = ip.download(url_map, storage=storage)
+    result = ip.download(tasks, storage=storage)
     # → {"https://x.com/a.jpg": "images/a.jpg", ...}
 """
 
@@ -38,9 +44,11 @@ class ImageProcessor:
     """Download article images, store via :class:`FileStorage`,
     return mapping from original URL → relative path.
 
-    Callers pre-compute the full S3 key for each URL and pass it as
-    ``{url: "news/YYYY-MM-DD/images/xxx.jpg"}``.  The processor downloads
-    each image and saves it directly to the given key.
+    Callers pre-compute the full S3 key for each URL and pass a
+    ``{url: {"target_dir": str, "article_url": str}}`` dict.  The
+    processor downloads each image and saves it to the given key.
+    *article_url* is sent as the ``Referer`` header to avoid CDN
+    hotlinking 403 errors.
 
     Does NOT modify Markdown — callers handle string replacement
     using the returned ``{url: "images/xxx.jpg"}`` mapping.
@@ -52,10 +60,13 @@ class ImageProcessor:
         ip = ImageProcessor(max_workers=8)
         storage = LocalStorage("output")
 
-        url_map = {
-            "https://x.com/a.jpg": "news/2026-06-15/images/a.jpg",
+        tasks = {
+            "https://x.com/a.jpg": {
+                "target_dir": "news/2026-06-15/images",
+                "article_url": "https://x.com/post/123",
+            },
         }
-        result = ip.download(url_map, storage=storage)
+        result = ip.download(tasks, storage=storage)
         # → {"https://x.com/a.jpg": "images/a.jpg"}
     """
 
@@ -101,13 +112,18 @@ class ImageProcessor:
     # ── Public API ─────────────────────────────────────────────────
 
     def download(
-        self, url_map: Dict[str, str], storage: FileStorage,
+        self,
+        tasks: Dict[str, dict],
+        storage: FileStorage,
     ) -> Dict[str, str]:
         """Download images and save to pre-computed paths.
 
         Args:
-            url_map: ``{url: "news/YYYY-MM-DD/images/xxx.jpg", ...}``.
-                Each value is the full S3 key where the image will be stored.
+            tasks: ``{url: {"target_dir": str, "article_url": str}, ...}``.
+                *target_dir* is the full S3 key (e.g.
+                ``"news/YYYY-MM-DD/images"``).
+                *article_url* is the article page URL, sent as the
+                ``Referer`` header to avoid CDN hotlinking 403 errors.
             storage: :class:`FileStorage` backend for saving images.
 
         Returns:
@@ -115,18 +131,19 @@ class ImageProcessor:
             relative path (for Markdown content replacement) on success,
             or ``""`` on failure.
         """
-        if not url_map:
+        if not tasks:
             return {}
 
-        result: Dict[str, str] = {url: "" for url in url_map}
+        result: Dict[str, str] = {url: "" for url in tasks}
         print(f"[ImageProcessor] Downloading {len(result)} unique images "
               f"(workers={self._max_workers})")
         executor = self._get_executor()
         futures = {
             executor.submit(
-                self._download_and_save, url, target_path, storage,
+                self._download_and_save, url, t["target_dir"], storage,
+                t.get("article_url") or None,
             ): url
-            for url, target_path in url_map.items()
+            for url, t in tasks.items()
         }
 
         for future in as_completed(futures):
@@ -149,18 +166,28 @@ class ImageProcessor:
         url: str,
         target_path: str,
         storage: FileStorage,
+        referer: Optional[str] = None,
     ) -> Optional[str]:
         """Download *url* and save directly to *target_path* (full S3 key).
 
         HTTP GET uses exponential backoff (3 attempts).  Save also retries
         up to 3 times for transient storage errors.
 
+        Args:
+            referer: Optional Referer header value (the article URL the
+                image came from) to avoid CDN hotlinking 403 errors.
+
         Returns ``"images/xxx.jpg"`` (relative path for content
         replacement) on success, or ``None`` on failure.
         """
         # Phase 1: HTTP download with retry
+        extra_headers: Dict[str, str] = {}
+        if referer:
+            extra_headers["Referer"] = referer
+
         resp, error = http_get_with_retry(
-            self.session, url, timeout=30, label=url
+            self.session, url, timeout=30, label=url,
+            headers=extra_headers if extra_headers else None,
         )
         if resp is None:
             print(f"[ImageProcessor] HTTP error for {url}: {error}")

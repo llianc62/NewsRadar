@@ -28,7 +28,6 @@ class NewsItem:
     heat_score: int = 0         # 热度值 0-100
     sentiment_score: int = 0    # 情感值 0-100（50=中性）
     published_at: str = ""
-    crawled_at: str = ""
 
 
 @dataclass

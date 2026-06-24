@@ -202,7 +202,7 @@ class TestFindArticleInJson:
 class TestExtractSpaData:
     """_extract_spa_data — the main SPA JSON → Markdown pipeline."""
 
-    def test_strips_blockquote_before_trafilatura(self):
+    def test_strips_blockquote_before_extraction(self):
         """<blockquote>-wrapped images (wallstreetcn) must survive."""
         html = """<script id="__NEXT_DATA__" type="application/json">"""
         data = {
@@ -223,8 +223,8 @@ class TestExtractSpaData:
 
     def test_preserves_bare_img_in_html_fragment(self):
         """Bare <img> between <p> tags (thepaper.cn) must survive.
-        The fix wraps <img> in <p> before trafilatura processing.
-        Note: Short text content ensures trafilatura returns None,
+        The fix wraps <img> in <p> before content extraction.
+        Note: Short text content ensures the extractor returns None,
         triggering _build_image_markdown which preserves the image."""
         html = """<script id="__NEXT_DATA__" type="application/json">"""
         data = {
@@ -316,3 +316,92 @@ class TestExtractSpaData:
         assert "photo.jpg" in result["markdown"]
         assert len(result["markdown"].strip()) > 50
         assert result["tags"] == ["时政", "经济"]
+
+
+# ── B4: JS content variable extraction ────────────────────────────────
+
+_JS_CONTENT_VARS_BODY = (
+    "<p style=\"text-indent: 2em; text-align: left;\">"
+    "<strong>测试网6月24日报道</strong> 这是一段测试文章正文内容。"
+    "据测试来源报道，这里包含了丰富的正文信息，用于验证提取功能是否正常工作。"
+    "</p>"
+    "<p style=\"text-indent: 2em; text-align: left;\">"
+    "第二段内容，包含更多测试文本。" + ("测试内容。" * 20) +
+    "</p>"
+    "<p style=\"text-indent: 2em; text-align: left;\">"
+    "最后一段，包含结束语。（编译/张三）"
+    "</p>"
+)
+
+# Simulate xinhuamm.net / ckxxapp pattern:
+# Article body HTML is embedded as a JS string variable inside a <script>
+# tag.  Double-quotes are escaped as \", and </ is written as <\/
+# to avoid prematurely closing the <script> element.
+CKXXAPP_HTML = """<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <title>测试文章标题 - 参考消息</title>
+  <meta name="description" content="这是一篇测试文章的摘要">
+  <meta property="og:title" content="测试文章标题">
+  <meta property="og:description" content="这是一篇测试文章的摘要">
+  <meta property="article:published_time" content="2026-06-24">
+  <meta name="author" content="参考消息">
+</head>
+<body>
+  <div class="article-detail">
+    <div class="article-title">测试文章标题</div>
+    <div id="articleContent"></div>
+  </div>
+  <script>
+    var contentTxt =\"""" + _JS_CONTENT_VARS_BODY.replace('"', r'\"').replace('</', r'<\/') + """\";
+    var ih = 0;
+  </script>
+</body>
+</html>"""
+
+
+class TestExtractJsContentVars:
+    """_extract_js_content_vars — extract article HTML from JS variables."""
+
+    def test_extracts_content_from_content_txt(self):
+        parser = HtmlParser()
+        result = parser._extract_js_content_vars(CKXXAPP_HTML)
+        assert result is not None
+        assert "测试网6月24日报道" in result
+        assert "测试内容。" in result
+        assert "编译/张三" in result
+
+    def test_returns_none_when_no_var_present(self):
+        parser = HtmlParser()
+        result = parser._extract_js_content_vars(
+            "<html><body><script>var x = 1;</script></body></html>"
+        )
+        assert result is None
+
+    def test_returns_none_for_empty_content(self):
+        parser = HtmlParser()
+        result = parser._extract_js_content_vars(
+            '<html><script>var contentTxt ="short";</script></html>'
+        )
+        assert result is None  # < 50 chars
+
+    def test_unescapes_js_string(self):
+        """Verify JS escapes (\\\" and <\\/) are unescaped."""
+        parser = HtmlParser()
+        result = parser._extract_js_content_vars(CKXXAPP_HTML)
+        assert result is not None
+        assert '\\"' not in result  # JS quotes should be unescaped
+        assert '<\\/' not in result  # escaped closing tags should be fixed
+
+    def test_full_spa_extraction_pipeline(self):
+        """_extract_spa_data should find and convert JS var content."""
+        parser = HtmlParser()
+        result = parser._extract_spa_data(CKXXAPP_HTML)
+        assert result is not None
+        assert result["title"] == "测试文章标题"
+        assert "测试网6月24日报道" in result["markdown"]
+        assert len(result["markdown"].strip()) > 100
+        assert result["summary"] == "这是一篇测试文章的摘要"
+        assert result["published_at"] == "2026-06-24"
+        assert result["author"] == "参考消息"

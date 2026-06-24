@@ -105,7 +105,7 @@ def _clear_postgresql(
     after: Optional[str],
     force: bool,
 ) -> None:
-    """Delete rows from PostgreSQL ``news_articles`` + ``news_images``."""
+    """Delete rows from PostgreSQL ``news_articles`` + ``news_images`` + ``failed_tasks``."""
     from storage.postgres import PostgreSQL
 
     db = PostgreSQL(config["postgresql"])
@@ -129,16 +129,22 @@ def _clear_postgresql(
                 )
                 image_count = cur.fetchone()[0]
 
-        if article_count == 0:
+                task_count = 0
+                if delete_all:
+                    cur.execute("SELECT COUNT(*) FROM failed_tasks")
+                    task_count = cur.fetchone()[0]
+
+        if article_count == 0 and task_count == 0:
             print("[PostgreSQL] No matching rows — nothing to delete.")
             return
 
         # ── Confirm ────────────────────────────────────────────────
-        print(
-            f"[PostgreSQL] Matching: {article_count} articles, "
-            f"{image_count} images"
-        )
-        if not _confirm(article_count, "PostgreSQL", force):
+        parts = [f"{article_count} articles", f"{image_count} images"]
+        if delete_all and task_count > 0:
+            parts.append(f"{task_count} failed_tasks")
+        print(f"[PostgreSQL] Matching: {', '.join(parts)}")
+        total = article_count + task_count
+        if not _confirm(total, "PostgreSQL", force):
             print("[PostgreSQL] Cancelled.")
             return
 
@@ -158,10 +164,15 @@ def _clear_postgresql(
                 cur.execute(f"DELETE FROM news_articles {where}", params)
                 art_deleted = cur.rowcount
 
-        print(
-            f"[PostgreSQL] Deleted: {art_deleted} articles, "
-            f"{img_deleted} images"
-        )
+                task_deleted = 0
+                if delete_all:
+                    cur.execute("DELETE FROM failed_tasks")
+                    task_deleted = cur.rowcount
+
+        parts = [f"{art_deleted} articles", f"{img_deleted} images"]
+        if task_deleted > 0:
+            parts.append(f"{task_deleted} failed_tasks")
+        print(f"[PostgreSQL] Deleted: {', '.join(parts)}")
 
     except Exception as e:
         print(f"[PostgreSQL] Error: {e}")

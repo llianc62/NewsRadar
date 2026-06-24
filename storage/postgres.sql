@@ -26,7 +26,6 @@ CREATE TABLE IF NOT EXISTS news_articles (
     crawled_from    VARCHAR(10) NOT NULL DEFAULT 'local' CHECK (crawled_from IN ('local', 'cloud')),
     is_analyzed     BOOLEAN NOT NULL DEFAULT FALSE,
     published_at     TIMESTAMPTZ DEFAULT NULL,
-    crawled_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

@@ -55,13 +55,13 @@ class TestFilterDefaults:
     def test_date_from_filter(self, db, mock_cursor):
         db.get_recent_news(date_from="2026-06-19")
         sql, params = capture_sql(mock_cursor)
-        assert "published_at >= %s::date" in sql
+        assert "created_at >= %s::date" in sql
         assert "2026-06-19" in params
 
     def test_date_to_filter(self, db, mock_cursor):
         db.get_recent_news(date_to="2026-06-21")
         sql, params = capture_sql(mock_cursor)
-        assert "published_at < %s::date + interval '1 day'" in sql
+        assert "created_at < %s::date + interval '1 day'" in sql
         assert "2026-06-21" in params
 
     def test_all_filters_combined(self, db, mock_cursor):

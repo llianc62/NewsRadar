@@ -5,7 +5,7 @@ from news.parser import HtmlParser
 
 
 class TestFallback:
-    """_fallback strips HTML tags when trafilatura is unavailable."""
+    """_fallback strips HTML tags when the primary extractor is unavailable."""
 
     def test_strips_non_content_tags(self):
         parser = HtmlParser()

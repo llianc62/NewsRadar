@@ -42,7 +42,7 @@ _COLUMNS = """title, source_id, source_name, source_type,
         guid, published_at, summary, author,
         content, category, tags,
         crawled_from,
-        crawled_at, ranks, heat_score,
+        ranks, heat_score,
         sentiment_score"""
 
 _INSERT_PREFIX = f"INSERT INTO news_articles ({_COLUMNS}) VALUES %s"
@@ -50,7 +50,6 @@ _INSERT_PREFIX = f"INSERT INTO news_articles ({_COLUMNS}) VALUES %s"
 _UPDATE_SET = """title = EXCLUDED.title,
         rank = EXCLUDED.rank,
         mobile_url = EXCLUDED.mobile_url,
-        crawled_at = EXCLUDED.crawled_at,
         updated_at = NOW(),
         priority = EXCLUDED.priority,
         tier = EXCLUDED.tier,
@@ -68,7 +67,6 @@ _UPDATE_SET = """title = EXCLUDED.title,
 _UPDATE_SET_OVERWRITE = """title = EXCLUDED.title,
         rank = EXCLUDED.rank,
         mobile_url = EXCLUDED.mobile_url,
-        crawled_at = EXCLUDED.crawled_at,
         updated_at = NOW(),
         priority = EXCLUDED.priority,
         tier = EXCLUDED.tier,
@@ -169,6 +167,7 @@ class PostgreSQL:
             dbname=self._config["database"],
             user=self._config["user"],
             password=self._config["password"],
+            options="-c timezone=Asia/Shanghai",
         )
 
     def close(self) -> None:
@@ -301,6 +300,20 @@ class PostgreSQL:
                     conn.commit()
                     print("[DB] Migration complete: ranks column converted to JSONB.")
 
+                # Migration 005: drop crawled_at column (redundant with updated_at)
+                cur.execute(
+                    """SELECT EXISTS (
+                        SELECT FROM information_schema.columns
+                        WHERE table_name = 'news_articles'
+                          AND column_name = 'crawled_at'
+                    )"""
+                )
+                if cur.fetchone()[0]:
+                    print("[DB] Migrating: dropping crawled_at column...")
+                    cur.execute("""ALTER TABLE news_articles DROP COLUMN crawled_at""")
+                    conn.commit()
+                    print("[DB] Migration complete: crawled_at column dropped.")
+
         finally:
             self._pool.putconn(conn)
 
@@ -377,8 +390,7 @@ class PostgreSQL:
 
             for item in news_list:
                 row = self._build_row(
-                    item, source_id, tier, priority,
-                    news_data.date, crawled_from,
+                    item, source_id, tier, priority, crawled_from,
                 )
                 if item.source_type == "hotlist" and item.url:
                     hotlist_rows.append(row)
@@ -447,11 +459,9 @@ class PostgreSQL:
         source_id: str,
         tier: int,
         priority: int,
-        crawl_date: str,
         crawled_from: str,
     ) -> Tuple:
-        """Convert a NewsItem into a 21-element tuple for batch INSERT."""
-        ts_crawled = _to_timestamptz(item.crawled_at, crawl_date)
+        """Convert a NewsItem into a 20-element tuple for batch INSERT."""
         ts_pub = _to_timestamptz(item.published_at, None)
 
         return (
@@ -472,7 +482,6 @@ class PostgreSQL:
             item.category if item.category else None,
             item.tags if item.tags else [],
             crawled_from,
-            ts_crawled,
             json.dumps(item.ranks) if item.ranks else '[]',
             item.heat_score,
             item.sentiment_score,
@@ -606,12 +615,12 @@ class PostgreSQL:
                     " @@ plainto_tsquery('simple', %s)"
                 )
                 params.append(search)
-        # Date filtering: published_at within [date_from, date_to] inclusive full days
+        # Date filtering: created_at within [date_from, date_to] inclusive full days
         if date_from is not None:
-            conditions.append("published_at >= %s::date")
+            conditions.append("created_at >= %s::date")
             params.append(date_from)
         if date_to is not None:
-            conditions.append("published_at < %s::date + interval '1 day'")
+            conditions.append("created_at < %s::date + interval '1 day'")
             params.append(date_to)
 
         where = " AND ".join(conditions)
@@ -626,7 +635,7 @@ class PostgreSQL:
                                published_at, created_at
                         FROM news_articles
                         WHERE {where}
-                        ORDER BY published_at DESC NULLS LAST, heat_score DESC NULLS LAST
+                        ORDER BY created_at DESC NULLS LAST, heat_score DESC NULLS LAST
                         LIMIT %s OFFSET %s""",
                     params + [limit, offset],
                 )
@@ -688,10 +697,10 @@ class PostgreSQL:
                 )
                 params.append(search)
         if date_from is not None:
-            conditions.append("published_at >= %s::date")
+            conditions.append("created_at >= %s::date")
             params.append(date_from)
         if date_to is not None:
-            conditions.append("published_at < %s::date + interval '1 day'")
+            conditions.append("created_at < %s::date + interval '1 day'")
             params.append(date_to)
 
         where = " AND ".join(conditions)
@@ -742,10 +751,10 @@ class PostgreSQL:
                 )
                 params.append(search)
         if date_from is not None:
-            conditions.append("published_at >= %s::date")
+            conditions.append("created_at >= %s::date")
             params.append(date_from)
         if date_to is not None:
-            conditions.append("published_at < %s::date + interval '1 day'")
+            conditions.append("created_at < %s::date + interval '1 day'")
             params.append(date_to)
 
         where = " AND ".join(conditions)
@@ -799,10 +808,10 @@ class PostgreSQL:
                 )
                 params.append(search)
         if date_from is not None:
-            conditions.append("published_at >= %s::date")
+            conditions.append("created_at >= %s::date")
             params.append(date_from)
         if date_to is not None:
-            conditions.append("published_at < %s::date + interval '1 day'")
+            conditions.append("created_at < %s::date + interval '1 day'")
             params.append(date_to)
 
         where = " AND ".join(conditions)
@@ -859,14 +868,14 @@ class PostgreSQL:
                 params.append(search)
         # Use date parameters instead of hardcoded CURRENT_DATE
         if date_from is not None:
-            conditions.append("published_at >= %s::date")
+            conditions.append("created_at >= %s::date")
             params.append(date_from)
         if date_to is not None:
-            conditions.append("published_at < %s::date + interval '1 day'")
+            conditions.append("created_at < %s::date + interval '1 day'")
             params.append(date_to)
         # Fall back to today when no date params given (backward compatible)
         if date_from is None and date_to is None:
-            conditions.append("published_at >= CURRENT_DATE")
+            conditions.append("created_at >= CURRENT_DATE")
 
         where = " AND ".join(conditions)
 
@@ -879,7 +888,7 @@ class PostgreSQL:
                 return cur.fetchone()[0]
 
     def get_latest_cloud_sync_date(self):
-        """Return the latest ``crawled_at`` timestamp for cloud-synced
+        """Return the latest ``updated_at`` timestamp for cloud-synced
         records, or None if no cloud records exist.
 
         Used by :meth:`Crawler.sync_from_cloud` to decide which cloud
@@ -888,7 +897,7 @@ class PostgreSQL:
         with self.get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """SELECT MAX(crawled_at)
+                    """SELECT MAX(updated_at)
                        FROM news_articles
                        WHERE crawled_from = 'cloud'"""
                 )
@@ -920,10 +929,10 @@ class PostgreSQL:
         conditions = ["(confidence IS NULL OR confidence >= 20)"]
         params: list = []
         if date_from:
-            conditions.append("published_at >= %s::date")
+            conditions.append("created_at >= %s::date")
             params.append(date_from)
         if date_to:
-            conditions.append("published_at < %s::date + interval '1 day'")
+            conditions.append("created_at < %s::date + interval '1 day'")
             params.append(date_to)
         if search is not None:
             if _contains_cjk(search):
@@ -950,8 +959,8 @@ class PostgreSQL:
                          COUNT(*) FILTER (WHERE tier = 3) AS t3_count,
                          COUNT(*) FILTER (WHERE tier = 4) AS t4_count,
                          COUNT(*) AS total_count,
-                         COUNT(*) FILTER (WHERE published_at >= CURRENT_DATE
-                                          AND published_at < CURRENT_DATE + interval '1 day')
+                         COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE
+                                          AND created_at < CURRENT_DATE + interval '1 day')
                            AS today_count
                        FROM news_articles{where_clause}""",
                     params,
@@ -1020,13 +1029,26 @@ class PostgreSQL:
         ``published_at`` which drives the ``/media/`` image path
         resolution in the web layer.
         """
+        # Normalise published_at so the SQL parameter stays type-safe.
+        #
+        # psycopg2 binds Python datetime → timestamptz, and None → NULL.
+        # The SQL uses plain COALESCE(%s, published_at): when the value is
+        # NULL the column keeps its existing value; when it is a datetime
+        # it replaces the column.  This avoids the NULLIF(%s, '') pattern
+        # which breaks when psycopg2 and PostgreSQL disagree on the
+        # parameter type (text ↔ timestamptz mismatch).
+        if isinstance(published_at, str):
+            published_at = _to_timestamptz(published_at, None)
+        elif not isinstance(published_at, datetime):
+            published_at = None
+
         with self.get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """UPDATE news_articles
                        SET title = COALESCE(NULLIF(%s, ''), title),
                            content = %s,
-                           published_at = COALESCE(NULLIF(%s, ''), published_at),
+                           published_at = COALESCE(%s, published_at),
                            author = COALESCE(NULLIF(%s, ''), author),
                            summary = COALESCE(NULLIF(%s, ''), summary),
                            category = COALESCE(NULLIF(%s, ''), category),

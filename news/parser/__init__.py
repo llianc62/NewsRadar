@@ -2,6 +2,9 @@
 
 from news.parser.parser import HtmlParser, _split_keyword_tags
 from news.parser.registry import parser_registry
-import news.parser.sites  # noqa: F401 — register site-specific parsers + default
 
-__all__ = ["HtmlParser", "parser_registry"]
+# Set default parser directly — no circular imports since HtmlParser
+# doesn't import from news.parser or news.parser.sites
+parser_registry.set_default(HtmlParser())
+
+__all__ = ["HtmlParser", "parser_registry", "_split_keyword_tags"]

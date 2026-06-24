@@ -8,49 +8,160 @@ crawler:
     interval: 2000
     url: "https://newsnow.busiyi.world/api/s"
     sources:
+      # ── T2 主流财经 ──
       - id: "wallstreetcn-hot"
         name: "华尔街见闻"
         tier: 2
         priority: 85
+      - id: "wallstreetcn-news"
+        name: "华尔街见闻"
+        tier: 2
+        priority: 80
       - id: "cls-hot"
-        name: "财联社热门"
+        name: "财联社"
         tier: 2
         priority: 85
+      - id: "cls-depth"
+        name: "财联社"
+        tier: 2
+        priority: 80
+      # ── T2 综合新闻 ──
       - id: "thepaper"
         name: "澎湃新闻"
         tier: 2
         priority: 75
-      - id: "36kr-renqi"
-        name: "36氪"
-        tier: 3
-        priority: 60
+      - id: "zaobao"
+        name: "联合早报"
+        tier: 2
+        priority: 75
+      - id: "cankaoxiaoxi"
+        name: "参考新闻"
+        tier: 2
+        priority: 75
+      - id: "kaopu"
+        name: "靠谱新闻"
+        tier: 2
+        priority: 75
+      - id: "fastbull-news"
+        name: "法布财经"
+        tier: 2
+        priority: 75
+      - id: "ifeng"
+        name: "凤凰网"
+        tier: 2
+        priority: 70
+      # ── T3 垂直 ──
+      - id: "ithome"
+        name: "IT之家"
+        tier: 4
+        priority: 35
+      - id: "sspai"
+        name: "少数派"
+        tier: 4
+        priority: 35
+      # ── T4 资讯 ──
+      - id: "juejin"
+        name: "稀土掘金"
+        tier: 4
+        priority: 35
       # - id: "toutiao"
       #   name: "今日头条"
       #   tier: 4
-      #   priority: 30
-      # - id: "juejin"
-      #   name: "掘金"
-      #   tier: 4
-      #   priority: 20
+      #   priority: 35
+
 
   rss:
-    enabled: true
+    enabled: false
     timeout: 20
     interval: 1000
     feeds:
-      - id: "stcn"
-        name: "证券时报网"
-        url: "https://rsshub.pseudoyu.com/stcn"
+      # ═══ 宏观经济/政策 ═══
+      - id: "yicai-brief"
+        name: "第一财经"
+        url: "https://rsshub.rssforever.com/yicai/brief"
+        tier: 2
+        priority: 78
+        enabled: true
+        max_age_days: 1
+      - id: "caixin-latest"
+        name: "财新"
+        url: "https://rsshub.rssforever.com/caixin/latest"
         tier: 2
         priority: 80
+        enabled: true
+        max_age_days: 2
+      - id: "caixin-weekly"
+        name: "财新周刊"
+        url: "https://rsshub.rssforever.com/caixin/weekly"
+        tier: 2
+        priority: 76
+        enabled: true
+        max_age_days: 7
+      # ═══ 金融资讯 ═══
+      - id: "stcn-hot"
+        name: "证券时报"
+        url: "https://rsshub.rssforever.com/stcn/article/rank/yw"
+        tier: 2
+        priority: 82
+        enabled: true
+        max_age_days: 1
+      - id: "jiemian-finance"
+        name: "界面财经"
+        url: "https://rsshub.rssforever.com/jiemian/lists/1"
+        tier: 3
+        priority: 62
+        enabled: true
+        max_age_days: 1
+      # - id: "36kr-flash"
+      #   name: "36氪快讯"
+      #   url: "https://rsshub.rssforever.com/36kr/newsflashes"
+      #   tier: 3
+      #   priority: 60
+      #   enabled: true
+      #   max_age_days: 1
+      # ═══ 股票信息 ═══
+      - id: "eastmoney-stock"
+        name: "东方财富·A股"
+        url: "https://rsshub.rssforever.com/eastmoney/a"
+        tier: 2
+        priority: 78
         enabled: false
         max_age_days: 1
+      # ═══ 国际/世界格局 ═══
+      - id: "bloomberg"
+        name: "彭博社"
+        url: "https://rsshub.rssforever.com/bloomberg"
+        tier: 2
+        priority: 80
+        enabled: true
+        max_age_days: 2
+      - id: "bbc-world"
+        name: "BBC国际"
+        url: "https://rsshub.rssforever.com/bbc/world"
+        tier: 2
+        priority: 74
+        enabled: true
+        max_age_days: 2
+      - id: "cctv-world"
+        name: "央视国际"
+        url: "https://rsshub.rssforever.com/cctv/world"
+        tier: 2
+        priority: 72
+        enabled: true
+        max_age_days: 2
+      - id: "aljazeera-en"
+        name: "半岛电视台"
+        url: "https://rsshub.rssforever.com/aljazeera/english"
+        tier: 3
+        priority: 56
+        enabled: false
+        max_age_days: 2
       - id: "yahoo-finance"
         name: "雅虎财经"
         url: "https://finance.yahoo.com/news/rssindex"
         tier: 2
-        priority: 80
-        enabled: false
+        priority: 75
+        enabled: true
         max_age_days: 1
 
 

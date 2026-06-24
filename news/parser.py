@@ -1,5 +1,5 @@
 # coding=utf-8
-"""HTML content parser — HTML → Markdown conversion (trafilatura + fallback).
+"""HTML content parser — HTML → Markdown conversion (readability + fallback).
 
 Reference: https://github.com/microsoft/markitdown
 """
@@ -7,7 +7,9 @@ Reference: https://github.com/microsoft/markitdown
 import re
 import json
 
-import trafilatura
+import trafilatura  # kept for metadata extraction (extract_metadata)
+from readability import Document
+from markdownify import markdownify as _md
 import html as _html
 
 from typing import Any, Dict, List, Optional
@@ -40,12 +42,87 @@ class Block:
 
 
 # ═══════════════════════════════════════════════════════════════════
+# Keyword tag normalisation
+# ═══════════════════════════════════════════════════════════════════
+
+
+def _split_keyword_tags(tags: List[str]) -> List[str]:
+    """Split composite keyword strings into individual tags.
+
+    trafilatura returns ``<meta name="keywords">`` content verbatim.
+    This function detects the delimiter / structure convention of each
+    tag string and applies the matching strategy:
+
+    1. **Structured** — ``key: value`` pairs separated by commas
+       (e.g. sspai).  Only ``keyword:`` values are kept as real tags;
+       SEO metadata fields (``weight:``, ``level:``, ``intent:``, …)
+       are discarded.
+
+    2. **Comma-separated** — plain comma-delimited keywords
+       (e.g. sputniknews).  Split by comma, trim each fragment.
+
+    3. **Space-separated** — whitespace-delimited keywords
+       (e.g. ifeng).  Split by whitespace, deduplicate.
+
+    Already-split lists (each element already a single tag) pass
+    through unchanged (deduplication only).
+    """
+    result: List[str] = []
+    for t in tags:
+        # ── Detect format ──────────────────────────────────────────
+        # Normalise Chinese comma (U+FF0C) to ASCII comma for detection.
+        normalised = t.replace("，", ",")
+
+        # Structured "key: value" pairs: comma-separated fragments
+        # where most pieces carry a colon.
+        if "," in normalised:
+            fragments = [f.strip() for f in normalised.split(",")]
+            fragments = [f for f in fragments if f]
+            colon_count = sum(1 for f in fragments if ":" in f)
+            if colon_count >= len(fragments) * 0.5:
+                for f in fragments:
+                    if f.startswith("keyword:"):
+                        kw = f.split(":", 1)[1].strip()
+                        if kw and kw not in result:
+                            result.append(kw)
+                continue
+            # Plain comma-separated — treat each fragment as a tag.
+            for f in fragments:
+                if f not in result:
+                    result.append(f)
+            continue
+
+        # No commas — detect space-separated "key: value" pairs
+        # (e.g. "keyword: 深度学习 weight: 0.95").  When even-index
+        # words all end with ":" it's structured; otherwise plain
+        # space-delimited keywords.
+        words = normalised.split()
+        if words:
+            key_count = sum(1 for w in words[::2] if w.endswith(":"))
+            if key_count == len(words[::2]) and any(
+                w == "keyword:" for w in words[::2]
+            ):
+                # Structured — extract keyword: values only.
+                for i in range(0, len(words) - 1, 2):
+                    if words[i] == "keyword:":
+                        if words[i + 1] not in result:
+                            result.append(words[i + 1])
+                continue
+
+        for word in words:
+            if word not in result:
+                result.append(word)
+
+    return result
+
+
+# ═══════════════════════════════════════════════════════════════════
 # HtmlParser
 # ═══════════════════════════════════════════════════════════════════
 
 
 class HtmlParser:
-    """Convert HTML to Markdown via trafilatura with a regex fallback.
+    """Convert HTML to Markdown via readability + markdownify with a regex fallback.
 
     Pure parser — no database dependency, no network I/O (image
     processing is delegated to :class:`ImageProcessor`).
@@ -87,13 +164,16 @@ class HtmlParser:
         if not html or not html.strip():
             return None
 
+        # Custom website handle
+        html = self._handle_ifeng(html, url)
+
         # 1. SPA embedded data first — __NEXT_DATA__ / __SSR__ / JSON-LD
         #    These carry clean article HTML without nav/footer/sidebar noise.
         result = self._extract_spa_data(html, url)
 
-        # 2. trafilatura — full-page extraction with noise trimming
+        # 2. readability — full-page extraction with noise trimming
         if result is None:
-            result = self._extract_with_trafilatura(html, url)
+            result = self._extract_with_readability(html, url)
 
         # 3. HTML-stripping fallback
         if result is None:
@@ -137,31 +217,91 @@ class HtmlParser:
     def _fix_lazy_images(html: str) -> str:
         """Convert lazy-loaded ``data-src`` / ``data-original`` to ``src``.
 
-        Many sites (thepaper.cn, WeChat, etc.) set ``src`` to a 1×1
-        placeholder and put the real URL in ``data-src``.  trafilatura
-        sees only the placeholder.  This rewrites those ``<img>`` tags
-        so the real image is visible to downstream extraction.
+        Many sites (thepaper.cn, WeChat, ithome, etc.) set ``src`` to a
+        placeholder (1×1 pixel, data URI, or a generic placeholder PNG)
+        and put the real URL in ``data-src`` or ``data-original``.
+        trafilatura sees only ``src`` and captures the placeholder.
+        This rewrites ``<img>`` tags so the real image is visible to
+        downstream extraction.
+
+        Two passes per attribute to handle both orderings
+        (``src`` before or after the data attribute).
         """
-        # data-src with data-URI placeholder
-        html = re.sub(
-            r'<img([^>]*)\s+data-src="([^"]+)"([^>]*)\s+src="data:image/[^"]*"',
-            r'<img\1 src="\2"\3',
-            html,
-        )
-        # data-original (older lazy-load libraries)
-        html = re.sub(
-            r'<img([^>]*)\s+data-original="([^"]+)"([^>]*)\s+src="data:image/[^"]*"',
-            r'<img\1 src="\2"\3',
-            html,
-        )
+        for data_attr in ("data-src", "data-original"):
+            # data-attr appears before src
+            html = re.sub(
+                rf'<img([^>]*)\s+{data_attr}="([^"]+)"([^>]*)\s+src="[^"]*"',
+                rf'<img\1 src="\2"\3',
+                html,
+            )
+            # data-attr appears after src
+            html = re.sub(
+                rf'<img([^>]*)\s+src="[^"]*"([^>]*)\s+{data_attr}="([^"]+)"',
+                rf'<img\1 src="\3"\2',
+                html,
+            )
         return html
 
-    # ── trafilatura path ───────────────────────────────────────────
+    # ── Site-specific preprocessing ────────────────────────────────
 
-    def _extract_with_trafilatura(
+    @staticmethod
+    def _handle_ifeng(html: str, url: str) -> str:
+        """Remove ifeng-specific template noise from HTML before extraction.
+
+        Removes:
+        - Browser-upgrade prompt (``#lowBrowerBoxFixed``)
+        - Meta info bar between title and body (avatar, source name,
+          "独家抢先看" label, date, share buttons)
+        - Divider between meta bar and article body
+        """
+        if "ifeng.com" not in url:
+            return html
+
+        try:
+            tree = lxml_html.fromstring(html)
+        except Exception:
+            return html
+
+        removed = False
+
+        # Browser upgrade prompt at page bottom
+        for el in tree.xpath("//*[@id='lowBrowerBoxFixed']"):
+            parent = el.getparent()
+            if parent is not None:
+                parent.remove(el)
+                removed = True
+
+        # Meta info bar: avatar, source name, "独家抢先看", date, share btns
+        for el in tree.xpath("//div[contains(@class, 'index_info_')]"):
+            parent = el.getparent()
+            if parent is not None:
+                parent.remove(el)
+                removed = True
+
+        # Divider between meta bar and article body
+        for el in tree.xpath("//div[contains(@class, 'index_devide_')]"):
+            parent = el.getparent()
+            if parent is not None:
+                parent.remove(el)
+                removed = True
+
+        # Copyright / footer at bottom of article
+        for el in tree.xpath("//div[contains(@class, 'index_copyRight_')]"):
+            parent = el.getparent()
+            if parent is not None:
+                parent.remove(el)
+                removed = True
+
+        if removed:
+            html = lxml_html.tostring(tree, encoding="unicode")
+        return html
+
+    # ── readability path ───────────────────────────────────────────
+
+    def _extract_with_readability(
         self, html: str, url: str, skip_trim: bool = False,
     ) -> Optional[Dict[str, Any]]:
-        """Use trafilatura for content + metadata extraction.
+        """Use readability-lxml + markdownify for content extraction.
 
         HTML is first preprocessed by :meth:`_trim_noise` to remove
         head/tail UI noise (nav, footer, share buttons, etc.) before
@@ -180,15 +320,23 @@ class HtmlParser:
             clean_html = self._trim_noise(html)
             source_html = clean_html if clean_html is not None else html
 
-        markdown = trafilatura.extract(
-            source_html,
-            url=url,
-            output_format="markdown",
-            include_tables=True,
-            include_images=True,
-            include_links=True,
-            include_formatting=True,
-            with_metadata=False,
+        # ── readability-lxml: extract article content HTML ────────────
+        try:
+            doc = Document(source_html, url=url)
+            content_html = doc.summary()
+        except Exception:
+            return None
+
+        if not content_html or not content_html.strip():
+            return None
+
+        # ── markdownify: HTML → Markdown ──────────────────────────────
+        markdown = _md(
+            content_html,
+            heading_style="ATX",
+            strip=["script", "style"],
+            escape_asterisks=False,
+            escape_underscores=False,
         )
 
         # 如果正文小于50个字符，就默认是无效文档。
@@ -196,13 +344,33 @@ class HtmlParser:
             return None
 
         # 标题来源：正文 H1（干净无后缀） > HTML <title>/og:title
-        title =  self._extract_markdown_heading(markdown)
+        title = self._extract_markdown_heading(markdown)
 
         if not title:
             title = self._extract_title_from_html(html)
 
         # 优化 markdown 文本
         markdown = self._beautify_markdown_formatting(markdown)
+
+        # 当 _trim_noise 退化为全页 HTML 时，readability 输出
+        # 会包含页头噪声（URL、来源名、日期、标签等），正文
+        # 以 H1 标题开头。裁掉 H1 之前的所有行。
+        #
+        # 注意：不能简单地用正则 ^#\s+ 匹配 H1——代码块内的
+        # shell 注释也以 # 开头（例如 sspai.com 的终端命令代码块）。
+        # 必须跟踪 ``` 围栏状态，跳过代码块内部的 # 行。
+        lines = markdown.split("\n")
+        in_fence = False
+        h1_line_idx: int | None = None
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                in_fence = not in_fence
+            elif not in_fence and re.match(r"^#\s+.+$", line):
+                h1_line_idx = i
+                break
+        if h1_line_idx is not None:
+            markdown = "\n".join(lines[h1_line_idx:])
 
         # 元数据提取（轻量，只解析 head/meta/JSON-LD）
         try:
@@ -221,6 +389,12 @@ class HtmlParser:
             tags = list(metadata.categories[1:])
         if metadata and metadata.tags:
             tags = list(set(tags + metadata.tags))
+
+        # Normalise: trafilatura returns <meta name="keywords"> as-is,
+        # which for Chinese sites is often a single space-separated
+        # string (e.g. ifeng) or a comma-separated string with
+        # duplicates (e.g. sputniknews).  Split into individual tags.
+        tags = _split_keyword_tags(tags)
 
         author = (metadata.author or "").strip() if metadata else ""
         published_at = (metadata.date or "").strip()
@@ -367,14 +541,19 @@ class HtmlParser:
         trafilatura converts body ``<h1>`` to ``# heading`` — this is the
         clean article title without site-name suffixes that pollute
         ``<title>`` and ``og:title``.
+
+        Skips ``#`` lines inside fenced code blocks — shell comments
+        (e.g. ``# display ...``) are not article headings.
         """
-        match = re.search(
-            r"^#\s+(.+?)$",
-            markdown.strip(),
-            re.MULTILINE,
-        )
-        if match:
-            return match.group(1).strip()
+        in_fence = False
+        for line in markdown.strip().split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                in_fence = not in_fence
+            elif not in_fence:
+                m = re.match(r"^#\s+(.+?)$", line)
+                if m:
+                    return m.group(1).strip()
         return ""
 
     # ── Unified result builder ──────────────────────────────────────
@@ -494,6 +673,18 @@ class HtmlParser:
         if not blocks:
             return None
 
+        # When the page relies on <div> for body text (e.g. Sputnik
+        # uses div.article__block), blocks see very little of the
+        # total visible text — boundary detection would be unreliable.
+        # Fall back to trafilatura on the full HTML.
+        body = tree.find(".//body")
+        root = body if body is not None else tree
+        page_text = " ".join(root.itertext()).strip()
+        if page_text:
+            blocks_total = sum(b.text_len for b in blocks)
+            if blocks_total / len(page_text) < 0.03:
+                return None
+
         # ── Find start (trim head) ──────────────────────────────────
         # Priority: h1 (article title) > long paragraph > h2/h3
         # h1 is the most reliable content-start signal — lower-level
@@ -539,7 +730,11 @@ class HtmlParser:
             if b.tag in ("h4", "h5", "h6"):
                 continue
             # Article section heading — likely still content.
-            if b.tag in ("h1", "h2", "h3") and b.text_len >= 4:
+            # Skip when this is the same block as the start boundary
+            # (e.g. only h1 on the page).  h1 is the article title and
+            # almost never the end of content; treating it as both start
+            # and end would prune the entire article body.
+            if b.tag in ("h1", "h2", "h3") and b.text_len >= 4 and i != start:
                 end = i
                 end_found = True
                 break
@@ -583,9 +778,9 @@ class HtmlParser:
         if body_anchor != start:
             HtmlParser._remove_meta_between(start_el, blocks[body_anchor].element)
 
-        # trafilatura needs an <article> wrapper to recognise headings
+        # readability needs an <article> wrapper to recognise headings
         # (bare <h1> inside <body> is treated as plain text).  Wrap the
-        # remaining children so trafilatura can see the structure.
+        # remaining children so the extractor can see the structure.
         body_html = (container.text or "") + "".join(
             lxml_html.tostring(child, encoding="unicode")
             for child in container
@@ -698,6 +893,39 @@ class HtmlParser:
 
     # ── SPA data extraction ────────────────────────────────────────
 
+    @staticmethod
+    def _extract_js_content_vars(html_text: str) -> Optional[str]:
+        """Extract article content HTML from JS string variables in inline scripts.
+
+        Some CMS platforms (xinhuamm.net / ckxxapp — 新华社/参考消息 client
+        app) embed the full article body as an HTML string assigned to a
+        JavaScript variable.  The content is never written into the DOM,
+        so readability and fallback extraction both miss it.
+
+        Returns clean HTML string or None.
+        """
+        # Target known variable names used by these CMS platforms.
+        for var_name in ("contentTxt",):
+            pattern = re.compile(
+                rf'var\s+{var_name}\s*=\s*"((?:[^"\\]|\\.)*)"',
+                re.DOTALL,
+            )
+            match = pattern.search(html_text)
+            if not match:
+                continue
+
+            content = match.group(1)
+            # Unescape JS string escapes
+            content = content.replace(r'\"', '"')
+            content = content.replace(r'\/', '/')
+            # Unescape HTML entities (e.g. &amp;, &quot;)
+            content = _html.unescape(content)
+
+            if content and len(content) > 50:
+                return content
+
+        return None
+
     def _extract_spa_data(self, html_text: str, url: str = "") -> Optional[Dict[str, Any]]:
         """Extract content from SPA embedded JSON when DOM-based
         extraction fails (e.g. wallstreetcn.com, Next.js sites).
@@ -706,6 +934,9 @@ class HtmlParser:
         data tree is searched recursively for an object with both
         ``title`` and ``content`` keys — the content is then converted to
         Markdown via trafilatura (or HTML-stripped as fallback).
+
+        Also tries extracting article HTML from JS string variables
+        (xinhuamm.net CMS pattern: ``var contentTxt = "<p>...</p>"``).
 
         Returns result dict, or None if no SPA data was found.
         """
@@ -729,7 +960,7 @@ class HtmlParser:
             content = re.sub(r'(<img[^>]*>)', r'<p>\1</p>', content)
             # content is HTML — convert to Markdown
             markdown = None
-            extracted = self._extract_with_trafilatura(content, url, skip_trim=True)
+            extracted = self._extract_with_readability(content, url, skip_trim=True)
             if extracted is not None:
                 markdown = extracted["markdown"]
             if markdown is None:
@@ -777,6 +1008,34 @@ class HtmlParser:
                     category=category_val,
                     tags=tags_val,
                 )
+
+        # 6. JS content variable (xinhuamm.net CMS: var contentTxt = "<p>...</p>")
+        content_html = self._extract_js_content_vars(html_text)
+        if content_html:
+            extracted = self._extract_with_readability(
+                content_html, url, skip_trim=True,
+            )
+            if extracted is not None:
+                # Title is typically NOT in the JS body HTML — fill from
+                # the parent page's <title> / og:title / meta tags.
+                if not extracted["title"]:
+                    extracted["title"] = self._extract_title_from_html(html_text)
+                if not extracted["summary"]:
+                    extracted["summary"] = self._extract_meta(
+                        html_text, r'name=["\']description["\']'
+                    ) or self._extract_meta(
+                        html_text, r'property=["\']og:description["\']'
+                    )
+                if not extracted["published_at"]:
+                    extracted["published_at"] = self._extract_meta(
+                        html_text, r'property=["\']article:published_time["\']'
+                    )
+                if not extracted["author"]:
+                    extracted["author"] = self._extract_meta(
+                        html_text, r'name=["\']author["\']'
+                    )
+                return extracted
+
         return None
 
     def _find_json_candidates(self, html_text: str):
