@@ -190,8 +190,8 @@ def test_download_and_parse_falls_back_to_textrank_when_no_meta_tags(monkeypatch
     monkeypatch.setattr(storage.s3.S3Client, "_ensure_bucket", lambda self: None)
     from news.crawler import Crawler
 
-    class FakeParser:
-        def parse(self, html, url=""):
+    class FakeParserRegistry:
+        def parse(self, source_id, html, url=""):
             return {
                 "markdown": (
                     "美国前总统特朗普在G7峰会期间与日本首相高市早苗会谈，"
@@ -206,16 +206,16 @@ def test_download_and_parse_falls_back_to_textrank_when_no_meta_tags(monkeypatch
                 "tags": [],  # 无 tags → 触发 fallback
             }
 
-    crawler = Crawler(_test_config(), parser=FakeParser())
+    crawler = Crawler(_test_config(), parser_registry_obj=FakeParserRegistry())
 
     class FakeResp:
         text = "<html></html>"
         def raise_for_status(self):
             pass
 
-    monkeypatch.setattr(crawler.session(), "get", lambda url, timeout: FakeResp())
+    monkeypatch.setattr(crawler.session(), "get", lambda url, timeout, headers=None: FakeResp())
 
-    item = {"url": "https://example.com/news/1"}
+    item = {"url": "https://example.com/news/1", "source_id": "test"}
     ok = crawler._download_and_parse(item)
     assert ok is True
     assert len(item["tags"]) >= 1
@@ -229,8 +229,8 @@ def test_download_and_parse_preserves_meta_tags_when_present(monkeypatch):
     monkeypatch.setattr(storage.s3.S3Client, "_ensure_bucket", lambda self: None)
     from news.crawler import Crawler
 
-    class FakeParser:
-        def parse(self, html, url=""):
+    class FakeParserRegistry:
+        def parse(self, source_id, html, url=""):
             return {
                 "markdown": "正文内容。",
                 "title": "测试",
@@ -241,16 +241,16 @@ def test_download_and_parse_preserves_meta_tags_when_present(monkeypatch):
                 "tags": ["编辑标注", "原创"],
             }
 
-    crawler = Crawler(_test_config(), parser=FakeParser())
+    crawler = Crawler(_test_config(), parser_registry_obj=FakeParserRegistry())
 
     class FakeResp:
         text = "<html></html>"
         def raise_for_status(self):
             pass
 
-    monkeypatch.setattr(crawler.session(), "get", lambda url, timeout: FakeResp())
+    monkeypatch.setattr(crawler.session(), "get", lambda url, timeout, headers=None: FakeResp())
 
-    item = {"url": "https://example.com/news/2"}
+    item = {"url": "https://example.com/news/2", "source_id": "test"}
     ok = crawler._download_and_parse(item)
     assert ok is True
     assert item["tags"] == ["编辑标注", "原创"]
@@ -262,8 +262,8 @@ def test_download_and_parse_short_content_no_fallback(monkeypatch):
     monkeypatch.setattr(storage.s3.S3Client, "_ensure_bucket", lambda self: None)
     from news.crawler import Crawler
 
-    class FakeParser:
-        def parse(self, html, url=""):
+    class FakeParserRegistry:
+        def parse(self, source_id, html, url=""):
             return {
                 "markdown": "短。",
                 "title": "测试",
@@ -274,16 +274,16 @@ def test_download_and_parse_short_content_no_fallback(monkeypatch):
                 "tags": [],
             }
 
-    crawler = Crawler(_test_config(), parser=FakeParser())
+    crawler = Crawler(_test_config(), parser_registry_obj=FakeParserRegistry())
 
     class FakeResp:
         text = "<html></html>"
         def raise_for_status(self):
             pass
 
-    monkeypatch.setattr(crawler.session(), "get", lambda url, timeout: FakeResp())
+    monkeypatch.setattr(crawler.session(), "get", lambda url, timeout, headers=None: FakeResp())
 
-    item = {"url": "https://example.com/news/3"}
+    item = {"url": "https://example.com/news/3", "source_id": "test"}
     ok = crawler._download_and_parse(item)
     assert ok is True
     assert item["tags"] == []

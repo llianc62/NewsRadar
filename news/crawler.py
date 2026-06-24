@@ -20,13 +20,12 @@ import time
 import requests
 
 from enum import Enum
-from datetime import datetime
 from urllib.parse import urlparse
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from news.fetcher import NewsnowFetcher, RssFetcher
-from news.parser import HtmlParser
+from news.parser import parser_registry
 from news.images import ImageProcessor
 from news.models import NewsData, NewsItem
 from storage.files import LocalStorage, S3Storage
@@ -51,7 +50,7 @@ class StorageTarget(Enum):
     LOCAL = "local"
     RESOURCE = "resource"
 
-MAX_IMAGE_PROCESSOR_WORKERS = 10  # Limit for concurrent image downloads
+MAX_IMAGE_PROCESSOR_WORKERS = 20  # Limit for concurrent image downloads
 
 
 class Crawler:
@@ -69,7 +68,7 @@ class Crawler:
     def __init__(
         self,
         config: dict,
-        parser: HtmlParser | None = None,
+        parser_registry_obj: object | None = None,
         pg_db: Any = None,
     ):
         self._config = config
@@ -79,7 +78,7 @@ class Crawler:
         self.timeout = cfg.get("timeout", 30)
         self.max_retry = cfg.get("max_retry", 3)
 
-        self.parser = parser or HtmlParser(config)
+        self.parser_registry = parser_registry_obj or parser_registry
 
         # Source tiers — built once from config, rarely changes
         self._source_tiers = self._build_source_tiers()
@@ -198,7 +197,7 @@ class Crawler:
                        FROM news_articles
                        WHERE source_id = %s
                          AND source_type = 'hotlist'
-                         AND crawled_at::date = CURRENT_DATE""",
+                         AND updated_at::date = CURRENT_DATE""",
                     (source_id,),
                 )
                 for row in cur.fetchall():
@@ -218,6 +217,59 @@ class Crawler:
                 tiers[rss["id"]] = {"tier": rss.get("tier", 3), "priority": rss.get("priority", 0)}
         tiers["manual"] = {"tier": 4, "priority": 0}
         return tiers
+
+    def _dedup_items_by_url(
+        self,
+        items: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Deduplicate items by URL, keeping the highest-priority source.
+
+        When multiple items share the same URL, the item from the source
+        with the highest ``priority`` (from :meth:`_build_source_tiers`)
+        is kept.  Items with equal priority retain the first encountered.
+        Items with empty URLs are passed through without dedup.
+        """
+        seen: Dict[str, int] = {}       # url -> index in result
+        result: List[Dict[str, Any]] = []
+        duplicates_removed = 0
+
+        for item in items:
+            url = item.get("url", "")
+            if not url:
+                result.append(item)
+                continue
+
+            if url not in seen:
+                seen[url] = len(result)
+                result.append(item)
+                continue
+
+            # URL collision — compare priorities
+            existing_idx = seen[url]
+            existing_item = result[existing_idx]
+
+            existing_sid = existing_item.get("source_id", "")
+            current_sid = item.get("source_id", "")
+
+            existing_prio = self._source_tiers.get(
+                existing_sid, {}
+            ).get("priority", 0)
+            current_prio = self._source_tiers.get(
+                current_sid, {}
+            ).get("priority", 0)
+
+            if current_prio > existing_prio:
+                result[existing_idx] = item
+
+            duplicates_removed += 1
+
+        if duplicates_removed > 0:
+            print(
+                f"[Crawler] Dedup: removed {duplicates_removed} duplicate URLs "
+                f"(kept {len(result)} of {len(items)} items)"
+            )
+
+        return result
 
     # ═══════════════════════════════════════════════════════════════════
     # Public API
@@ -263,7 +315,7 @@ class Crawler:
             ) from e
 
         # ── Parse to Markdown ──────────────────────────────────────
-        parsed = self.parser.parse(resp.text, url)
+        parsed = self.parser_registry.parse(item["source_id"], resp.text, url)
         if not parsed:
             raise Exception(f"无法提取页面正文内容: {url}")
 
@@ -333,6 +385,9 @@ class Crawler:
             rss_results = rss_fetcher.fetch()
             if rss_results:
                 all_items.extend(rss_results)
+
+        # ── Cross-source URL dedup ─────────────────────────────────
+        all_items = self._dedup_items_by_url(all_items)
 
         # ── Enrichment ─────────────────────────────────────────────
         if with_content:
@@ -454,7 +509,7 @@ class Crawler:
             return False
 
         # Pure text parsing — no image processing
-        parsed = self.parser.parse(resp.text, url)
+        parsed = self.parser_registry.parse(item["source_id"], resp.text, url)
         if parsed is None:
             print(f"[Crawler] No content extracted: {url}")
             return False
@@ -490,41 +545,37 @@ class Crawler:
             print("[Crawler] Phase 2 — S3 not configured, skipping image download")
             return
 
-        url_map: Dict[str, str] = {}
+        tasks: Dict[str, dict] = {}
         for item in items:
             if not item.get("content"):
                 continue
-            published_at = item.get("published_at", "")
-            if published_at:
-                published_date = datetime.fromisoformat(published_at).strftime("%Y-%m-%d")
-            else:
-                published_date = format_date_today()
+            article_url = item.get("url", "")
+            date = format_date_today()
             for url in self._extract_image_urls(item["content"]):
-                if url in url_map:
+                if url in tasks:
                     continue
-                target_dir = f"news/{published_date}/images"
-                url_map[url] = target_dir
+                target_dir = f"news/{date}/images"
+                tasks[url] = {
+                    "target_dir": target_dir,
+                    "article_url": article_url,
+                }
 
-        if not url_map:
+        if not tasks:
             print("[Crawler] Phase 2 — no images found, skipping")
             return
 
-        print(f"[Crawler] Phase 2 — downloading {len(url_map)} unique images")
+        print(f"[Crawler] Phase 2 — downloading {len(tasks)} unique images")
         processor = self._get_image_processor()
-        # Save original url_map for failure recording (preserves target_dir)
-        _original_url_map = dict(url_map)
-        url_map = processor.download(url_map, storage=image_storage)
+        url_map = processor.download(tasks, storage=image_storage)
 
         # Record failures for lazy retry
-        self._record_image_download_failures(
-            _original_url_map, url_map
-        )
+        self._record_image_download_failures(tasks, url_map)
 
         if not url_map:
             print("[Crawler] Phase 2 done (no images downloaded)")
             return
 
-        # Replace URLs in-place: iterate url_map keys and do substring
+        # Replace URLs in-place: iterate downloaded keys and do substring
         # replacement — avoids a second regex extraction per item
         replaced = 0
         for item in items:
@@ -547,8 +598,8 @@ class Crawler:
         HTML ``<img src="url">`` tags.
         """
         urls: List[str] = []
-        # Markdown image: ![alt](url)
-        urls.extend(re.findall(r'!\[.*?\]\((https?://[^\s)]+)\)', markdown))
+        # Markdown image: ![alt](url) or ![alt](url "title")
+        urls.extend(re.findall(r'!\[.*?\]\((https?://[^\s)]+)(?:\s+"[^"]*")?\)', markdown))
         # HTML img: <img src="url">
         urls.extend(re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', markdown, re.IGNORECASE))
         return urls
@@ -578,21 +629,24 @@ class Crawler:
 
     def _record_image_download_failures(
         self,
-        original_url_map: Dict[str, str],
+        tasks: Dict[str, dict],
         results: Dict[str, str],
     ) -> None:
         """For each image URL where result is ``""``, record a failure.
 
         Args:
-            original_url_map: ``{url: target_dir}`` (pre-download, for context).
+            tasks: ``{url: {"target_dir": str, "article_url": str}, ...}``
+                (pre-download, for context).
             results: ``{url: saved_path_or_""}`` (post-download, for checking).
         """
         for url, saved_path in results.items():
             if saved_path:
                 continue
+            t = tasks.get(url, {})
             context = {
                 "url": url,
-                "target_dir": original_url_map.get(url, ""),
+                "target_dir": t.get("target_dir", ""),
+                "article_url": t.get("article_url", ""),
             }
             try:
                 pg = self._get_pg_db()
@@ -688,7 +742,11 @@ class Crawler:
                 pg.mark_failure_completed(task["id"])
                 continue
 
-            result = processor.download({url: target_dir}, storage)
+            result = processor.download(
+                {url: {"target_dir": target_dir,
+                       "article_url": ctx.get("article_url", "")}},
+                storage,
+            )
             saved_path = result.get(url, "")
 
             if saved_path:
@@ -804,7 +862,6 @@ class Crawler:
                 ranks=d.get("ranks", []),
                 heat_score=d.get("heat_score", 0),
                 sentiment_score=d.get("sentiment_score", 0),
-                crawled_at=format_datetime_now(tz),
             ))
 
         return NewsData(date=date, items=by_source)
@@ -932,7 +989,7 @@ class Crawler:
         """Download recent SQLite DBs from S3, enrich incremental content,
         and merge into PostgreSQL via UPSERT.
 
-        Queries PostgreSQL for the latest cloud-synced ``crawled_at``
+        Queries PostgreSQL for the latest cloud-synced ``updated_at``
         timestamp, then downloads all S3 DB files from that date onwards.
         Within each DB, only rows with ``created_at`` strictly after the
         threshold are enriched and synced — avoiding redundant HTTP
@@ -955,7 +1012,7 @@ class Crawler:
         latest_crawled = pg_db.get_latest_cloud_sync_date()  # datetime or None
 
         if latest_crawled is not None:
-            print(f"\n[Sync] Latest cloud crawled_at in PG: {latest_crawled}")
+            print(f"\n[Sync] Latest cloud updated_at in PG: {latest_crawled}")
             since_dt = latest_crawled.date()  # for S3 key comparison
             threshold_str = latest_crawled.strftime("%Y-%m-%d %H:%M:%S")  # for row filtering
         else:
@@ -1108,7 +1165,6 @@ class Crawler:
                 author=row.get("author", ""),
                 category=row.get("category", ""),
                 tags=tags,
-                crawled_at=row.get("created_at", ""),
             )
             items[source_id].append(item)
 
