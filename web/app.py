@@ -177,6 +177,10 @@ def _run_refetch(article_id: int, crawler, notif: dict, db) -> None:
         # 无需在此做类型转换
         db.update_article_full(
             article_id,
+            tags=article.get("tags", []),
+            author=article.get("author", ""),
+            summary=article.get("summary", ""),
+            category=article.get("category", ""),
             content=article.get("content", ""),
             published_at=article.get("published_at", ""),
         )

@@ -1,7 +1,7 @@
 """Site-specific parsers — one module per news source."""
 
 from news.parser.parser import HtmlParser
-from news.parser.registry import parser_registry
+from news.parser.registry import registry
 from news.parser.sites.cankaoxiaoxi import CkxxappParser
 from news.parser.sites.cls import ClsParser
 from news.parser.sites.fastbull import FastbullParser
@@ -15,20 +15,23 @@ from news.parser.sites.wallstreetcn import WallstreetcnParser
 from news.parser.sites.zaobao import ZaobaoParser
 
 # Default parser for unregistered source_ids
-parser_registry.set_default(HtmlParser())
+registry.set_default(HtmlParser())
 
 # Site-specific parser registrations
-parser_registry.register("thepaper", ThepaperParser())
-parser_registry.register("ifeng", IfengParser())
-parser_registry.register("cankaoxiaoxi", CkxxappParser())
-parser_registry.register("cls-hot", ClsParser())
-parser_registry.register("cls-depth", ClsParser())
-parser_registry.register("wallstreetcn-hot", WallstreetcnParser())
-parser_registry.register("wallstreetcn-news", WallstreetcnParser())
-parser_registry.register("zaobao", ZaobaoParser())
+# — one parser instance per domain; multiple source_ids share the same instance
+_wsc = WallstreetcnParser()
+_cls = ClsParser()
 
-parser_registry.register("kaopu", KaopuParser())
-parser_registry.register("fastbull-news", FastbullParser())
-parser_registry.register("ithome", IthomeParser())
-parser_registry.register("sspai", SspaiParser())
-parser_registry.register("juejin", JuejinParser())
+registry.register("wallstreetcn-hot", _wsc, domains=["wallstreetcn.com"])
+registry.register("wallstreetcn-news", _wsc)
+registry.register("cls-hot", _cls, domains=["cls.cn"])
+registry.register("cls-depth", _cls)
+registry.register("thepaper", ThepaperParser(), domains=["thepaper.cn"])
+registry.register("ifeng", IfengParser(), domains=["ifeng.com"])
+registry.register("cankaoxiaoxi", CkxxappParser(), domains=["ckxxapp.ckxx.net", "cankaoxiaoxi.com"])
+registry.register("zaobao", ZaobaoParser(), domains=["zaochenbao.com"])
+registry.register("kaopu", KaopuParser(), domains=["kaopu.news"])
+registry.register("fastbull-news", FastbullParser(), domains=["fastbull.com"])
+registry.register("ithome", IthomeParser(), domains=["ithome.com"])
+registry.register("sspai", SspaiParser(), domains=["sspai.com"])
+registry.register("juejin", JuejinParser(), domains=["juejin.cn"])

@@ -189,6 +189,7 @@ def test_download_and_parse_falls_back_to_textrank_when_no_meta_tags(monkeypatch
     import storage.s3
     monkeypatch.setattr(storage.s3.S3Client, "_ensure_bucket", lambda self: None)
     from news.crawler import Crawler
+    import news.crawler as crawler_mod
 
     class FakeParserRegistry:
         def parse(self, source_id, html, url=""):
@@ -206,7 +207,8 @@ def test_download_and_parse_falls_back_to_textrank_when_no_meta_tags(monkeypatch
                 "tags": [],  # 无 tags → 触发 fallback
             }
 
-    crawler = Crawler(_test_config(), parser_registry_obj=FakeParserRegistry())
+    monkeypatch.setattr(crawler_mod, "parser", FakeParserRegistry())
+    crawler = Crawler(_test_config())
 
     class FakeResp:
         text = "<html></html>"
@@ -228,6 +230,7 @@ def test_download_and_parse_preserves_meta_tags_when_present(monkeypatch):
     import storage.s3
     monkeypatch.setattr(storage.s3.S3Client, "_ensure_bucket", lambda self: None)
     from news.crawler import Crawler
+    import news.crawler as crawler_mod
 
     class FakeParserRegistry:
         def parse(self, source_id, html, url=""):
@@ -241,7 +244,8 @@ def test_download_and_parse_preserves_meta_tags_when_present(monkeypatch):
                 "tags": ["编辑标注", "原创"],
             }
 
-    crawler = Crawler(_test_config(), parser_registry_obj=FakeParserRegistry())
+    monkeypatch.setattr(crawler_mod, "parser", FakeParserRegistry())
+    crawler = Crawler(_test_config())
 
     class FakeResp:
         text = "<html></html>"
@@ -261,6 +265,7 @@ def test_download_and_parse_short_content_no_fallback(monkeypatch):
     import storage.s3
     monkeypatch.setattr(storage.s3.S3Client, "_ensure_bucket", lambda self: None)
     from news.crawler import Crawler
+    import news.crawler as crawler_mod
 
     class FakeParserRegistry:
         def parse(self, source_id, html, url=""):
@@ -274,7 +279,8 @@ def test_download_and_parse_short_content_no_fallback(monkeypatch):
                 "tags": [],
             }
 
-    crawler = Crawler(_test_config(), parser_registry_obj=FakeParserRegistry())
+    monkeypatch.setattr(crawler_mod, "parser", FakeParserRegistry())
+    crawler = Crawler(_test_config())
 
     class FakeResp:
         text = "<html></html>"

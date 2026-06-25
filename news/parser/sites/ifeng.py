@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Optional
 
 from lxml import html as lxml_html
@@ -18,46 +19,61 @@ class IfengParser(HtmlParser):
     - .index_devide_*（分隔线）
     - .index_copyRight_*（版权信息/页脚）
 
-    这些 DOM 元素必须在 readability 提取之前删除。
+    正文图片使用 ``data-lazyload`` 懒加载，
+    ``src`` 为 1×1 base64 占位符，必须在 readability 之前替换。
     """
 
+    _LAZY_IMAGE_ATTRS = ("data-lazyload", "data-src", "data-original")
+
+    # XPath 噪声移除列表 — (xpath, 说明)
+    _NOISE_XPATHS = (
+        ("//*[@id='lowBrowerBoxFixed']", "browser upgrade prompt"),
+        ("//div[contains(@class, 'index_info_')]", "meta info bar"),
+        ("//div[contains(@class, 'index_devide_')]", "divider"),
+        ("//div[contains(@class, 'index_copyRight_')]", "copyright footer"),
+    )
+
+    # ── _preprocess ─────────────────────────────────────────────────
+
     def _preprocess(self, html: str, url: str) -> str:
-        """Remove ifeng-specific template noise from HTML before extraction."""
+        """Remove ifeng-specific template noise and fix lazy images."""
         try:
             tree = lxml_html.fromstring(html)
         except Exception:
             return html
 
-        removed = False
+        removed = self._fix_lazy_images(tree)
+        for xpath, _desc in self._NOISE_XPATHS:
+            removed += self._remove_elements(tree, xpath)
 
-        # Browser upgrade prompt at page bottom
-        for el in tree.xpath("//*[@id='lowBrowerBoxFixed']"):
+        return (
+            lxml_html.tostring(tree, encoding="unicode")
+            if removed > 0
+            else html
+        )
+
+    # ── helpers ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _remove_elements(tree: lxml_html.HtmlElement, xpath: str) -> int:
+        """删除匹配 *xpath* 的所有元素，返回删除数量。"""
+        count = 0
+        for el in tree.xpath(xpath):
             parent = el.getparent()
             if parent is not None:
                 parent.remove(el)
-                removed = True
+                count += 1
+        return count
 
-        # Meta info bar: avatar, source name, "独家抢先看", date, share btns
-        for el in tree.xpath("//div[contains(@class, 'index_info_')]"):
-            parent = el.getparent()
-            if parent is not None:
-                parent.remove(el)
-                removed = True
-
-        # Divider between meta bar and article body
-        for el in tree.xpath("//div[contains(@class, 'index_devide_')]"):
-            parent = el.getparent()
-            if parent is not None:
-                parent.remove(el)
-                removed = True
-
-        # Copyright / footer at bottom of article
-        for el in tree.xpath("//div[contains(@class, 'index_copyRight_')]"):
-            parent = el.getparent()
-            if parent is not None:
-                parent.remove(el)
-                removed = True
-
-        if removed:
-            return lxml_html.tostring(tree, encoding="unicode")
-        return html
+    @classmethod
+    def _fix_lazy_images(cls, tree: lxml_html.HtmlElement) -> int:
+        """将懒加载属性转为 ``src``，返回修改的 ``<img>`` 数量。"""
+        count = 0
+        for img in tree.xpath("//img"):
+            for attr in cls._LAZY_IMAGE_ATTRS:
+                real_src = img.get(attr, "")
+                if real_src and not real_src.startswith("data:"):
+                    img.set("src", real_src)
+                    count += 1
+                    break
+        return count

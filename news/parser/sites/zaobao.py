@@ -1,10 +1,9 @@
-"""ZaobaoParser — 联合早报 (zaobao.com.sg) HTML → Markdown 解析.
+"""ZaobaoParser — 联合早报 (zaochenbao.com) HTML → Markdown 解析.
 
-联合早报文章页使用 React Router 客户端路由，文章正文位于
-``div.articleBody``，元数据（作者、发布时间、标题）嵌入在
-``<script type="application/ld+json">`` 的 JSON-LD 中。
+文章正文位于 ``div.article-body``，元数据优先从
+``<script type="application/ld+json">`` 的 JSON-LD 中提取。
 
-当 JSON-LD 或 ``articleBody`` 不可用时，自动降级到基类的
+当 JSON-LD 或 article body 不可用时，自动降级到基类的
 readability 路径。
 """
 
@@ -13,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any, Dict, Optional
+from urllib.parse import urljoin
 
 from lxml import html as lxml_html
 from markdownify import markdownify as _md
@@ -33,9 +33,10 @@ class ZaobaoParser(HtmlParser):
         if not content_html or len(content_html.strip()) < 100:
             return None
 
-        # 2. Fix lazy images (data-src → src) and wrap bare <img> in <p>
-        #    so markdownify can convert them
+        # 2. Fix lazy images (data-src → src), resolve relative URLs,
+        #    and wrap bare <img> in <p> so markdownify can convert them
         content_html = ZaobaoParser._fix_lazy_images(content_html)
+        content_html = ZaobaoParser._resolve_image_urls(content_html, url)
         content_html = ZaobaoParser._wrap_bare_images(content_html)
 
         # 4. Convert to markdown
@@ -85,9 +86,13 @@ class ZaobaoParser(HtmlParser):
 
     # ── Internal helpers ────────────────────────────────────────────
 
-    @staticmethod
-    def _find_article_body(html_text: str) -> str:
-        """Find the ``div.articleBody`` element and return its inner HTML.
+    # Supported article body selectors (old zaobao.com.sg uses ``div.articleBody``;
+    # current zaochenbao.com uses ``<article class="article-body">``)
+    _BODY_SELECTORS = ("article.article-body", "div.articleBody")
+
+    @classmethod
+    def _find_article_body(cls, html_text: str) -> str:
+        """Find the article body element and return its inner HTML.
 
         Returns empty string if not found.
         """
@@ -96,13 +101,16 @@ class ZaobaoParser(HtmlParser):
         except Exception:
             return ""
 
-        els = tree.cssselect("div.articleBody")
-        if not els:
-            return ""
+        for selector in cls._BODY_SELECTORS:
+            els = tree.cssselect(selector)
+            if els:
+                body = els[0]
+                # Strip anti-adblock warning elements
+                for warning in body.cssselect(".warning"):
+                    warning.drop_tree()
+                return lxml_html.tostring(body, encoding="unicode", method="html")
 
-        # Get inner HTML
-        body = els[0]
-        return lxml_html.tostring(body, encoding="unicode", method="html")
+        return ""
 
     @staticmethod
     def _find_jsonld_meta(html_text: str) -> Dict[str, str]:
@@ -191,6 +199,24 @@ class ZaobaoParser(HtmlParser):
                 html_text,
             )
         return html_text
+
+    @staticmethod
+    def _resolve_image_urls(html_text: str, base_url: str) -> str:
+        """Resolve relative image ``src`` to absolute URLs.
+
+        ``/uploads/foo.jpg`` → ``https://example.com/uploads/foo.jpg``
+        """
+        if not base_url:
+            return html_text
+
+        def _make_absolute(m: re.Match) -> str:
+            src = m.group(2)
+            if src.startswith("http://") or src.startswith("https://"):
+                return m.group(0)  # already absolute
+            absolute = urljoin(base_url, src)
+            return m.group(0).replace(src, absolute)
+
+        return re.sub(r'(<img[^>]*\s+src=")([^"]+)(")', _make_absolute, html_text)
 
     @staticmethod
     def _wrap_bare_images(html_text: str) -> str:

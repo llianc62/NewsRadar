@@ -8,22 +8,26 @@ crawler:
     interval: 2000
     url: "https://newsnow.busiyi.world/api/s"
     sources:
-      # ── T2 主流财经 ──
+      # ── T1 主流财经 ──
       - id: "wallstreetcn-hot"
         name: "华尔街见闻"
-        tier: 2
+        tier: 1
         priority: 85
       - id: "wallstreetcn-news"
         name: "华尔街见闻"
-        tier: 2
+        tier: 1
         priority: 80
       - id: "cls-hot"
         name: "财联社"
-        tier: 2
+        tier: 1
         priority: 85
       - id: "cls-depth"
         name: "财联社"
-        tier: 2
+        tier: 1
+        priority: 80
+      - id: "fastbull-news"
+        name: "法布财经"
+        tier: 1
         priority: 80
       # ── T2 综合新闻 ──
       - id: "thepaper"
@@ -42,15 +46,13 @@ crawler:
         name: "靠谱新闻"
         tier: 2
         priority: 75
-      - id: "fastbull-news"
-        name: "法布财经"
-        tier: 2
-        priority: 75
       - id: "ifeng"
         name: "凤凰网"
         tier: 2
         priority: 70
       # ── T3 垂直 ──
+
+      # ── T4 资讯 ──
       - id: "ithome"
         name: "IT之家"
         tier: 4
@@ -59,7 +61,6 @@ crawler:
         name: "少数派"
         tier: 4
         priority: 35
-      # ── T4 资讯 ──
       - id: "juejin"
         name: "稀土掘金"
         tier: 4
@@ -112,13 +113,6 @@ crawler:
         priority: 62
         enabled: true
         max_age_days: 1
-      # - id: "36kr-flash"
-      #   name: "36氪快讯"
-      #   url: "https://rsshub.rssforever.com/36kr/newsflashes"
-      #   tier: 3
-      #   priority: 60
-      #   enabled: true
-      #   max_age_days: 1
       # ═══ 股票信息 ═══
       - id: "eastmoney-stock"
         name: "东方财富·A股"

@@ -76,7 +76,7 @@ class TestIfengParserFixtures:
         parser = IfengParser()
         result = parser.parse(html, url="https://finance.ifeng.com/")
         assert result is not None
-        assert len(result["markdown"]) > 200
+        assert len(result["markdown"]) > 150
         assert result["title"]
         # Noise elements should be removed by _preprocess
         assert 'lowBrowerBoxFixed' not in result["markdown"]

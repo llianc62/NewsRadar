@@ -1,7 +1,7 @@
 """Smoke tests for HtmlParser base class and ParserRegistry routing."""
 import pytest
-from news.parser.parser import HtmlParser, _split_keyword_tags
-from news.parser.registry import parser_registry, ParserRegistry
+from news.parser.parser import HtmlParser, split_keyword_tags
+from news.parser.registry import registry, Registry
 
 
 class TestHtmlParserBase:
@@ -78,20 +78,20 @@ class TestHtmlParserBase:
 
 class TestSplitKeywordTags:
     def test_comma_separated(self):
-        assert _split_keyword_tags(["科技,AI, 经济"]) == ["科技", "AI", "经济"]
+        assert split_keyword_tags(["科技,AI, 经济"]) == ["科技", "AI", "经济"]
 
     def test_space_separated(self):
-        assert _split_keyword_tags(["科技 AI 经济"]) == ["科技", "AI", "经济"]
+        assert split_keyword_tags(["科技 AI 经济"]) == ["科技", "AI", "经济"]
 
     def test_dedup_preserves_order(self):
-        assert _split_keyword_tags(["科技,AI,科技"]) == ["科技", "AI"]
+        assert split_keyword_tags(["科技,AI,科技"]) == ["科技", "AI"]
 
 
 class TestParserRegistry:
     """Test routing behavior."""
 
     def test_registered_source_id_routes_to_correct_parser(self):
-        reg = ParserRegistry()
+        reg = Registry()
         reg.set_default(HtmlParser())
 
         class DummyParser(HtmlParser):
@@ -104,7 +104,7 @@ class TestParserRegistry:
         assert result["markdown"] == "dummy result"
 
     def test_unregistered_source_id_falls_back_to_default(self):
-        reg = ParserRegistry()
+        reg = Registry()
         reg.set_default(HtmlParser())
         html = "<html><head><title>Fallback</title></head><body>" + "<p>text " * 30 + "</p></body></html>"
         result = reg.parse("unknown-source", html, "")

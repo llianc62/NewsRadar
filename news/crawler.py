@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from news.fetcher import NewsnowFetcher, RssFetcher
-from news.parser import parser_registry
+from news.parser import registry as parser
 from news.images import ImageProcessor
 from news.models import NewsData, NewsItem
 from storage.files import LocalStorage, S3Storage
@@ -68,7 +68,6 @@ class Crawler:
     def __init__(
         self,
         config: dict,
-        parser_registry_obj: object | None = None,
         pg_db: Any = None,
     ):
         self._config = config
@@ -78,7 +77,7 @@ class Crawler:
         self.timeout = cfg.get("timeout", 30)
         self.max_retry = cfg.get("max_retry", 3)
 
-        self.parser_registry = parser_registry_obj or parser_registry
+        self.parser = parser
 
         # Source tiers — built once from config, rarely changes
         self._source_tiers = self._build_source_tiers()
@@ -115,11 +114,11 @@ class Crawler:
         """Response hook: correct encoding when the server omits charset.
 
         RFC 2616 §3.7.1 defaults to ISO-8859-1 when no charset is
-        specified, but many sites serve UTF-8 content.  chardet (via
-        ``apparent_encoding``) detects the real encoding and we apply it
-        before ``resp.text`` is ever accessed.
+        specified, but real-world sites serve UTF-8, GBK, and other
+        encodings.  chardet (via ``apparent_encoding``) detects the real
+        encoding and we apply it before ``resp.text`` is ever accessed.
         """
-        if response.encoding == "ISO-8859-1" and response.apparent_encoding == "utf-8":
+        if response.encoding == "ISO-8859-1":
             response.encoding = response.apparent_encoding
         return response
 
@@ -315,16 +314,16 @@ class Crawler:
             ) from e
 
         # ── Parse to Markdown ──────────────────────────────────────
-        parsed = self.parser_registry.parse(item["source_id"], resp.text, url)
-        if not parsed:
+        result = self.parser.parse(item["source_id"], resp.text, url)
+        if not result:
             raise Exception(f"无法提取页面正文内容: {url}")
 
-        item["title"] = parsed.get("title")
-        item["author"] = parsed.get("author", "")
-        item["published_at"] = parsed.get("published_at", "")
-        item["summary"] = parsed.get("summary", "")
-        item["category"] = parsed.get("category", "")
-        item["tags"] = parsed.get("tags", [])
+        item["title"] = result.get("title")
+        item["author"] = result.get("author", "")
+        item["published_at"] = result.get("published_at", "")
+        item["summary"] = result.get("summary", "")
+        item["category"] = result.get("category", "")
+        item["tags"] = result.get("tags", [])
 
         if not with_content:
             self.persist(item, output_style=output_style)
@@ -333,7 +332,7 @@ class Crawler:
         # ── Persistence ────────────────────────────────────────────
         if with_content:
             # Phase 1: download HTML + parse Markdown
-            item["content"] = parsed["markdown"]
+            item["content"] = result["markdown"]
             if not item["tags"] and item.get("content"):
                 item["tags"] = self._extract_keywords(item["content"])
 
@@ -509,17 +508,17 @@ class Crawler:
             return False
 
         # Pure text parsing — no image processing
-        parsed = self.parser_registry.parse(item["source_id"], resp.text, url)
-        if parsed is None:
+        result = self.parser.parse(item["source_id"], resp.text, url)
+        if result is None:
             print(f"[Crawler] No content extracted: {url}")
             return False
 
-        item["content"] = parsed["markdown"]
-        item["author"] = parsed.get("author", "")
-        item["published_at"] = parsed.get("published_at", "")
-        item["summary"] = parsed.get("summary", "")
-        item["category"] = parsed.get("category", "")
-        item["tags"] = parsed.get("tags", [])
+        item["content"] = result["markdown"]
+        item["author"] = result.get("author", "")
+        item["published_at"] = result.get("published_at", "")
+        item["summary"] = result.get("summary", "")
+        item["category"] = result.get("category", "")
+        item["tags"] = result.get("tags", [])
         if not item["tags"] and item.get("content"):
             item["tags"] = self._extract_keywords(item["content"])
         return True

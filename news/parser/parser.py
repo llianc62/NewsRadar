@@ -13,10 +13,10 @@ from typing import Any, Dict, List, Optional
 
 import trafilatura  # kept for metadata extraction
 from readability import Document
-from markdownify import markdownify as _md
+from markdownify import markdownify
 
 
-def _split_keyword_tags(tags: List[str]) -> List[str]:
+def split_keyword_tags(tags: List[str]) -> List[str]:
     """Normalise keyword tags: split comma/space-separated strings into
     individual tags and remove duplicates while preserving order."""
     result: List[str] = []
@@ -125,7 +125,7 @@ class HtmlParser:
             return None
 
         # markdownify: HTML → Markdown
-        markdown = _md(
+        markdown = markdownify(
             content_html,
             heading_style="ATX",
             strip=["script", "style"],
@@ -173,7 +173,7 @@ class HtmlParser:
             tags = list(metadata.categories[1:])
         if metadata.tags:
             tags = list(set(tags + metadata.tags))
-        tags = _split_keyword_tags(tags)
+        tags = split_keyword_tags(tags)
 
         author = (metadata.author or "").strip()
         published_at = (metadata.date or "").strip()
