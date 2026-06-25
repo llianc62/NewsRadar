@@ -22,6 +22,7 @@ import feedparser
 import requests
 
 from news.fetcher.fetcher import Fetcher
+from news.parser.parser import HtmlParser
 from utils import DEFAULT_TIMEZONE, http_get_with_retry
 
 
@@ -52,6 +53,7 @@ class ParsedRSSItem:
     summary: Optional[str] = None
     author: Optional[str] = None
     guid: Optional[str] = None
+    content: str = ""  # Inline HTML content from <content:encoded> / content_html
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -153,6 +155,16 @@ class RSSParser:
             if not title and url:
                 title = url
 
+        # Extract inline content (RSS 2.0 <content:encoded>)
+        content = ""
+        content_list = entry.get("content", [])
+        if content_list and isinstance(content_list, list):
+            for c in content_list:
+                val = (c.get("value") if isinstance(c, dict) else "")
+                if val:
+                    content = val
+                    break
+
         if not title:
             return None
 
@@ -165,6 +177,7 @@ class RSSParser:
             guid=entry.get("id")
             or (entry.get("guid", {}) if isinstance(entry.get("guid"), dict) else entry.get("guid"))
             or url,
+            content=content,
         )
 
     # ── JSON Feed 1.1 parsing ──────────────────────────────────────
@@ -211,11 +224,14 @@ class RSSParser:
         date_str = item_data.get("date_published") or item_data.get("date_modified")
         published_at = self._parse_iso_date(date_str) if date_str else None
 
+        # Inline content (JSON Feed content_html / content_text)
+        content_html = item_data.get("content_html", "")
+        content_text = item_data.get("content_text", "")
+        content = content_html or content_text
+
         # Summary: prefer summary, fall back to content_text
         summary = item_data.get("summary", "")
         if not summary:
-            content_text = item_data.get("content_text", "")
-            content_html = item_data.get("content_html", "")
             summary = content_text or self._clean_text(content_html)
 
         if summary:
@@ -245,6 +261,7 @@ class RSSParser:
             summary=summary or None,
             author=author,
             guid=guid,
+            content=content,
         )
 
     # ── Text cleaning ──────────────────────────────────────────────
@@ -449,11 +466,58 @@ class RssFetcher(Fetcher):
                         "published_at": parsed.published_at or "",
                         "summary": parsed.summary or "",
                         "author": parsed.author or "",
-                        "content": "",
+                        "content": parsed.content or "",
                         "category": "",
                         "tags": [],
                         "ranks": [],
                     }
+                )
+
+            # ── Inline HTML fallback (no-URL items only) ────────────
+            # Items with a URL go through the normal crawl+parse
+            # pipeline — the actual page is authoritative.  Only items
+            # without a URL use inline HTML from the feed as a last
+            # resort.
+            inline_count = 0
+            for entry in entries:
+                if entry.get("url"):
+                    entry["content"] = ""
+                    continue
+                raw_html = entry.get("content", "")
+                if not raw_html:
+                    continue
+                result = HtmlParser().parse(raw_html, "")
+                if result and result.get("markdown"):
+                    entry["content"] = result["markdown"]
+                    if not entry["author"]:
+                        entry["author"] = result.get("author", "")
+                    if not entry["published_at"]:
+                        entry["published_at"] = result.get("published_at", "")
+                    if not entry["summary"]:
+                        entry["summary"] = result.get("summary", "")
+                    entry["category"] = result.get("category", "")
+                    entry["tags"] = result.get("tags", [])
+                    inline_count += 1
+                else:
+                    entry["content"] = ""
+
+            # ── Filter title-shaped tags ──────────────────────────────
+            # Some sites stuff the full article title into
+            # <meta name="keywords">; trafilatura picks it up as a tag.
+            # Drop any tag that is a long substring of the title.
+            for entry in entries:
+                title = entry.get("title", "")
+                tags = entry.get("tags", [])
+                if title and tags:
+                    entry["tags"] = [
+                        t for t in tags
+                        if not (len(t) > 6 and (t in title or title in t))
+                    ]
+
+            if inline_count:
+                print(
+                    f"[RSS] {feed.name}: parsed {inline_count} items "
+                    f"from inline HTML (no-URL fallback)"
                 )
 
             print(f"[RSS] {feed.name}: got {len(entries)} items")

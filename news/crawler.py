@@ -388,6 +388,8 @@ class Crawler:
         # ── Cross-source URL dedup ─────────────────────────────────
         all_items = self._dedup_items_by_url(all_items)
 
+        all_items = self._filter_existing_content_urls(all_items)
+
         # ── Enrichment ─────────────────────────────────────────────
         if with_content:
             self.enrich_content(*all_items, with_image=with_image)
@@ -454,6 +456,85 @@ class Crawler:
     # ═══════════════════════════════════════════════════════════════════
     # Internal — batch content fetch
     # ═══════════════════════════════════════════════════════════════════
+
+    def _filter_existing_content_urls(
+        self,
+        items: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Remove items whose content already exists in the DB.
+
+        For items with a URL, checks by URL.  For items without a URL
+        (e.g. RSS feeds that only ship inline HTML), checks by
+        ``(source_id, guid)``.
+
+        If the DB is unavailable, all items pass through unchanged.
+        """
+        try:
+            pg = self._get_pg_db()
+        except Exception:
+            return items
+
+        # ── URL-based check ───────────────────────────────────────
+        url_items = [it for it in items if it.get("url")]
+        existing_urls: set = set()
+        if url_items:
+            try:
+                existing_urls = pg.get_urls_with_content(
+                    [it["url"] for it in url_items]
+                )
+            except Exception:
+                pass
+
+        # ── GUID-based check (no-URL items only) ───────────────────
+        existing_guids: set = set()
+        no_url_pairs = [
+            (it["source_id"], it["guid"])
+            for it in items
+            if not it.get("url") and it.get("guid")
+        ]
+        if no_url_pairs:
+            # Group by source_id for batch query
+            by_source: Dict[str, List[str]] = {}
+            for sid, guid in no_url_pairs:
+                by_source.setdefault(sid, []).append(guid)
+
+            try:
+                with pg.get_conn() as conn:
+                    with conn.cursor() as cur:
+                        for sid, guids in by_source.items():
+                            cur.execute(
+                                """SELECT guid FROM news_articles
+                                   WHERE source_id = %s
+                                     AND guid = ANY(%s)
+                                     AND content IS NOT NULL
+                                     AND content != ''""",
+                                (sid, guids),
+                            )
+                            for row in cur:
+                                existing_guids.add((sid, row[0]))
+            except Exception:
+                pass
+
+        if not existing_urls and not existing_guids:
+            return items
+
+        skipped = 0
+        filtered = []
+        for it in items:
+            if it.get("url") and it["url"] in existing_urls:
+                skipped += 1
+            elif (not it.get("url")
+                  and (it.get("source_id"), it.get("guid")) in existing_guids):
+                skipped += 1
+            else:
+                filtered.append(it)
+
+        if skipped:
+            print(
+                f"[Crawler] Skipping {skipped} items that already have content in DB"
+            )
+
+        return filtered
 
     def _run_batch_parse(
         self,

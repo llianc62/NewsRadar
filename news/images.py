@@ -219,6 +219,8 @@ class ImageProcessor:
         """Extract original filename from image *url*, falling back to
         a generated name if the URL path doesn't contain a usable filename.
         """
+        import hashlib
+
         parsed = urlparse(url)
         path = unquote(parsed.path)
         name = path.rsplit("/", 1)[-1] if "/" in path else path
@@ -226,8 +228,15 @@ class ImageProcessor:
         # Keep only safe characters
         name = re.sub(r"[^\w.\-]", "_", name)
 
-        if not name or "." not in name:
-            return f"image{default_ext}"
+        if not name:
+            url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+            return f"{url_hash}{default_ext}"
+
+        if "." not in name:
+            # Path has a unique identifier but no file extension
+            # (e.g. 36kr's v2_<uuid>_img_000 URLs). Keep the
+            # identifier so multiple such images don't collide.
+            return f"{name}{default_ext}"
 
         # Ensure extension matches content type if possible
         root, ext = name.rsplit(".", 1)

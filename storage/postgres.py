@@ -559,6 +559,25 @@ class PostgreSQL:
 
     # ── Query methods ──────────────────────────────────────────────
 
+    def get_urls_with_content(self, urls: List[str]) -> set:
+        """Return the subset of *urls* that already have non-empty content.
+
+        Used before content enrichment to skip downloading articles
+        that have already been fetched and parsed.
+        """
+        if not urls:
+            return set()
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT url FROM news_articles
+                       WHERE url = ANY(%s)
+                         AND content IS NOT NULL
+                         AND content != ''""",
+                    (urls,),
+                )
+                return {row[0] for row in cur.fetchall()}
+
     def get_recent_news(
         self,
         limit: int = 50,

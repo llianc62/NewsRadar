@@ -12,7 +12,11 @@ from news.parser.sites.kaopu import KaopuParser
 from news.parser.sites.sspai import SspaiParser
 from news.parser.sites.thepaper import ThepaperParser
 from news.parser.sites.wallstreetcn import WallstreetcnParser
+from news.parser.sites.cctv import CctvParser
 from news.parser.sites.zaobao import ZaobaoParser
+from news.parser.sites.gelonghui import GelonghuiParser
+from news.parser.sites.huanqiu import HuanqiuParser
+from news.parser.sites.xinhua import XinhuaParser
 
 # Default parser for unregistered source_ids
 registry.set_default(HtmlParser())
@@ -21,6 +25,7 @@ registry.set_default(HtmlParser())
 # — one parser instance per domain; multiple source_ids share the same instance
 _wsc = WallstreetcnParser()
 _cls = ClsParser()
+_xinhua = XinhuaParser()
 
 registry.register("wallstreetcn-hot", _wsc, domains=["wallstreetcn.com"])
 registry.register("wallstreetcn-news", _wsc)
@@ -35,3 +40,9 @@ registry.register("fastbull-news", FastbullParser(), domains=["fastbull.com"])
 registry.register("ithome", IthomeParser(), domains=["ithome.com"])
 registry.register("sspai", SspaiParser(), domains=["sspai.com"])
 registry.register("juejin", JuejinParser(), domains=["juejin.cn"])
+registry.register("gelonghui-hot", GelonghuiParser(), domains=["gelonghui.com"])
+registry.register("huanqiu", HuanqiuParser(), domains=["huanqiu.com"])
+registry.register("cctv-world", CctvParser(), domains=["cctv.com", "cctvnews.cctv.com", "news.cctv.com"])
+registry.register("xinhua-politics", _xinhua, domains=["xinhuanet.com", "news.cn"])
+registry.register("xinhua-finance", _xinhua, domains=["xinhuanet.com", "news.cn"])
+registry.register("xinhua-world", _xinhua, domains=["xinhuanet.com", "news.cn"])

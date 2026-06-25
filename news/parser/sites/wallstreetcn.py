@@ -91,19 +91,25 @@ class WallstreetcnParser(HtmlParser):
                     html, "property=[\"']article:published_time[\"']"
                 )
 
-        # Tags: categories (name fields) + article.tags
+        # Noise categories from SSR — site navigation labels, not article topics
+        _NOISE_CATEGORIES = frozenset({
+            "见闻首页", "见闻", "直播", "首页", "快讯", "要闻", "深度",
+            "精选", "推荐", "最新", "热门", "全部",
+        })
+
+        # Tags: categories (name fields) + article.tags, minus noise
         tags: list[str] = []
         categories = article.get("categories", [])
         if isinstance(categories, list):
             for cat in categories:
                 if isinstance(cat, dict):
                     name = cat.get("name", "")
-                    if name:
+                    if name and name not in _NOISE_CATEGORIES:
                         tags.append(name)
         raw_tags = article.get("tags", [])
         if isinstance(raw_tags, list):
             for t in raw_tags:
-                if isinstance(t, str) and t not in tags:
+                if isinstance(t, str) and t not in tags and t not in _NOISE_CATEGORIES:
                     tags.append(t)
 
         # Summary: content_short → og:description → None
@@ -123,10 +129,11 @@ class WallstreetcnParser(HtmlParser):
             published_at=published_at,
             summary=summary,
             tags=tags,
-            category=categories[0]["name"] if (
-                isinstance(categories, list) and len(categories) > 0
-                and isinstance(categories[0], dict)
-            ) else "",
+            category=next(
+                (c["name"] for c in categories
+                 if isinstance(c, dict) and c.get("name", "") not in _NOISE_CATEGORIES),
+                "",
+            ),
         )
 
     # ── Internal helpers ────────────────────────────────────────────
