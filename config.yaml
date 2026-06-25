@@ -50,25 +50,21 @@ crawler:
         name: "凤凰网"
         tier: 2
         priority: 70
-      # ── T3 垂直 ──
-
-      # ── T4 资讯 ──
+      # ── T3 垂直深度 ──
       - id: "ithome"
         name: "IT之家"
+        tier: 4
+        priority: 35
+      # ── T4 内容资讯 ──
+      - id: "juejin"
+        name: "稀土掘金"
         tier: 4
         priority: 35
       - id: "sspai"
         name: "少数派"
         tier: 4
         priority: 35
-      - id: "juejin"
-        name: "稀土掘金"
-        tier: 4
-        priority: 35
-      # - id: "toutiao"
-      #   name: "今日头条"
-      #   tier: 4
-      #   priority: 35
+
 
 
   rss:

@@ -64,8 +64,8 @@ ICONS = {
     "alert-triangle": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>',
     "gauge": '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg>',
 }
-# ── Refetch state (in-memory) ─────────────────────────────────────
 
+# ── Refetch state (in-memory) ─────────────────────────────────────
 _refetch_tasks: dict[int, dict] = {}       # key=article_id, 去重+状态跟踪
 _notifications: list[dict] = []            # 通知列表，最多 50 条
 _notification_counter: int = 0             # 自增 ID
@@ -73,8 +73,8 @@ _notification_lock = threading.Lock()      # 线程安全
 _refetch_executor: ThreadPoolExecutor | None = None
 
 # ── SSE state ──
-_sse_clients: set["asyncio.Queue"] = set()
 _sse_clients_lock = threading.Lock()
+_sse_clients: set["asyncio.Queue"] = set()
 _sse_event_loop: "asyncio.AbstractEventLoop | None" = None
 
 
@@ -373,10 +373,10 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
 
         tier_labels_with_counts = [
             {"tier": 0, "label": "全部", "count": stats_data["total_count"]},
-            {"tier": 1, "label": "T1·核心", "count": stats_data["t1_count"]},
-            {"tier": 2, "label": "T2·重要", "count": stats_data["t2_count"]},
-            {"tier": 3, "label": "T3·关注", "count": stats_data["t3_count"]},
-            {"tier": 4, "label": "T4·参考", "count": stats_data["t4_count"]},
+            {"tier": 1, "label": "T1·主流", "count": stats_data["t1_count"]},
+            {"tier": 2, "label": "T2·综合", "count": stats_data["t2_count"]},
+            {"tier": 3, "label": "T3·垂直", "count": stats_data["t3_count"]},
+            {"tier": 4, "label": "T4·资讯", "count": stats_data["t4_count"]},
         ]
 
         # ── Sentiment toggles with counts ──
