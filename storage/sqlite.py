@@ -184,15 +184,40 @@ class Sqlite:
 
     # ── Query methods ───────────────────────────────────────────────
 
-    def get_all(self, date: str) -> List[sqlite3.Row]:
-        """Return all rows for *date*, ordered by tier ASC, priority DESC."""
+    def get_all(
+        self,
+        date: str,
+        *,
+        start_time: str | None = None,
+        end_time: str | None = None,
+    ) -> List[sqlite3.Row]:
+        """Return rows for *date*, optionally filtered by created_at range.
+
+        Args:
+            date: Date string (YYYY-MM-DD), used to locate the DB file.
+            start_time: If set, only rows with ``created_at > this``
+                (format: ``YYYY-MM-DD HH:MM:SS``).
+            end_time: If set, only rows with ``created_at < this``
+                (format: ``YYYY-MM-DD HH:MM:SS``).
+
+        Returns:
+            Matching rows ordered by tier ASC, priority DESC.
+        """
         conn = self._get_connection(date)
         conn.row_factory = sqlite3.Row
-        cursor = conn.execute(
-            """SELECT * FROM news_items
-               ORDER BY tier ASC, priority DESC"""
-        )
-        return cursor.fetchall()
+
+        sql = "SELECT * FROM news_items WHERE 1=1"
+        params: list = []
+
+        if start_time:
+            sql += " AND created_at > ?"
+            params.append(start_time)
+        if end_time:
+            sql += " AND created_at < ?"
+            params.append(end_time)
+
+        sql += " ORDER BY tier ASC, priority DESC"
+        return conn.execute(sql, params).fetchall()
 
     # ── Cleanup ─────────────────────────────────────────────────────
 
