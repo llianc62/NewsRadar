@@ -12,6 +12,7 @@ from email.utils import formataddr, formatdate
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import pytz
 from jinja2 import Environment, BaseLoader
 
 from storage.s3 import S3Client
@@ -145,8 +146,12 @@ def send_email(
         return False
 
 
-def _iso_to_db_format(iso_str: str | None) -> str | None:
+def _iso_to_db_format(iso_str: str | None, target_tz: str = "Asia/Shanghai") -> str | None:
     """Convert ISO 8601 string to ``YYYY-MM-DD HH:MM:SS`` for SQLite comparison.
+
+    The input is treated as UTC (or a timezone-aware string). It is converted
+    to *target_tz* before formatting because SQLite ``created_at`` values are
+    stored in the configured timezone (default ``Asia/Shanghai``).
 
     Returns ``None`` if *iso_str* is empty or unparseable -- callers should
     treat ``None`` as "no filter".
@@ -155,6 +160,11 @@ def _iso_to_db_format(iso_str: str | None) -> str | None:
         return None
     try:
         dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(pytz.timezone(target_tz))
+        else:
+            # Naive datetime — assume already in target_tz (no conversion needed)
+            pass
         return dt.strftime("%Y-%m-%d %H:%M:%S")
     except (ValueError, TypeError):
         print(f"[Notifier] Failed to parse time: {iso_str!r}, ignoring filter")
@@ -201,7 +211,7 @@ def run_notifier(
     s3 = S3Client.init_by_config(config["storage"]["cloud"])
     if not s3:
         raise ValueError(
-            "crawl requires S3 storage. "
+            "notify requires S3 storage. "
             "Configure storage.cloud in config.yaml or set CLOUD_S3_* env vars."
         )
     db_path = Path(data_dir) / "db" / f"{date}.db"
@@ -213,8 +223,8 @@ def run_notifier(
             print("[Notify] Failed to download DB from S3")
 
     db = Sqlite(data_dir=data_dir, timezone=timezone)
-    db_start = _iso_to_db_format(start_time)
-    db_end = _iso_to_db_format(end_time)
+    db_start = _iso_to_db_format(start_time, timezone)
+    db_end = _iso_to_db_format(end_time, timezone)
     rows = db.get_all(date, start_time=db_start, end_time=db_end)
     if not rows:
         print("No items to notify")
