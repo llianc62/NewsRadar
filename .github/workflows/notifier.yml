@@ -31,6 +31,20 @@ jobs:
       - name: Install dependencies
         run: uv sync --no-dev
 
+      - name: Get last notify time
+        id: last_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SINCE=$(gh run list \
+            --workflow notifier.yml \
+            --branch master \
+            --status success \
+            --limit 1 \
+            --json createdAt \
+            --jq '.[0].createdAt // ""')
+          echo "since=$SINCE" >> $GITHUB_OUTPUT
+
       - name: Run notifier
         env:
           CLOUD_S3_ENDPOINT_URL: ${{ secrets.CLOUD_S3_ENDPOINT_URL }}
@@ -43,4 +57,4 @@ jobs:
           EMAIL_FROM_ADDR: ${{ secrets.EMAIL_FROM_ADDR }}
           EMAIL_TO_ADDR: ${{ secrets.EMAIL_TO_ADDR }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-        run: python -m cli notify
+        run: python -m cli notify --start-time "${{ steps.last_run.outputs.since }}"
