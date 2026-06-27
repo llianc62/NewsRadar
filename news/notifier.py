@@ -1,19 +1,43 @@
 # coding=utf-8
-"""HTML report generation and email notification.
+"""Email report generation and SMTP notification.
 
-Imports tier display constants from ``news.constants`` (single source
-of truth shared with the web frontend).
+HTML rendering uses Jinja2 templates from ``web/templates/notifier/``.
 """
 
 import smtplib
+from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr, formatdate
-from typing import Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from jinja2 import Environment, BaseLoader
 
 from storage.s3 import S3Client
 
-from news.constants import TIER_LABELS, TIER_COLORS, TIER_BG
+# ── Jinja2 template setup ────────────────────────────────────────────
+_TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "web" / "templates" / "notifier"
+
+_env = Environment(
+    loader=BaseLoader(),
+    autoescape=False,  # Email HTML — we trust the template author
+)
+
+
+def load_template(template_name: str) -> str:
+    """Read a template file from ``web/templates/notifier/``."""
+    path = _TEMPLATES_DIR / template_name
+    if not path.exists():
+        raise FileNotFoundError(f"Template not found: {path}")
+    return path.read_text(encoding="utf-8")
+
+
+def render_template(template_name: str, **context: Any) -> str:
+    """Load a template and render with Jinja2."""
+    raw = load_template(template_name)
+    template = _env.from_string(raw)
+    return template.render(**context)
 
 
 def build_html_report(
@@ -22,7 +46,9 @@ def build_html_report(
     time_str: str,
     total_count: int,
 ) -> str:
-    """Generate a simple, clean HTML report.
+    """Render the email report from the ``email_report.html`` Jinja2 template.
+
+    Items not matching any keyword group (``__unmatched__``) are excluded.
 
     Args:
         grouped_items: {group_name: [item_dict, ...]} from match_and_group()
@@ -31,91 +57,36 @@ def build_html_report(
         total_count: Total items in report
 
     Returns:
-        HTML string
+        Rendered HTML string.
     """
-    rows_html = ""
-    tier_labels = {1: "T1", 2: "T2", 3: "T3", 4: "T4"}
-    tier_colors = {1: "#22c55e", 2: "#3b82f6", 3: "#f59e0b", 4: "#94a3b8"}
+    matched = {k: v for k, v in grouped_items.items() if k != "__unmatched__"}
+    return render_template(
+        "email_report.html",
+        date=date,
+        time_str=time_str,
+        total_count=total_count,
+        grouped_items=matched,
+    )
 
-    for group_name, items in grouped_items.items():
-        if not items:
-            continue
-        label = group_name if group_name != "__unmatched__" else "其他新闻"
-        rows_html += (
-            f'<h3 style="color:#3b82f6;margin-top:24px;border-bottom:1px solid #1e293b;padding-bottom:8px;">'
-            f'{label} <span style="font-size:14px;color:#64748b;">({len(items)})</span></h3>\n'
-        )
-        rows_html += (
-            '<table style="width:100%;border-collapse:collapse;font-size:14px;">\n'
-        )
 
-        for item in items:
-            title = item.get("title", "")
-            source = item.get("source_name", "")
-            source_type = item.get("source_type", "hotlist")
-            url = item.get("url", "")
-            rank = item.get("rank", "")
-            summary = item.get("summary", "")
-            tier = item.get("tier", 4)
-            tier_color = tier_colors.get(tier, "#94a3b8")
-            tier_label = tier_labels.get(tier, "T4")
+def save_html_report(html: str, data_dir: str, date: str, time_filename: str) -> Path:
+    """Save rendered HTML report to ``{data_dir}/html/{date}/{time_filename}.html``.
 
-            if source_type == "rss":
-                type_label = "[RSS]"
-            elif rank:
-                type_label = f"[#{rank}]"
-            else:
-                type_label = ""
+    Args:
+        html: Rendered HTML content.
+        data_dir: Base data directory (e.g. ``"output"``).
+        date: YYYY-MM-DD subdirectory.
+        time_filename: Time part for filename (e.g. ``"08-30-00"``).
 
-            title_html = (
-                f'<a href="{url}" style="color:#e2e8f0;text-decoration:none;">{title}</a>'
-                if url
-                else title
-            )
-
-            rows_html += (
-                f'<tr style="border-bottom:1px solid #1e293b;">'
-                f'<td style="padding:8px;color:#64748b;white-space:nowrap;width:60px;">{type_label}</td>'
-                f'<td style="padding:8px;">'
-                f'<span style="color:{tier_color};font-size:11px;margin-right:6px;">[{tier_label}]</span>'
-                f'{title_html}</td>'
-                f'<td style="padding:8px;color:#64748b;white-space:nowrap;width:100px;">{source}</td>'
-                f'</tr>\n'
-            )
-            if summary:
-                rows_html += (
-                    f'<tr style="border-bottom:1px solid #1e293b;">'
-                    f'<td></td>'
-                    f'<td colspan="2" style="padding:4px 8px 8px;color:#94a3b8;font-size:13px;">'
-                    f'{summary[:200]}</td>'
-                    f'</tr>\n'
-                )
-
-        rows_html += "</table>\n"
-
-    html = f"""<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>News Report — {date} {time_str}</title>
-<style>
-  body {{ background:#0f172a; color:#e2e8f0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-         max-width:800px; margin:0 auto; padding:20px; }}
-  h1 {{ font-size:22px; }}
-  h2 {{ font-size:16px; color:#94a3b8; font-weight:400; }}
-  h3 {{ font-size:15px; }}
-  a:hover {{ text-decoration:underline; }}
-</style>
-</head>
-<body>
-<h1>\U0001f4f0 新闻速报</h1>
-<h2>{date} {time_str} · {total_count} 条新闻 · {len(grouped_items)} 个分组</h2>
-{rows_html}
-<p style="margin-top:32px;color:#475569;font-size:12px;">Generated by NewsNow Crawler</p>
-</body>
-</html>"""
-    return html
+    Returns:
+        Path to the saved file.
+    """
+    out_dir = Path(data_dir) / "html" / date
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{time_filename}.html"
+    out_path.write_text(html, encoding="utf-8")
+    print(f"[Notifier] Saved {out_path}")
+    return out_path
 
 
 def send_email(
@@ -174,35 +145,56 @@ def send_email(
         return False
 
 
-def run_notifier(config: dict) -> None:
-    """Run the full notification pipeline (full processing, no persistence).
+def _iso_to_db_format(iso_str: str | None) -> str | None:
+    """Convert ISO 8601 string to ``YYYY-MM-DD HH:MM:SS`` for SQLite comparison.
+
+    Returns ``None`` if *iso_str* is empty or unparseable -- callers should
+    treat ``None`` as "no filter".
+    """
+    if not iso_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        print(f"[Notifier] Failed to parse time: {iso_str!r}, ignoring filter")
+        return None
+
+
+def run_notifier(
+    config: dict,
+    dry_run: bool = False,
+    start_time: str | None = None,
+    end_time: str | None = None,
+) -> None:
+    """Run the full notification pipeline (render, save, optionally send).
 
     1. Download daily SQLite DB from S3 (CI only)
     2. Query all items
     3. Match keywords and group
     4. Build HTML report
-    5. Send email
+    5. Save to ``{data_dir}/html/{date}/{time}.html``
+    6. Send email (unless *dry_run*)
 
-    The notifier is read-only — it never uploads back to S3.
-    Each run processes the entire day's data from scratch.
+    Args:
+        config: Full configuration dict.
+        dry_run: If True, save the HTML report but skip sending email.
     """
     import os
-    from pathlib import Path
 
     from news.keywords import load_frequency_words, match_and_group
     from storage.sqlite import Sqlite
-    from utils import format_date_today, format_time_now, DEFAULT_TIMEZONE
+    from utils import format_date_today, format_time_now, get_configured_time, DEFAULT_TIMEZONE
 
     timezone = config.get("app", {}).get("timezone", DEFAULT_TIMEZONE)
     date = format_date_today(timezone)
     time_str = format_time_now(timezone)
+    time_filename = get_configured_time(timezone).strftime("%H-%M-%S")
 
     print(f"=== Notifier === {date} {time_str}")
 
     storage_config = config.get("storage", {})
     data_dir = storage_config.get("local", {}).get("data_dir", "output")
-    db_dir = Path(data_dir) / "db"
-    db_path = db_dir / f"{date}.db"
 
     # ── Download daily DB from S3 ─────────────────────────────────
     # GitHub Actions runs are ephemeral — pull the snapshot first.
@@ -212,6 +204,7 @@ def run_notifier(config: dict) -> None:
             "crawl requires S3 storage. "
             "Configure storage.cloud in config.yaml or set CLOUD_S3_* env vars."
         )
+    db_path = Path(data_dir) / "db" / f"{date}.db"
     if s3.object_exists(f"db/{date}.db"):
         db_path.parent.mkdir(parents=True, exist_ok=True)
         if s3.download_file(f"db/{date}.db", db_path):
@@ -220,7 +213,9 @@ def run_notifier(config: dict) -> None:
             print("[Notify] Failed to download DB from S3")
 
     db = Sqlite(data_dir=data_dir, timezone=timezone)
-    rows = db.get_all(date)
+    db_start = _iso_to_db_format(start_time)
+    db_end = _iso_to_db_format(end_time)
+    rows = db.get_all(date, start_time=db_start, end_time=db_end)
     if not rows:
         print("No items to notify")
         db.cleanup()
@@ -248,18 +243,24 @@ def run_notifier(config: dict) -> None:
     # Build HTML report
     html = build_html_report(grouped, date, time_str, len(items))
 
-    # Send email
-    email_config = config.get("notification", {}).get("email", {})
-    smtp_server = email_config.get("smtp_server", "smtp.qq.com")
-    smtp_port = email_config.get("smtp_port", 587)
-    from_addr = email_config.get("from_addr", "")
-    to_addr = email_config.get("to_addr", "")
-    password = email_config.get("password") or os.environ.get("EMAIL_PASSWORD", "")
+    # Save to output directory
+    save_html_report(html, data_dir, date, time_filename)
 
-    if not all([from_addr, to_addr, password]):
-        print("[Email] Missing config — skipping send")
+    # Send email (skip in dry-run mode)
+    if dry_run:
+        print("[Notifier] Dry run — skipping email send")
     else:
-        send_email(html, smtp_server, smtp_port, from_addr, to_addr, password)
+        email_config = config.get("notification", {}).get("email", {})
+        smtp_server = email_config.get("smtp_server", "smtp.qq.com")
+        smtp_port = email_config.get("smtp_port", 587)
+        from_addr = email_config.get("from_addr", "")
+        to_addr = email_config.get("to_addr", "")
+        password = email_config.get("password") or os.environ.get("EMAIL_PASSWORD", "")
+
+        if not all([from_addr, to_addr, password]):
+            print("[Email] Missing config — skipping send")
+        else:
+            send_email(html, smtp_server, smtp_port, from_addr, to_addr, password)
 
     db.cleanup()
     print("=== Done ===")
