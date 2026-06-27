@@ -322,7 +322,7 @@ def _summarize_tier(result: dict) -> str:
         return "too_short"
 
 
-def test_single_feed(feed: dict, sample_count: int = 2) -> list[dict]:
+def _run_single_feed(feed: dict, sample_count: int = 2) -> list[dict]:
     """Test a single RSS feed using the production code path.
 
     Flow: RSS feed → sample URLs → HTTP download → registry.parse()
@@ -492,7 +492,7 @@ def main():
 
     all_results: dict[str, list[dict]] = {}
     for feed in feeds:
-        results = test_single_feed(feed)
+        results = _run_single_feed(feed)
         all_results[feed["source_id"]] = results
 
     # ── Final summary ─────────────────────────────────────────────

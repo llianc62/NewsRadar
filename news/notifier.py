@@ -2,6 +2,10 @@
 """Email report generation and SMTP notification.
 
 HTML rendering uses Jinja2 templates from ``web/templates/notifier/``.
+
+SMTP server is auto-detected from the ``from_addr`` email domain when
+not explicitly configured.  See :data:`SMTP_PRESETS` for the built-in
+provider table.
 """
 
 import smtplib
@@ -60,6 +64,8 @@ def build_html_report(
     Returns:
         Rendered HTML string.
     """
+    from news.constants import TIER_LABELS, TIER_COLORS, TIER_BG
+
     matched = {k: v for k, v in grouped_items.items() if k != "__unmatched__"}
     return render_template(
         "email_report.html",
@@ -67,6 +73,9 @@ def build_html_report(
         time_str=time_str,
         total_count=total_count,
         grouped_items=matched,
+        TIER_LABELS=TIER_LABELS,
+        TIER_COLORS=TIER_COLORS,
+        TIER_BG=TIER_BG,
     )
 
 
@@ -88,6 +97,64 @@ def save_html_report(html: str, data_dir: str, date: str, time_filename: str) ->
     out_path.write_text(html, encoding="utf-8")
     print(f"[Notifier] Saved {out_path}")
     return out_path
+
+
+# ── SMTP auto-detection ───────────────────────────────────────────────
+
+SMTP_PRESETS: dict[str, tuple[str, int]] = {
+    # 腾讯系
+    "qq.com":            ("smtp.qq.com", 587),
+    "foxmail.com":       ("smtp.qq.com", 587),
+    # 网易系
+    "163.com":           ("smtp.163.com", 465),
+    "126.com":           ("smtp.126.com", 465),
+    "yeah.net":          ("smtp.yeah.net", 465),
+    # 国际
+    "gmail.com":         ("smtp.gmail.com", 587),
+    "outlook.com":       ("smtp-mail.outlook.com", 587),
+    "hotmail.com":       ("smtp-mail.outlook.com", 587),
+    "live.com":          ("smtp-mail.outlook.com", 587),
+    "icloud.com":        ("smtp.mail.me.com", 587),
+    "zoho.com":          ("smtp.zoho.com", 587),
+    # 新浪 / 搜狐 / 阿里
+    "sina.com":          ("smtp.sina.com", 587),
+    "sohu.com":          ("smtp.sohu.com", 465),
+    "aliyun.com":        ("smtp.aliyun.com", 465),
+}
+
+_DEFAULT_SMTP_SERVER = "smtp.qq.com"
+_DEFAULT_SMTP_PORT = 587
+
+
+def resolve_smtp_config(
+    from_addr: str,
+    smtp_server: str = "",
+    smtp_port: int = 0,
+) -> tuple[str, int]:
+    """Resolve SMTP server and port.
+
+    When *from_addr* is a recognised provider, use the preset values.
+    Explicit *smtp_server* / *smtp_port* (from config) always take
+    precedence.
+
+    Returns:
+        ``(server, port)`` tuple — guaranteed to be non-empty.
+    """
+    # 1. Explicit config wins
+    if smtp_server and smtp_port:
+        return smtp_server, smtp_port
+
+    # 2. Auto-detect from from_addr domain
+    domain = from_addr.rsplit("@", 1)[-1].strip().lower()
+    preset = SMTP_PRESETS.get(domain)
+    if preset is not None:
+        return preset
+
+    # 3. Partial override OR unknown domain → safe defaults
+    return (
+        smtp_server or _DEFAULT_SMTP_SERVER,
+        smtp_port or _DEFAULT_SMTP_PORT,
+    )
 
 
 def send_email(
@@ -204,7 +271,7 @@ def run_notifier(
     print(f"=== Notifier === {date} {time_str}")
 
     storage_config = config.get("storage", {})
-    data_dir = storage_config.get("local", {}).get("data_dir", "output")
+    data_dir = storage_config.get("local", {}).get("data_path", "output")
 
     # ── Download daily DB from S3 ─────────────────────────────────
     # GitHub Actions runs are ephemeral — pull the snapshot first.
@@ -244,7 +311,7 @@ def run_notifier(
         freq_path = "frequency_words.txt"
     if os.path.exists(freq_path):
         word_groups, filter_words, global_filters = load_frequency_words(freq_path)
-        max_per = config.get("notification", {}).get("max_news_per_keyword", 0)
+        max_per = config.get("notification", {}).get("keyword_limit_news", 0)
         grouped = match_and_group(items, word_groups, global_filters, max_per)
         print(f"Matched groups: {list(grouped.keys())}")
     else:
@@ -261,11 +328,10 @@ def run_notifier(
         print("[Notifier] Dry run — skipping email send")
     else:
         email_config = config.get("notification", {}).get("email", {})
-        smtp_server = email_config.get("smtp_server", "smtp.qq.com")
-        smtp_port = email_config.get("smtp_port", 587)
         from_addr = email_config.get("from_addr", "")
         to_addr = email_config.get("to_addr", "")
         password = email_config.get("password") or os.environ.get("EMAIL_PASSWORD", "")
+        smtp_server, smtp_port = resolve_smtp_config(from_addr)
 
         if not all([from_addr, to_addr, password]):
             print("[Email] Missing config — skipping send")

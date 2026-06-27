@@ -243,19 +243,19 @@ class NewsRadarDaemon:
             (lambda: self._worker("Crawl", self._crawl_queue, self._crawl_job, self._crawl_lock), self._crawl_lock),
             (lambda: self._worker("Sync", self._sync_queue, self._sync_job, self._sync_lock), self._sync_lock),
         ]:
-            t = asyncio.create_task(coro(), name=coro.__name__)
-            self._bg_tasks.append(t)
+            worker = asyncio.create_task(coro(), name=coro.__name__)
+            self._bg_tasks.append(worker)
 
         # 5. Launch Timers (put None into queue every N minutes)
-        crawl_interval = self.config.get("crawler", {}).get("daemon_interval_minutes", 60)
-        sync_interval = self.config.get("crawler", {}).get("sync_interval_minutes", 60)
+        crawl_interval = self.config.get("crawler", {}).get("crawl_circle", 60)
+        sync_interval = self.config.get("crawler", {}).get("sync_circle", 60)
 
         for queue, interval, name, lock in [
             (self._crawl_queue, crawl_interval, "Crawl", self._crawl_lock),
             (self._sync_queue, sync_interval, "Sync", self._sync_lock),
         ]:
-            t = asyncio.create_task(self._timer(queue, interval, name, lock), name=f"timer_{name}")
-            self._bg_tasks.append(t)
+            timer = asyncio.create_task(self._timer(queue, interval, name, lock), name=f"timer_{name}")
+            self._bg_tasks.append(timer)
 
         # 6. Manually trigger both on startup (fire immediately)
         # await self._crawl_queue.put(None)

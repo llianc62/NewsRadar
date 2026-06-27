@@ -25,22 +25,35 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # ── Parser ──────────────────────────────────────────────────────────
 
+def _new_group(name: Optional[str]) -> Dict[str, Any]:
+    """Create a fresh keyword group dict."""
+    return {
+        "name": name,
+        "display_name": name,
+        "words": [],
+        "regexes": [],
+        "filter_words": [],
+        "required_words": [],
+        "max_count": 0,
+    }
+
+
+def _group_has_content(group: Dict[str, Any]) -> bool:
+    """Return True if the group has any matchable content."""
+    return bool(
+        group["words"] or group["regexes"]
+        or group["required_words"] or group["filter_words"]
+    )
+
+
 def load_frequency_words(
     filepath: str,
 ) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
     """Parse ``frequency_words.txt`` and return keyword groups.
 
-    File format::
-
-        # Comments start with #
-        [Group Alias]
-        keyword1
-        keyword2
-        /regex pattern/
-        !filter_word
-        +required_word
-        @5           # max items for this group
-        keyword => Display Name
+    Groups are separated by blank lines.  ``[Group Name]`` headers
+    name a group (and implicitly start one).  Lines with ``=>`` set
+    the group's ``display_name``.
 
     Returns:
         (word_groups, filter_words, global_filters) tuple:
@@ -51,7 +64,7 @@ def load_frequency_words(
           ``display_name``.
         * *filter_words*: (unused legacy — kept for API compatibility).
         * *global_filters*: list of filter words that apply to ALL
-          groups (defined before the first ``[Group]`` header).
+          groups (``!word`` lines before the first ``[Group]``).
     """
     word_groups: List[Dict[str, Any]] = []
     global_filters: List[str] = []
@@ -67,32 +80,34 @@ def load_frequency_words(
     for line in lines:
         line = line.strip()
 
-        # Skip empty lines and comments
-        if not line or line.startswith("#"):
+        # Comments are always skipped
+        if line.startswith("#"):
             continue
 
-        # Group header: [Group Name]
+        # ── Blank line → close current group ──────────────────────
+        if not line:
+            current_group = None
+            continue
+
+        # ── Group header: [Group Name] ────────────────────────────
         if line.startswith("[") and line.endswith("]"):
             group_name = line[1:-1].strip()
-            current_group = {
-                "name": group_name,
-                "display_name": group_name,
-                "words": [],
-                "regexes": [],
-                "filter_words": [],
-                "required_words": [],
-                "max_count": 0,
-            }
+            current_group = _new_group(group_name)
             word_groups.append(current_group)
             continue
 
-        # If we haven't seen a group header yet, these are global filters
-        if current_group is None:
+        # ── Legacy: !word before any group → global filter ────────
+        if current_group is None and not word_groups:
             if line.startswith("!"):
                 global_filters.append(line[1:].strip())
-            continue
+                continue
 
-        # @N — max item count for group
+        # ── Start anonymous group if needed ───────────────────────
+        if current_group is None:
+            current_group = _new_group(None)
+            word_groups.append(current_group)
+
+        # ── @N — max item count for group ─────────────────────────
         if line.startswith("@"):
             try:
                 current_group["max_count"] = int(line[1:].strip())
@@ -100,17 +115,50 @@ def load_frequency_words(
                 pass
             continue
 
-        # => Display Name alias
+        # ── => Display Name alias ─────────────────────────────────
         if "=>" in line:
             parts = line.split("=>", 1)
             keyword = parts[0].strip()
             display_name = parts[1].strip()
             _add_keyword(current_group, keyword)
-            current_group["display_name"] = display_name
+            # Per docs, [Group Name] takes priority over => alias:
+            # "显示名称优先级: 1. 有组别名 → 显示组别名"
+            # Only apply => display_name when there is no header.
+            if current_group["name"] is None:
+                current_group["display_name"] = display_name
+                current_group["name"] = display_name
             continue
 
-        # Regular keyword or special prefix
+        # ── Regular keyword or special prefix ─────────────────────
         _add_keyword(current_group, line)
+
+    # ── Extract [GLOBAL_FILTER] words → global_filters ───────────
+    # Per the config file docs, [GLOBAL_FILTER] defines words that
+    # EXCLUDE matching titles from ALL groups.  Its keywords (plain
+    # words, not !word) become global filters.
+    gf_idx = next(
+        (i for i, g in enumerate(word_groups) if g["name"] == "GLOBAL_FILTER"),
+        None,
+    )
+    if gf_idx is not None:
+        gf_group = word_groups.pop(gf_idx)
+        global_filters.extend(gf_group["words"])
+        # Also handle any regex patterns defined under GLOBAL_FILTER
+        for rx in gf_group["regexes"]:
+            global_filters.append(rx.pattern)
+
+    # Derive names for anonymous groups, then drop empty groups
+    for g in word_groups:
+        if g["display_name"] is None:
+            if g["words"]:
+                g["display_name"] = " / ".join(g["words"][:3])
+            elif g["regexes"]:
+                g["display_name"] = g["regexes"][0].pattern[:30]
+            else:
+                g["display_name"] = "未命名"
+        if g["name"] is None:
+            g["name"] = g["display_name"]
+    word_groups = [g for g in word_groups if _group_has_content(g)]
 
     return word_groups, [], global_filters
 
@@ -125,8 +173,15 @@ def _add_keyword(group: Dict[str, Any], keyword: str) -> None:
         group["filter_words"].append(kw[1:])
     elif kw.startswith("+") and len(kw) > 1:
         group["required_words"].append(kw[1:])
-    elif kw.startswith("/") and kw.endswith("/") and len(kw) > 2:
-        group["regexes"].append(re.compile(kw[1:-1]))
+    elif kw.startswith("/") and len(kw) > 2:
+        # Support /pattern/ and /pattern/i
+        # Per the config file docs: « /正则/ 正则表达式匹配（自动忽略大小写） »
+        # IGNORECASE is the default; adding /i is explicit-but-redundant.
+        last_slash = kw.rfind("/")
+        if last_slash > 0:
+            pattern = kw[1:last_slash]
+            flags = re.IGNORECASE
+            group["regexes"].append(re.compile(pattern, flags))
     else:
         group["words"].append(kw.lower())
 
@@ -173,7 +228,8 @@ def match_title(
 
         # If group has NO words/regexes (i.e. only filter/required),
         # treat it as "always match" for titles that pass the filters
-        if not group["words"] and not group["regexes"] and not group["required_words"]:
+        # Note: required_words are checked above and already passed.
+        if not group["words"] and not group["regexes"]:
             return group["display_name"]
 
     return None

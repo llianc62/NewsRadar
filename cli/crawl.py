@@ -25,7 +25,7 @@ def crawl():
     config = load_config("config.yaml")
     tz = config["app"]["timezone"]
     date = format_date_today(tz)
-    data_dir = config["storage"]["local"].get("data_dir", "output")
+    data_dir = config["storage"]["local"].get("data_path", "output")
     db_path = Path(data_dir) / "db" / f"{date}.db"
 
     # ── Download existing daily DB from S3 ───────────────────────

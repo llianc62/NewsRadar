@@ -197,7 +197,7 @@ def _clear_sqlite(
     import sqlite3
 
     storage_cfg = config.get("storage", {})
-    data_dir = Path(storage_cfg.get("local", {}).get("data_dir", "output"))
+    data_dir = Path(storage_cfg.get("local", {}).get("data_path", "output"))
     db_dir = data_dir / "db"
 
     if not db_dir.is_dir():

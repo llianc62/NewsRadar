@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>News Report — {{ date }} {{ time_str }}</title>
+<style>
+  * { box-sizing:border-box; }
+  body {
+    background:#fafafa; color:#333; line-height:1.5;
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;
+    margin:0; padding:16px;
+  }
+  .container {
+    max-width:600px; margin:0 auto;
+    background:white; border-radius:12px;
+    overflow:hidden; box-shadow:0 2px 16px rgba(0,0,0,0.06);
+  }
+  .header {
+    background:linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+    color:white; padding:32px 24px; text-align:center;
+  }
+  .header-title {
+    font-size:22px; font-weight:700; margin:0 0 20px 0;
+  }
+  .header-info {
+    display:grid; grid-template-columns:1fr 1fr;
+    gap:16px; font-size:14px; opacity:0.95;
+  }
+  .info-item { text-align:center; }
+  .info-label { display:block; font-size:12px; opacity:0.8; margin-bottom:4px; }
+  .info-value { font-weight:600; font-size:16px; }
+  .content { padding:24px; }
+  .footer {
+    margin-top:8px; padding:20px 24px;
+    background:#f8f9fa; border-top:1px solid #e5e7eb;
+    text-align:center; font-size:13px; color:#6b7280; line-height:1.6;
+  }
+  .footer-link { color:#4f46e5; text-decoration:none; font-weight:500; }
+  .project-name { font-weight:600; color:#374151; }
+  a:hover { text-decoration:underline; }
+
+  @media (max-width:480px) {
+    body { padding:12px; }
+    .header { padding:24px 20px; }
+    .content { padding:20px; }
+    .footer { padding:16px 20px; }
+    .header-info { grid-template-columns:1fr; gap:12px; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <div class="header-title">📰 新闻速报</div>
+    <div class="header-info">
+      <div class="info-item">
+        <span class="info-label">日期</span>
+        <span class="info-value">{{ date }}</span>
+      </div>
+      <div class="info-item">
+        <span class="info-label">时间</span>
+        <span class="info-value">{{ time_str }}</span>
+      </div>
+      <div class="info-item">
+        <span class="info-label">新闻总数</span>
+        <span class="info-value">{{ total_count }} 条</span>
+      </div>
+      <div class="info-item">
+        <span class="info-label">匹配分组</span>
+        <span class="info-value">{{ grouped_items | length }} 个</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="content">
+{% for group_name, items in grouped_items.items() if items %}
+{% set label = group_name %}
+{% set group_index = loop.index %}
+{% set total_groups = grouped_items | length %}
+    <div style="margin-bottom:24px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;padding-bottom:8px;border-bottom:1px solid #f0f0f0;">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <span style="font-size:17px;font-weight:600;color:#1a1a1a;">{{ label }}</span>
+          <span style="color:#666;font-size:13px;font-weight:500;">{{ items | length }} 条</span>
+        </div>
+        <span style="color:#999;font-size:12px;">{{ group_index }}/{{ total_groups }}</span>
+      </div>
+{% for item in items %}
+{% set j = loop.index %}
+{% set tier = (item.tier | default(4)) | int %}
+{% set tier_color = TIER_COLORS.get(tier, "#6b7280") %}
+{% set tier_bg_color = TIER_BG.get(tier, "#f3f4f6") %}
+{% set tier_label = TIER_LABELS.get(tier, "T4·资讯") %}
+{% set rank_num = (item.rank | default(0)) | int %}
+{% set rank_bg = ("#dc2626" if rank_num <= 3 else "#ea580c" if rank_num <= 10 else "#6b7280") %}
+{% set heat_val = (item.heat_score | default(0)) | int %}
+{% set heat_color = ("#dc2626" if heat_val >= 80 else "#ea580c" if heat_val >= 60 else "#6b7280") %}
+      <div style="display:flex;gap:12px;align-items:flex-start;padding:14px 0;border-bottom:1px solid #f5f5f5;">
+        <div style="flex-shrink:0;width:24px;height:24px;background:#f8f9fa;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#999;font-size:13px;font-weight:600;margin-top:2px;">{{ j }}</div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:6px;">
+{% if item.source_name %}            <span style="color:#666;font-size:12px;font-weight:500;margin-right:8px;">{{ item.source_name }}</span>
+{% endif %}            <span style="display:inline-block;color:{{ tier_color }};font-size:11px;font-weight:600;background:{{ tier_bg_color }};padding:2px 6px;border-radius:4px;margin-right:8px;">{{ tier_label }}</span>
+{% if item.source_type == "rss" %}            <span style="display:inline-block;color:#dc2626;font-size:11px;font-weight:700;background:#fef2f2;padding:2px 6px;border-radius:4px;">RSS</span>
+{% elif item.rank %}            <span style="display:inline-block;color:#fff;font-size:10px;font-weight:700;background:{{ rank_bg }};padding:2px 6px;border-radius:10px;">#{{ item.rank }}</span>
+{% endif %}{% if item.heat_score is not none %}            <span style="color:{{ heat_color }};font-size:11px;font-weight:500;margin-left:4px;">🔥{{ heat_val }}</span>
+{% endif %}
+          </div>
+          <div style="margin-bottom:2px;">
+{% if item.url %}            <a href="{{ item.url }}" style="color:#2563eb;text-decoration:none;font-size:15px;line-height:1.4;">{{ item.title }}</a>
+{% else %}            <span style="color:#1a1a1a;font-size:15px;line-height:1.4;">{{ item.title }}</span>
+{% endif %}
+          </div>
+{% if item.summary %}          <p style="margin:6px 0 0 0;font-size:13px;color:#6b7280;line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;">{{ item.summary[:200] }}</p>
+{% endif %}
+        </div>
+      </div>
+{% endfor %}
+    </div>
+{% endfor %}
+  </div>
+
+  <div class="footer">
+    <div>
+      由 <span class="project-name">NewsRadar</span> 生成 ·
+      <a href="https://github.com/llianc62/NewsRadar" class="footer-link" target="_blank">
+        GitHub
+      </a>
+    </div>
+  </div>
+</div>
+</body>
+</html>

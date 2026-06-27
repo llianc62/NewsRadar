@@ -2,10 +2,15 @@ app:
   timezone: "Asia/Shanghai"
 
 crawler:
+  timeout: 30
+  max_retry: 3
+  max_workers: 8
+  crawl_circle: 60        # 抓取新闻周期（分钟）
+  sync_circle: 60         # 云端同步周期（分钟）
+
   newsnow:
     enabled: true
-    timeout: 20
-    interval: 2000
+    timeout: 30
     url: "https://newsnow.busiyi.world/api/s"
     sources:
       # ── T1 主流财经 ──
@@ -67,9 +72,8 @@ crawler:
 
   rss:
     enabled: true
-    timeout: 20
-    interval: 1000
-    feeds:
+    timeout: 30
+    sources:
       # ═══ 官方媒体 ═══
       - id: "xinhua-politics"
         name: "新华社·时政"
@@ -213,28 +217,26 @@ crawler:
 
 notification:
   frequency_words: "frequency_words.txt"
-  max_news_per_keyword: 0
+  keyword_limit_news: 0
   email:
-    smtp_server: "smtp.qq.com"
-    smtp_port: 587
-    from_addr: "lianglian8866@qq.com"
-    to_addr: "lianglian8866@qq.com"
-    password: "ubzpspoeerzwbcif"
+    from_addr: ""
+    to_addr: ""
+    password: ""
 
 storage:
   local:
-    data_dir: "output"
+    data_path: "output"
   cloud:
-    endpoint_url: "http://localhost:9000"
-    bucket_name: "newsradar"
-    access_key_id: "admin"
-    secret_access_key: "minioadmin"
+    endpoint_url: ""
+    bucket_name: ""
+    access_key_id: ""
+    secret_access_key: ""
     region: ""
   resource:
-    endpoint_url: "http://localhost:9000"
-    bucket_name: "newsradar"
-    access_key_id: "admin"
-    secret_access_key: "minioadmin"
+    endpoint_url: ""
+    bucket_name: ""
+    access_key_id: ""
+    secret_access_key: ""
     region: ""
 
 postgresql:
@@ -248,7 +250,7 @@ postgresql:
 
 analyzer:
   enabled: true
-  backend: jieba
+  backend: jieba  # jieba / agent
 
 web:
   host: "0.0.0.0"

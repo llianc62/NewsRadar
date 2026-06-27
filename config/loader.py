@@ -82,12 +82,12 @@ def _load_newsnow_config(raw: Dict) -> Dict:
 
 def _load_rss_config(raw: Dict) -> Dict:
     rss = raw.get("crawler", {}).get("rss", {})
-    env_enabled = _get_env_bool("NEWSNOW_RSS_ENABLED")
+    env_enabled = _get_env_bool("RSS_ENABLED")
     return {
         "enabled": env_enabled if env_enabled is not None else rss.get("enabled", False),
         "interval": rss.get("interval", 1000),
         "timeout": rss.get("timeout", 20),
-        "feeds": rss.get("feeds", []),
+        "sources": rss.get("sources", []),
     }
 
 
@@ -96,18 +96,13 @@ def _load_notification_config(raw: Dict) -> Dict:
     email = notification.get("email", {})
     return {
         "frequency_words": notification.get("frequency_words", "frequency_words.txt"),
-        "max_news_per_keyword": notification.get("max_news_per_keyword", 0),
+        "keyword_limit_news": notification.get("keyword_limit_news", 0),
         "email": {
-            "smtp_server": _get_env_str("NEWSNOW_EMAIL_SMTP_SERVER")
-            or email.get("smtp_server", "smtp.qq.com"),
-            "smtp_port": _get_env_int("NEWSNOW_EMAIL_SMTP_PORT")
-            or email.get("smtp_port", 587),
-            "from_addr": _get_env_str("NEWSNOW_EMAIL_FROM_ADDR")
+            "from_addr": _get_env_str("EMAIL_FROM_ADDR")
             or email.get("from_addr", ""),
-            "to_addr": _get_env_str("NEWSNOW_EMAIL_TO_ADDR")
+            "to_addr": _get_env_str("EMAIL_TO_ADDR")
             or email.get("to_addr", ""),
             "password": _get_env_str("EMAIL_PASSWORD")
-            or _get_env_str("NEWSNOW_EMAIL_PASSWORD")
             or email.get("password", ""),
         },
     }
@@ -128,7 +123,7 @@ def _load_storage_config(raw: Dict) -> Dict:
     resource = storage.get("resource", {})
     return {
         "local": {
-            "data_dir": local.get("data_dir", "output"),
+            "data_path": local.get("data_path", "output"),
         },
         "cloud": {
             "endpoint_url": _get_env_str("CLOUD_S3_ENDPOINT_URL")
@@ -244,7 +239,7 @@ def _print_config_sources(config: Dict) -> None:
 
     email = config["notification"]["email"]
     if email["from_addr"] and email["to_addr"]:
-        src = "env" if os.environ.get("NEWSNOW_EMAIL_FROM_ADDR") else "file"
+        src = "env" if os.environ.get("EMAIL_FROM_ADDR") else "file"
         sources.append(f"Email({src})")
     else:
         sources.append("Email(unconfigured)")

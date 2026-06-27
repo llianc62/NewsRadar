@@ -11,19 +11,19 @@ consistent.
 
 # ── Tier display (used by notifier HTML report and web templates) ──
 
-TIER_LABELS = {1: "T1·官媒", 2: "T2·主流", 3: "T3·垂直", 4: "T4·资讯"}
+TIER_LABELS = {1: "T1·主流", 2: "T2·综合", 3: "T3·垂直", 4: "T4·资讯"}
 
 TIER_COLORS = {
-    1: "#059669",
+    1: "#d97706",
     2: "#2563eb",
-    3: "#d97706",
+    3: "#059669",
     4: "#6b7280",
 }
 
 TIER_BG = {
-    1: "#ecfdf5",
+    1: "#fffbeb",
     2: "#eff6ff",
-    3: "#fffbeb",
+    3: "#ecfdf5",
     4: "#f3f4f6",
 }
 

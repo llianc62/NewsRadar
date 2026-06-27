@@ -1,10 +1,8 @@
 # ═══════════════════════════════════════════════════════════════
-#                    TrendRadar 频率词配置文件
+#                      NewsRadar 频率词配置文件
 #                         Version: 1.1.0
 # ═══════════════════════════════════════════════════════════════
 
-# 可视化配置编辑器地址: https://sansan0.github.io/TrendRadar/
-#
 # 凡是左侧有 # 的都是仅供阅读的说明性文字
 #
 # 这个文件用来设置你想关注的新闻关键词。
@@ -163,40 +161,35 @@
 
 /大疆|汪滔|灵眸|如影|\bDJI\b|\bRoboMaster\b|\bMavic\b|\bZenmuse\b/ => 大疆
 
-/宇树|王兴兴|\bUnitree\b/ => 宇树机器人
-
-/智元|灵犀|稚晖君|彭志辉|AgiBot/ => 智元机器人
-/众擎|EngineAI|赵同阳/ => 众擎机器人
-
 /黑神话|冯骥/ => 黑神话悟空
 
 /影之刃零|梁其伟/ => 影之刃零
 
 /三体|流浪地球|刘慈欣|郭帆/ => 三体/流浪地球
 
-
 /字节|张一鸣|梁汝波|抖音|\bByteDance\b|\bTikTok\b|\bDouyin\b|\bLark\b|\bCapCut\b/ => 字节跳动
-
 
 /特斯拉|马斯克|spacex/ => 马斯克
 
 /腾讯|鹅厂|马化腾|微信|QQ|天美|阅文集团|微众银行|\bTencent\b|\bPony Ma\b|\bWeChat\b|\bLightSpeed\b|\bWeBank\b/ => 腾讯
-
 
 /qwen|minimax|glm/ => 国产开源模型
 
 /特斯拉|马斯克|\bTesla\b|\bElon Musk\b|\bCybertruck\b|\bModel 3\b|\bModel Y\b|\bModel S\b|\bModel X\b|\bFSD\b/ => 特斯拉
 
 /英伟达|黄仁勋|\bNVIDIA\b|\bGeForce\b|\bRTX\b|\bCUDA\b|\bJensen Huang\b/ => 英伟达
+
 /苏姿丰|锐龙|霄龙|\bAMD\b|\bRyzen\b|\bEPYC\b|\bRadeon\b|\bLisa Su\b/ => AMD
 
 /微软|\bMicrosoft\b|\bWindows\b|\bAzure\b|\bSatya Nadella\b|\bCopilot\b/ => 微软
+
 /谷歌|皮查伊|安卓|油管|\bGoogle\b|\bAlphabet\b|\bAndroid\b|\bChrome\b|\bYouTube\b|\bGemini\b|\bDeepMind\b|\bWaymo\b/ => 谷歌
+
 /库克|\biPhone\b|\biPad\b|\bMacBook\b|\biOS\b|\bVision Pro\b|\bAirPods\b|\bApple\b|\bTim Cook\b/ => 苹果
 
 /\bOpenAI\b|\bChatGPT\b|\bSora\b|\bDALL-E\b|\bSam Altman\b|\bGreg Brockman\b/ => OpenAI
-/\bAnthropic\b|\bClaude\b|\bDario Amodei\b/ => Claude
 
+/\bAnthropic\b|\bClaude\b|\bDario Amodei\b/ => Claude
 
 /\bclaude\b|Anthropic/i => Anthropic
 
@@ -204,10 +197,53 @@
 
 自动驾驶
 
+
+
+可控核聚变
+
+/月球|登月|火星|宇宙|飞船|航空|商业航天|火箭|卫星/ => 航天航空
+
+/电力|电网|光伏|变压器|储能/ => 电网
+
+/上海(市)?房价|(新房|二手房)(交易|成交)价|上海(市)?新楼盘|新楼盘|烂尾(楼|楼盘)|楼盘|楼房|楼盘开盘|楼盘交付|楼盘规划|楼房建设|楼房预售|楼盘摇号|上海(市)?学区房/ => 上海市楼房
+
+脑机接口
+
+/水电|雅鲁藏布江/ => 水电
+/光伏|太阳能/ => 光伏
+核能
+能源
+
+/自动驾驶|无人驾驶|智驾/ => 自动驾驶
+
+桥本
+甲状腺
+
+健康
+医疗
+
+索尼
+摄影
++相机
+
+[机器人]
+具身智能
 ROS
-
 /机器人|波士顿机器人|\brobot\b/i  => 机器人
+/宇树|王兴兴|\bUnitree\b/ => 宇树机器人
+/智元|灵犀|稚晖君|彭志辉|AgiBot/ => 智元机器人
+/众擎|EngineAI|赵同阳/ => 众擎机器人
+/机械狗|四足/ => 机器狗
 
+/月球|登月|火星|宇宙|飞船|航天|空间站|卫星/ => 航天
+
+# 前沿科技
+量子
+脑机
+基因
+
+# 产业政策
+生产力
 
 # ═══════════════════════════════════════════════════════════════
 #                         国家与地区
@@ -248,47 +284,3 @@ ROS
 芯片
 光刻机
 半导体
-
-
-可控核聚变
-
-/月球|登月|火星|宇宙|飞船|航空|商业航天|火箭|卫星/ => 航天航空
-
-/电力|电网|光伏|变压器|储能/ => 电网
-
-/上海(市)?房价|(新房|二手房)(交易|成交)价|上海(市)?新楼盘|新楼盘|烂尾(楼|楼盘)|楼盘|楼房|楼盘开盘|楼盘交付|楼盘规划|楼房建设|楼房预售|楼盘摇号|上海(市)?学区房/ => 上海市楼房
-
-脑机接口
-
-/水电|雅鲁藏布江/ => 水电
-/光伏|太阳能/ => 光伏
-核能
-能源
-
-
-/自动驾驶|无人驾驶|智驾/ => 自动驾驶
-
-
-桥本
-甲状腺
-
-健康
-医疗
-
-索尼
-摄影
-+相机
-
-机器人
-/机械狗|四足/ => 机器狗
-具身智能
-
-/月球|登月|火星|宇宙|飞船|航天|空间站|卫星/ => 航天
-
-# 前沿科技
-量子
-脑机
-基因
-
-# 产业政策
-生产力

@@ -373,10 +373,10 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
 
         tier_labels_with_counts = [
             {"tier": 0, "label": "全部", "count": stats_data["total_count"]},
-            {"tier": 1, "label": "T1·主流", "count": stats_data["t1_count"]},
-            {"tier": 2, "label": "T2·综合", "count": stats_data["t2_count"]},
-            {"tier": 3, "label": "T3·垂直", "count": stats_data["t3_count"]},
-            {"tier": 4, "label": "T4·资讯", "count": stats_data["t4_count"]},
+            {"tier": 1, "label": TIER_LABELS[1], "count": stats_data["t1_count"]},
+            {"tier": 2, "label": TIER_LABELS[2], "count": stats_data["t2_count"]},
+            {"tier": 3, "label": TIER_LABELS[3], "count": stats_data["t3_count"]},
+            {"tier": 4, "label": TIER_LABELS[4], "count": stats_data["t4_count"]},
         ]
 
         # ── Sentiment toggles with counts ──

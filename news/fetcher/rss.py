@@ -377,12 +377,12 @@ class RssFetcher(Fetcher):
         cfg = config.get("crawler", {}).get("rss", {})
         self._enabled = cfg.get("enabled", False)
         self._interval = cfg.get("interval", 1000)
-        self._timeout = cfg.get("timeout", 20)
+        self._timeout = cfg.get("timeout", 30)
         self._timezone = timezone
 
         # Build feed config list
         self._feeds = []
-        for feed_cfg in cfg.get("feeds", []):
+        for feed_cfg in cfg.get("sources", []):
             feed = RSSFeedConfig(
                 id=feed_cfg.get("id", ""),
                 name=feed_cfg.get("name", ""),

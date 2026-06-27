@@ -73,7 +73,7 @@ class TestRunNotifierTimeFiltering:
         """start_time is converted and passed to db.get_all."""
         config = {
             "app": {"timezone": "Asia/Shanghai"},
-            "storage": {"local": {"data_dir": "/tmp"}, "cloud": {}},
+            "storage": {"local": {"data_path": "/tmp"}, "cloud": {}},
             "notification": {"email": {}},
         }
         mock_db = self._run_with(config, start_time="2026-06-27T07:00:00Z")
@@ -84,7 +84,7 @@ class TestRunNotifierTimeFiltering:
     def test_passes_end_time_to_db(self):
         config = {
             "app": {"timezone": "Asia/Shanghai"},
-            "storage": {"local": {"data_dir": "/tmp"}, "cloud": {}},
+            "storage": {"local": {"data_path": "/tmp"}, "cloud": {}},
             "notification": {"email": {}},
         }
         mock_db = self._run_with(config, end_time="2026-06-27T18:00:00Z")
@@ -96,7 +96,7 @@ class TestRunNotifierTimeFiltering:
         """Backward-compatible: no start_time/end_time → get_all(date) with no filters."""
         config = {
             "app": {"timezone": "Asia/Shanghai"},
-            "storage": {"local": {"data_dir": "/tmp"}, "cloud": {}},
+            "storage": {"local": {"data_path": "/tmp"}, "cloud": {}},
             "notification": {"email": {}},
         }
         mock_db = self._run_with(config)
@@ -106,7 +106,7 @@ class TestRunNotifierTimeFiltering:
         """Invalid ISO 8601 → log warning, pass None as start_time."""
         config = {
             "app": {"timezone": "Asia/Shanghai"},
-            "storage": {"local": {"data_dir": "/tmp"}, "cloud": {}},
+            "storage": {"local": {"data_path": "/tmp"}, "cloud": {}},
             "notification": {"email": {}},
         }
         mock_db = self._run_with(config, start_time="garbage")
@@ -133,7 +133,7 @@ class TestRunNotifierTimeFiltering:
 
             config = {
                 "app": {"timezone": "Asia/Shanghai"},
-                "storage": {"local": {"data_dir": "/tmp"}, "cloud": {}},
+                "storage": {"local": {"data_path": "/tmp"}, "cloud": {}},
                 "notification": {"email": {}},
             }
 

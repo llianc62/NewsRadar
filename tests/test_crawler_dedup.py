@@ -29,7 +29,7 @@ def _make_config(sources=None, rss_feeds=None):
             },
         },
         "storage": {
-            "local": {"data_dir": "/tmp/test_output"},
+            "local": {"data_path": "/tmp/test_output"},
             "resource": {
                 "endpoint_url": "http://localhost:9000",
                 "bucket_name": "test-bucket",

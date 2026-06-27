@@ -84,7 +84,7 @@ class Crawler:
 
         # File storage — always local (markdown/html file output)
         storage_conf = config.get("storage", {})
-        data_dir = storage_conf.get("local", {}).get("data_dir", "output")
+        data_dir = storage_conf.get("local", {}).get("data_path", "output")
         self._local_storage = LocalStorage(data_dir)
 
         # Resource storage — local MinIO/S3 for project files/images (required)
@@ -150,7 +150,7 @@ class Crawler:
         if self._sqlite is None:
             from storage.sqlite import Sqlite
             storage_conf = self._config.get("storage", {})
-            data_dir = storage_conf.get("local", {}).get("data_dir", "output")
+            data_dir = storage_conf.get("local", {}).get("data_path", "output")
             self._sqlite = Sqlite(
                 data_dir=data_dir,
                 timezone=self._config.get("app", {}).get("timezone", "Asia/Shanghai"),
@@ -211,7 +211,7 @@ class Crawler:
         tiers = {}
         for s in self._config.get("crawler", {}).get("newsnow", {}).get("sources", []):
             tiers[s["id"]] = {"tier": s.get("tier", 4), "priority": s.get("priority", 0)}
-        for rss in self._config.get("crawler", {}).get("rss", {}).get("feeds", []):
+        for rss in self._config.get("crawler", {}).get("rss", {}).get("sources", []):
             if rss.get("enabled", True):
                 tiers[rss["id"]] = {"tier": rss.get("tier", 3), "priority": rss.get("priority", 0)}
         tiers["manual"] = {"tier": 4, "priority": 0}

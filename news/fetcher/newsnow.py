@@ -208,8 +208,8 @@ class NewsnowFetcher(Fetcher):
         cfg = config.get("crawler", {}).get("newsnow", {})
         self._enabled = cfg.get("enabled", True)
         self._url = cfg.get("url", "https://newsnow.busiyi.world/api/s")
-        self._timeout = cfg.get("timeout", 20)
-        self._interval = cfg.get("interval", 2000)
+        self._timeout = cfg.get("timeout", 30)
+        self._interval = cfg.get("interval", 1000)
         self._sources = cfg.get("sources", [])
 
         self._client = NewsFetcher(url=self._url, timeout=self._timeout)

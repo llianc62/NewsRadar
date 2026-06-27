@@ -20,7 +20,8 @@ dist/
 skills-lock.json
 .mcp.json
 
-.env
+.design/
+docs/superpowers
 
 output/
 data/
@@ -32,3 +33,5 @@ temp.md
 task_plan.md
 findings.md
 progress.md
+
+.env
