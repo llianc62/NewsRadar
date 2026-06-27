@@ -14,12 +14,14 @@
 
 预处理阶段合并相邻标签、清理空节点、合并标题，
 之后走通用 readability 管线即可获得格式正确的 Markdown。
+
+TODO: 当前 `_extract` 中的 markdown 后处理（合并拆分标题行、修复 `***` 误加空格）
+      后续再考虑如何整合到父类 `_format_markdown`。
 """
 
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Optional
 
 from news.parser.parser import HtmlParser
 
@@ -72,28 +74,3 @@ class GelonghuiParser(HtmlParser):
         )
 
         return html
-
-    def _extract(self, html: str, url: str = "") -> Optional[Dict[str, Any]]:
-        """走通用 readability 管线，并对 markdown 做后处理。"""
-        result = self._extract_with_readability(html, url)
-        if result is None:
-            return None
-
-        md = result["markdown"]
-
-        # 6. 合并被拆分的标题行：### NN\n\n标题文字 → ### NN 标题文字
-        md = re.sub(
-            r'^(###\s+\d{1,2})\s*\n+\s*(?!#)(.+?)$',
-            r'\1 \2',
-            md,
-            flags=re.MULTILINE,
-        )
-
-        # 7. 修复 _handle_markdown_bold 对 *** 标记的误加空格
-        #    * **text → ***text（粗斜体开启）
-        #    text** * → text***（粗斜体关闭）
-        md = re.sub(r'\*\s+\*\*(?!\*)', '***', md)
-        md = re.sub(r'\*\*\s+\*(?!\*)', '***', md)
-
-        result["markdown"] = md
-        return result

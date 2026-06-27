@@ -5,10 +5,6 @@ from __future__ import annotations
 import re
 import html as _html
 
-from typing import Any, Dict, Optional
-from readability import Document
-from markdownify import markdownify as _md
-
 from news.parser.parser import HtmlParser
 
 
@@ -21,52 +17,29 @@ class CkxxappParser(HtmlParser):
     提前关闭 script 标签。
     """
 
-    def _extract(self, html: str, url: str = "") -> Optional[Dict[str, Any]]:
+    def _extract(self, html: str, url: str = "") -> tuple[str, dict]:
+        """从 JS 变量提取正文 HTML + 从页面提取元数据。"""
         content_html = self._extract_js_content_vars(html)
         if not content_html:
-            return None
+            return html, {}
 
-        # Convert to markdown via readability (skip_trim — already clean)
-        try:
-            doc = Document(content_html, url=url)
-            article_html = doc.summary()
-        except Exception:
-            return None
-
-        if not article_html or not article_html.strip():
-            return None
-
-        markdown = _md(
-            article_html,
-            heading_style="ATX",
-            strip=["script", "style"],
-            escape_asterisks=False,
-            escape_underscores=False,
-        )
-
-        if not markdown or len(markdown.strip()) <= 50:
-            return None
-
-        markdown = self._beautify_markdown_formatting(markdown)
-
-        # Metadata from page HTML
+        # 元数据从原始页面 HTML 提取（article body 里没有 meta 标签）
         title = self._extract_title_from_html(html)
+        published_at = self._extract_meta(
+            html, r'property=["\']article:published_time["\']'
+        )
         summary = (
             self._extract_meta(html, r'name=["\']description["\']')
             or self._extract_meta(html, r'property=["\']og:description["\']')
         )
-        published_at = self._extract_meta(
-            html, r'property=["\']article:published_time["\']'
-        )
         author = self._extract_meta(html, r'name=["\']author["\']')
 
-        return self._build_result(
-            markdown=markdown.strip(),
-            title=title,
-            author=author,
-            published_at=published_at,
-            summary=summary,
-        )
+        return content_html, {
+            "title": title,
+            "published_at": published_at,
+            "summary": summary,
+            "author": author,
+        }
 
     @staticmethod
     def _extract_js_content_vars(html_text: str) -> Optional[str]:

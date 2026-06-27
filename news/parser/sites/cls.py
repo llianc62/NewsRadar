@@ -15,8 +15,6 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-from markdownify import markdownify as _md
-
 from news.parser.parser import HtmlParser
 
 
@@ -27,48 +25,22 @@ class ClsParser(HtmlParser):
     标签中，包含已渲染好的正文 HTML 和完整的元数据。
     """
 
-    def _extract(self, html: str, url: str = "") -> Optional[Dict[str, Any]]:
-        # 1. Extract __NEXT_DATA__ JSON
+    def _extract(self, html: str, url: str = "") -> tuple[str, dict]:
+        """从 __NEXT_DATA__ JSON 提取正文 HTML 和元数据。"""
         next_data = self._find_next_data(html)
         if next_data is None:
-            return None
+            return html, {}
 
-        # 2. Navigate to article detail
         article = self._find_article_detail(next_data)
         if article is None:
-            return None
+            return html, {}
 
-        # 3. Validate article has content
         content_html = article.get("content", "")
         if not isinstance(content_html, str) or len(content_html.strip()) < 100:
-            return None
+            return html, {}
 
-        # 4. Fix lazy images (data-src → src) and wrap bare <img> in <p>
-        #    so markdownify can convert them
-        content_html = ClsParser._fix_lazy_images(content_html)
-        content_html = ClsParser._wrap_bare_images(content_html)
-
-        # 5. Convert to markdown — content is already clean article HTML
-        try:
-            markdown = _md(
-                content_html,
-                heading_style="ATX",
-                strip=["script", "style"],
-                escape_asterisks=False,
-                escape_underscores=False,
-            )
-        except Exception:
-            return None
-
-        if not markdown or len(markdown.strip()) <= 50:
-            return None
-
-        markdown = self._beautify_markdown_formatting(markdown)
-
-        # 7. Build metadata
+        # Build metadata
         title = article.get("title", "")
-        if not title:
-            title = self._extract_title_from_html(html)
 
         # Author: from articleDetail.author.name or notes.reviewer
         author = ""
@@ -95,9 +67,7 @@ class ClsParser(HtmlParser):
                 dt = datetime.fromtimestamp(int(ctime), tz=timezone.utc)
                 published_at = dt.isoformat()
             except (ValueError, OSError):
-                published_at = self._extract_meta(
-                    html, "property=[\"']article:published_time[\"']"
-                )
+                pass
 
         # Tags: subject array (name fields)
         tags: list[str] = []
@@ -109,17 +79,10 @@ class ClsParser(HtmlParser):
                     if name and name not in tags:
                         tags.append(name)
 
-        # Summary: brief → meta description → None
+        # Summary
         summary = article.get("brief", "")
-        if not summary:
-            summary = (
-                self._extract_meta(html, "name=[\"']description[\"']")
-                or self._extract_meta(
-                    html, "property=[\"']og:description[\"']"
-                )
-            )
 
-        # Category: from column info or first subject
+        # Category
         category = ""
         column = article.get("column", {})
         if isinstance(column, dict):
@@ -127,15 +90,20 @@ class ClsParser(HtmlParser):
         if not category and tags:
             category = tags[0]
 
-        return self._build_result(
-            markdown=markdown.strip(),
-            title=title,
-            author=author,
-            published_at=published_at,
-            summary=summary,
-            category=category,
-            tags=tags,
-        )
+        return content_html, {
+            "title": title,
+            "author": author,
+            "published_at": published_at,
+            "summary": summary,
+            "category": category,
+            "tags": tags,
+        }
+
+    def _preprocess(self, html: str, url: str) -> str:
+        """修复懒加载图片和包裹裸 img。"""
+        html = ClsParser._fix_lazy_images(html)
+        html = ClsParser._wrap_bare_images(html)
+        return html
 
     # ── Internal helpers ────────────────────────────────────────────
 

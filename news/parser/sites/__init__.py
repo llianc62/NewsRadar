@@ -16,6 +16,7 @@ from news.parser.sites.cctv import CctvParser
 from news.parser.sites.zaobao import ZaobaoParser
 from news.parser.sites.gelonghui import GelonghuiParser
 from news.parser.sites.huanqiu import HuanqiuParser
+from news.parser.sites.ifanr import IfanrParser
 from news.parser.sites.xinhua import XinhuaParser
 
 # Default parser for unregistered source_ids
@@ -40,6 +41,7 @@ registry.register("fastbull-news", FastbullParser(), domains=["fastbull.com"])
 registry.register("ithome", IthomeParser(), domains=["ithome.com"])
 registry.register("sspai", SspaiParser(), domains=["sspai.com"])
 registry.register("juejin", JuejinParser(), domains=["juejin.cn"])
+registry.register("ifanr", IfanrParser(), domains=["ifanr.com"])
 registry.register("gelonghui-hot", GelonghuiParser(), domains=["gelonghui.com"])
 registry.register("huanqiu", HuanqiuParser(), domains=["huanqiu.com"])
 registry.register("cctv-world", CctvParser(), domains=["cctv.com", "cctvnews.cctv.com", "news.cctv.com"])

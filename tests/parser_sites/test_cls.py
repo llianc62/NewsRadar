@@ -12,33 +12,30 @@ class TestClsParser:
     """Test suite for ClsParser."""
 
     def test_extracts_content_from_real_fixture(self):
-        """Real cls.cn article fixture — verifies full extraction pipeline."""
+        """Real cls.cn article fixture — verifies _extract returns content + meta."""
         html = (FIXTURES / "cls.html").read_text(encoding="utf-8")
         parser = ClsParser()
-        result = parser._extract(html)
-        assert result is not None
-        assert len(result["markdown"]) > 200
-        assert result["title"] == "工信部总工程师：加强新一代通信网和算力网规划建设"
-        # Author extracted from Next.js data
-        assert result["author"] == "澎湃新闻"
-        # Verify content is meaningful (check for key content snippets)
-        assert "新一代信息通信技术" in result["markdown"]
-        assert "6G" in result["markdown"]
-        # Published_at from ctime (Unix timestamp)
-        assert result["published_at"] == "2026-06-24T07:17:17+00:00"
-        # Tags from subject array
-        assert "算力" in result["tags"]
-        # Summary from brief
-        assert result["summary"]
+        content_html, meta = parser._extract(html)
+        assert content_html
+        assert len(content_html) > 200
+        assert meta["title"] == "工信部总工程师：加强新一代通信网和算力网规划建设"
+        assert meta["author"] == "澎湃新闻"
+        assert "新一代信息通信技术" in content_html
+        assert "6G" in content_html
+        assert meta["published_at"] == "2026-06-24T07:17:17+00:00"
+        assert "算力" in meta["tags"]
+        assert meta["summary"]
 
     def test_returns_none_no_next_data(self):
-        """Negative test — no __NEXT_DATA__ present."""
+        """No __NEXT_DATA__ present — _extract returns original HTML with empty meta."""
         parser = ClsParser()
-        result = parser._extract("<html><body><p>no data here</p></body></html>")
-        assert result is None
+        html = "<html><body><p>no data here</p></body></html>"
+        content_html, meta = parser._extract(html)
+        assert content_html == html
+        assert meta == {}
 
     def test_returns_none_short_content(self):
-        """Negative test — __NEXT_DATA__ present but content too short."""
+        """__NEXT_DATA__ present but content < 100 chars — returns original HTML."""
         next_data = {
             "props": {
                 "pageProps": {
@@ -57,8 +54,9 @@ class TestClsParser:
             '</body></html>'
         )
         parser = ClsParser()
-        result = parser._extract(html)
-        assert result is None
+        content_html, meta = parser._extract(html)
+        assert content_html == html
+        assert meta == {}
 
     def test_find_next_data_extracts_json(self):
         """_find_next_data — extracts JSON from __NEXT_DATA__ script tag."""

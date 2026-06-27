@@ -11,11 +11,10 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, Optional
+from typing import Dict
 from urllib.parse import urljoin
 
 from lxml import html as lxml_html
-from markdownify import markdownify as _md
 
 from news.parser.parser import HtmlParser
 
@@ -27,62 +26,21 @@ class ZaobaoParser(HtmlParser):
     呈现，元数据在 JSON-LD 的 ``NewsArticle`` 条目中。
     """
 
-    def _extract(self, html: str, url: str = "") -> Optional[Dict[str, Any]]:
-        # 1. Extract article body content from div.articleBody
+    def _extract(self, html: str, url: str = "") -> tuple[str, dict]:
+        """提取 article body HTML 和 JSON-LD 元数据。"""
         content_html = self._find_article_body(html)
         if not content_html or len(content_html.strip()) < 100:
-            return None
+            return html, {}
 
-        # 2. Fix lazy images (data-src → src), resolve relative URLs,
-        #    and wrap bare <img> in <p> so markdownify can convert them
-        content_html = ZaobaoParser._fix_lazy_images(content_html)
-        content_html = ZaobaoParser._resolve_image_urls(content_html, url)
-        content_html = ZaobaoParser._wrap_bare_images(content_html)
-
-        # 4. Convert to markdown
-        try:
-            markdown = _md(
-                content_html,
-                heading_style="ATX",
-                strip=["script", "style"],
-                escape_asterisks=False,
-                escape_underscores=False,
-            )
-        except Exception:
-            return None
-
-        if not markdown or len(markdown.strip()) <= 50:
-            return None
-
-        markdown = self._beautify_markdown_formatting(markdown)
-
-        # 5. Extract metadata from JSON-LD
         ld_meta = self._find_jsonld_meta(html)
+        return content_html, ld_meta
 
-        title = ld_meta.get("title", "")
-        if not title:
-            title = self._extract_title_from_html(html)
-
-        author = ld_meta.get("author", "")
-        published_at = ld_meta.get("published_at", "")
-
-        # Summary: og:description → meta description → None
-        summary = ld_meta.get("summary", "")
-        if not summary:
-            summary = (
-                self._extract_meta(html, "name=[\"']description[\"']")
-                or self._extract_meta(
-                    html, "property=[\"']og:description[\"']"
-                )
-            )
-
-        return self._build_result(
-            markdown=markdown.strip(),
-            title=title,
-            author=author,
-            published_at=published_at,
-            summary=summary,
-        )
+    def _preprocess(self, html: str, url: str) -> str:
+        """修复懒加载图片、解析相对 URL、包裹裸 img。"""
+        html = ZaobaoParser._fix_lazy_images(html)
+        html = ZaobaoParser._resolve_image_urls(html, url)
+        html = ZaobaoParser._wrap_bare_images(html)
+        return html
 
     # ── Internal helpers ────────────────────────────────────────────
 

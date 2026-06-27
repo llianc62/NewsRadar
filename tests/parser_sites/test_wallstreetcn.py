@@ -12,18 +12,16 @@ class TestWallstreetcnParser:
     """Test suite for WallstreetcnParser."""
 
     def test_extracts_content_from_real_fixture(self):
-        """Real wallstreetcn article fixture — verifies full extraction pipeline."""
+        """Real wallstreetcn article fixture — verifies _extract returns content + meta."""
         html = (FIXTURES / "wallstreetcn.html").read_text(encoding="utf-8")
         parser = WallstreetcnParser()
-        result = parser._extract(html)
-        assert result is not None
-        assert len(result["markdown"]) > 200
-        assert result["title"] == "赣锋锂业签署固态电池研发及产业化基地合作协议"
-        assert result["author"] == "袁佳颖"
-        assert len(result["markdown"]) > 300
-        # Check that categories are used as tags
-        assert len(result["tags"]) >= 2
-        assert "A股公告" in result["tags"]
+        content_html, meta = parser._extract(html)
+        assert content_html
+        assert len(content_html) > 200
+        assert meta["title"] == "赣锋锂业签署固态电池研发及产业化基地合作协议"
+        assert meta["author"] == "袁佳颖"
+        assert len(meta["tags"]) >= 2
+        assert "A股公告" in meta["tags"]
 
     def test_extracts_content_from_minimal_fixture(self):
         """Minimal __SSR__ fixture — verifies core extraction without network."""
@@ -52,7 +50,6 @@ class TestWallstreetcnParser:
                 }
             }
         }
-        # Build HTML with __SSR__ JS variable assignment
         html = (
             "<html><head><title>测试标题</title></head><body>"
             "<div id='app'></div>"
@@ -62,23 +59,25 @@ class TestWallstreetcnParser:
             "</body></html>"
         )
         parser = WallstreetcnParser()
-        result = parser._extract(html)
-        assert result is not None
-        assert result["title"] == "测试标题"
-        assert result["author"] == "测试作者"
-        assert "测试正文内容" in result["markdown"]
-        assert len(result["tags"]) >= 2
-        assert "财经" in result["tags"]
-        assert result["published_at"] == "2025-04-25T09:14:38+00:00"
+        content_html, meta = parser._extract(html)
+        assert content_html
+        assert meta["title"] == "测试标题"
+        assert meta["author"] == "测试作者"
+        assert "测试正文内容" in content_html
+        assert len(meta["tags"]) >= 2
+        assert "财经" in meta["tags"]
+        assert meta["published_at"] == "2025-04-25T09:14:38+00:00"
 
     def test_returns_none_for_unrelated_html(self):
-        """Negative test — no __SSR__ → returns None."""
+        """No __SSR__ — _extract returns original HTML with empty meta."""
         parser = WallstreetcnParser()
-        result = parser._extract("<html><body><p>no SSR data here</p></body></html>")
-        assert result is None
+        html = "<html><body><p>no SSR data here</p></body></html>"
+        content_html, meta = parser._extract(html)
+        assert content_html == html
+        assert meta == {}
 
     def test_returns_none_for_empty_content(self):
-        """Negative test — __SSR__ present but content too short."""
+        """__SSR__ present but content < 100 chars — returns original HTML."""
         ssr_data = {
             "state": {
                 "default": {
@@ -101,8 +100,9 @@ class TestWallstreetcnParser:
             + ";</script></body></html>"
         )
         parser = WallstreetcnParser()
-        result = parser._extract(html)
-        assert result is None
+        content_html, meta = parser._extract(html)
+        assert content_html == html
+        assert meta == {}
 
     def test_unwrap_blockquote_images(self):
         """_unwrap_blockquote_images — unwraps <blockquote> around <img>."""
@@ -169,6 +169,6 @@ class TestWallstreetcnParser:
             + ";</script></body></html>"
         )
         parser = WallstreetcnParser()
-        result = parser._extract(html)
-        assert result is not None
-        assert result["published_at"] == ""
+        content_html, meta = parser._extract(html)
+        assert content_html
+        assert meta["published_at"] == ""

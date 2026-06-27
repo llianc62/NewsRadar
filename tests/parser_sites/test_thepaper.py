@@ -11,10 +11,10 @@ class TestThepaperParser:
     def test_extracts_content_from_fixture(self):
         html = (FIXTURES / "thepaper.html").read_text(encoding="utf-8")
         parser = ThepaperParser()
-        result = parser._extract(html, url="https://www.thepaper.cn/")
-        assert result is not None
-        assert len(result["markdown"]) > 200
-        assert result["title"]
+        content_html, meta = parser._extract(html, url="https://www.thepaper.cn/")
+        assert content_html
+        assert len(content_html) > 200
+        assert meta["title"]
 
     def test_extracts_content_from_minimal_fixture(self):
         """Minimal fixture — verifies core extraction works without network."""
@@ -34,13 +34,15 @@ class TestThepaperParser:
         }
         html = '<script id="__NEXT_DATA__" type="application/json">' + json.dumps(data, ensure_ascii=False) + '</script>'
         parser = ThepaperParser()
-        result = parser._extract(html)
-        assert result is not None
-        assert result["title"] == "测试标题"
-        assert "测试正文内容" in result["markdown"]
-        assert result["tags"] == ["时政", "经济"]
+        content_html, meta = parser._extract(html)
+        assert content_html
+        assert meta["title"] == "测试标题"
+        assert "测试正文内容" in content_html
+        assert meta["tags"] == ["时政", "经济"]
 
     def test_returns_none_for_unrelated_html(self):
         parser = ThepaperParser()
-        result = parser._extract("<html><body><p>no next data here</p></body></html>")
-        assert result is None
+        html = "<html><body><p>no next data here</p></body></html>"
+        content_html, meta = parser._extract(html)
+        assert content_html == html
+        assert meta == {}

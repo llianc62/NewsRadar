@@ -51,19 +51,19 @@ crawler:
         tier: 2
         priority: 70
       # ── T3 垂直深度 ──
-      - id: "ithome"
-        name: "IT之家"
-        tier: 4
-        priority: 35
-      # ── T4 内容资讯 ──
       - id: "juejin"
         name: "稀土掘金"
-        tier: 4
+        tier: 3
         priority: 35
+      # ── T4 内容资讯 ──
       - id: "sspai"
         name: "少数派"
         tier: 4
         priority: 35
+      # - id: "ithome"
+      #   name: "IT之家"
+      #   tier: 4
+      #   priority: 30
 
   rss:
     enabled: true
@@ -74,7 +74,7 @@ crawler:
       - id: "xinhua-politics"
         name: "新华社·时政"
         url: "http://www.xinhuanet.com/politics/news_politics.xml"
-        tier: 1
+        tier: 2
         priority: 88
         enabled: true
         max_age_days: 1
@@ -140,7 +140,7 @@ crawler:
       - id: "jiemian-finance"
         name: "界面财经"
         url: "https://rsshub.rssforever.com/jiemian/lists/1"
-        tier: 3
+        tier: 2
         priority: 62
         enabled: true
         max_age_days: 1
@@ -148,7 +148,7 @@ crawler:
       - id: "eastmoney-stock"
         name: "东方财富·A股"
         url: "https://rsshub.rssforever.com/eastmoney/a"
-        tier: 2
+        tier: 3
         priority: 78
         enabled: false
         max_age_days: 1
@@ -199,18 +199,17 @@ crawler:
       - id: "ifanr"
         name: "爱范儿"
         url: "https://www.ifanr.com/feed"
-        tier: 3
+        tier: 4
         priority: 58
         enabled: true
         max_age_days: 1
       - id: "huxiu"
         name: "虎嗅"
         url: "https://rss.huxiu.com/"
-        tier: 2
+        tier: 3
         priority: 72
         enabled: false
         max_age_days: 1
-
 
 notification:
   frequency_words: "frequency_words.txt"
@@ -247,10 +246,10 @@ postgresql:
   min_connections: 2
   max_connections: 10
 
-web:
-  host: "0.0.0.0"
-  port: 8000
-
 analyzer:
   enabled: true
   backend: jieba
+
+web:
+  host: "0.0.0.0"
+  port: 8000

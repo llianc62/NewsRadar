@@ -11,7 +11,7 @@ import html as _html
 
 from typing import Any, Dict, List, Optional
 
-import trafilatura  # kept for metadata extraction
+import trafilatura
 from readability import Document
 from markdownify import markdownify
 
@@ -43,16 +43,13 @@ class HtmlParser:
 
     def __init__(self, config: dict | None = None):
         self._config = config or {}
-        cfg = self._config
-        crawler_cfg = cfg.get("crawler", {})
-        self.max_content_length = crawler_cfg.get("max_content_length", 100000)
 
     # ── Public API ─────────────────────────────────────────────────
 
     def parse(self, html: str, url: str = "") -> Optional[Dict[str, Any]]:
         """Extract Markdown + metadata from HTML.
 
-        流水线: _preprocess → _extract → _extract_with_readability → _fallback
+        流水线: _extract → _preprocess → metadata → readability → markdownify → result
 
         Does **not** download or process images — callers should use
         :class:`ImageProcessor` separately.
@@ -66,29 +63,53 @@ class HtmlParser:
             ``published_at``, ``summary``, ``category``, ``tags``,
             or None if extraction produced nothing useful.
         """
-        if not html or not html.strip():
+        # 1. _extract: 子类提取正文 HTML + 元数据
+        content_html, extracted_meta = self._extract(html, url)
+
+        if not content_html.strip():
             return None
 
-        # 1. 站点可覆写的预处理 Hook
-        html = self._preprocess(html, url)
+        # 2. _preprocess: 子类清理 HTML
+        content_html = self._preprocess(content_html, url)
 
-        # 2. 站点可覆写的解析 Hook
-        result = self._extract(html, url)
+        # 3. 元数据提取（用 _extract 返回的 HTML，trafilatura）
+        metadata = self._extract_metadata(content_html, url)
+        # 子类提取的元数据优先级更高
+        metadata.update(extracted_meta)
 
-        # 3-4. 通用降级链
-        if result is None:
-            result = self._extract_with_readability(html, url)
-        if result is None:
-            result = self._fallback(html, url)
+        # 4. readability 提取正文
+        content_html = self._readability_extract(content_html, url)
+        if not content_html:
+            return self._fallback(html, url)
 
-        if result is not None:
-            md = result.get("markdown", "")
-            if md and len(md) > self.max_content_length:
-                result["markdown"] = md[:self.max_content_length] + "\n\n... (truncated)"
+        # 5. HTML → Markdown
+        markdown = self._to_markdown(content_html)
+        if not markdown or len(markdown.strip()) <= 50:
+            return None
 
-        return result
+        # 6. Markdown 格式化
+        markdown = self._format_markdown(markdown)
+
+        # 7. 标题兜底
+        if not metadata.get("title"):
+            metadata["title"] = self._extract_markdown_heading(markdown)
+        if not metadata.get("title"):
+            metadata["title"] = self._extract_title_from_html(html)
+
+        # 8. 拼装结果
+        return self._build_result(markdown=markdown, **metadata)
 
     # ── Hooks (子类可覆写) ─────────────────────────────────────────
+
+    def _extract(self, html: str, url: str) -> tuple[str, dict]:
+        """站点特定的正文提取 — 子类可覆写此方法。
+
+        默认行为：原样返回原始 HTML，交给 _preprocess + readability 处理。
+
+        Returns:
+            (content_html, metadata_dict)
+        """
+        return html, {}
 
     def _preprocess(self, html: str, url: str) -> str:
         """预处理 HTML — 子类可覆写此方法进行 DOM 清理等操作。
@@ -97,49 +118,63 @@ class HtmlParser:
         """
         return html
 
-    def _extract(self, html: str, url: str) -> Optional[Dict[str, Any]]:
-        """站点特定的解析逻辑 — 子类必须覆写此方法。
+    # ── Pipeline steps ─────────────────────────────────────────────
 
-        默认行为：返回 None，走降级链。
-        """
-        return None
+    def _extract_metadata(self, html: str, url: str) -> Dict[str, Any]:
+        """用 trafilatura 从原始页面 HTML 提取元数据。"""
+        try:
+            meta = trafilatura.extract_metadata(html, default_url=url)
+        except Exception:
+            meta = None
 
-    # ── readability path ───────────────────────────────────────────
+        if meta is None:
+            return {}
 
-    def _extract_with_readability(
-        self, html: str, url: str, skip_trim: bool = False,
-    ) -> Optional[Dict[str, Any]]:
-        """Use readability-lxml + markdownify for content extraction.
+        tags: List[str] = []
+        if meta.categories and len(meta.categories) > 1:
+            tags = list(meta.categories[1:])
+        if meta.tags:
+            tags = list(set(tags + meta.tags))
+        tags = split_keyword_tags(tags)
 
-        Set *skip_trim* to True when *html* is already clean article
-        body content (e.g. from SPA JSON) that doesn't need noise trimming.
-        """
-        # readability-lxml: extract article content HTML
+        return {
+            "title": (meta.title or "").strip(),
+            "author": (meta.author or "").strip(),
+            "published_at": (meta.date or "").strip(),
+            "summary": (meta.description or "").strip(),
+            "category": meta.categories[0] if meta.categories else "",
+            "tags": tags,
+        }
+
+    def _readability_extract(self, html: str, url: str) -> Optional[str]:
+        """用 readability-lxml 提取正文 HTML。"""
+        # readability-lxml 兼容：<li><p>text</p></li> 会导致 readability
+        # 丢弃 <blockquote> 内的 <ul>，提前展平为 <li>text</li>
+        html = self._handle_blockquote_ulli(html)
+
         try:
             doc = Document(html, url=url)
             content_html = doc.summary()
         except Exception:
             return None
 
-        if not content_html or not content_html.strip():
+        if not content_html.strip():
             return None
 
-        # markdownify: HTML → Markdown
-        markdown = markdownify(
-            content_html,
+        return content_html
+
+    def _to_markdown(self, html: str) -> str:
+        """HTML → Markdown 转换。"""
+        return markdownify(
+            html,
             heading_style="ATX",
             strip=["script", "style"],
             escape_asterisks=False,
             escape_underscores=False,
         )
 
-        if not markdown or len(markdown.strip()) <= 50:
-            return None
-
-        title = self._extract_markdown_heading(markdown)
-        if not title:
-            title = self._extract_title_from_html(html)
-
+    def _format_markdown(self, markdown: str) -> str:
+        """Markdown 后处理：合并浮动图标段落 + 格式化 + 截断 H1 前噪声。"""
         markdown = self._beautify_markdown_formatting(markdown)
 
         # Trim lines before H1 (page header noise)
@@ -153,42 +188,11 @@ class HtmlParser:
             elif not in_fence and re.match(r"^#\s+.+$", line):
                 h1_line_idx = i
                 break
-        if h1_line_idx is not None:
+        if h1_line_idx is not None and h1_line_idx > 0:
             markdown = "\n".join(lines[h1_line_idx:])
 
-        # Metadata extraction
-        try:
-            metadata = trafilatura.extract_metadata(html, default_url=url)
-        except Exception:
-            metadata = None
+        return markdown.strip()
 
-        if metadata is None:
-            return self._build_result(
-                markdown=markdown.strip(),
-                title=title,
-            )
-
-        tags: List[str] = []
-        if metadata.categories and len(metadata.categories) > 1:
-            tags = list(metadata.categories[1:])
-        if metadata.tags:
-            tags = list(set(tags + metadata.tags))
-        tags = split_keyword_tags(tags)
-
-        author = (metadata.author or "").strip()
-        published_at = (metadata.date or "").strip()
-        summary = (metadata.description or "").strip()
-        category = metadata.categories[0] if metadata.categories else ""
-
-        return self._build_result(
-            markdown=markdown.strip(),
-            title=title,
-            author=author,
-            published_at=published_at,
-            summary=summary,
-            category=category,
-            tags=tags,
-        )
 
     # ── Fallback: HTML strip ───────────────────────────────────────
 
@@ -230,6 +234,23 @@ class HtmlParser:
             )
         return None
 
+    @staticmethod
+    def _extract_markdown_heading(markdown: str) -> str:
+        """Extract article title from the first H1 heading in markdown.
+
+        Skips ``#`` lines inside fenced code blocks.
+        """
+        in_fence = False
+        for line in markdown.strip().split("\n"):
+            stripped = line.strip()
+            if stripped.startswith("```"):
+                in_fence = not in_fence
+            elif not in_fence:
+                m = re.match(r"^#\s+(.+?)$", line)
+                if m:
+                    return m.group(1).strip()
+        return ""
+
     # ── Metadata extraction utilities ──────────────────────────────
 
     @staticmethod
@@ -267,24 +288,69 @@ class HtmlParser:
             return _html.unescape(match.group(1).strip())
         return ""
 
-    @staticmethod
-    def _extract_markdown_heading(markdown: str) -> str:
-        """Extract article title from the first H1 heading in markdown.
+    # ── readability-lxml workarounds ─────────────────────────────────
 
-        Skips ``#`` lines inside fenced code blocks.
+    @staticmethod
+    def _handle_blockquote_ulli(html_text: str) -> str:
+        """Remove ``<p>`` wrappers inside ``<li>`` elements.
+
+        ``<li><p>text</p></li>`` causes readability-lxml to drop ``<ul>``
+        sections inside ``<blockquote>`` after the first one.  Flattening
+        to ``<li>text</li>`` fixes this without changing semantics.
+
+        Inline elements (``<strong>``, ``<img>``, ``<a>``, etc.) inside
+        the ``<p>`` are preserved — only the ``<p>`` / ``</p>`` tags
+        are stripped.
         """
-        in_fence = False
-        for line in markdown.strip().split("\n"):
-            stripped = line.strip()
-            if stripped.startswith("```"):
-                in_fence = not in_fence
-            elif not in_fence:
-                m = re.match(r"^#\s+(.+?)$", line)
-                if m:
-                    return m.group(1).strip()
-        return ""
+
+        def _unwrap_li(m: re.Match) -> str:
+            inner = m.group(1)
+            inner = re.sub(r"<p[^>]*>", "", inner)
+            inner = re.sub(r"</p>", "", inner)
+            li_open = re.match(r"<li(?:\s[^>]*)?>", m.group(0))
+            li_tag = li_open.group(0) if li_open else "<li>"
+            return f"{li_tag}{inner}</li>"
+
+        # NOTE: <li(?:\s[^>]*)?> requires whitespace (or nothing) after
+        # "li" — prevents matching <link>, <literal>, etc. which also
+        # start with "li".
+        return re.sub(
+            r"<li(?:\s[^>]*)?>(.*?)</li>",
+            _unwrap_li,
+            html_text,
+            flags=re.DOTALL,
+        )
 
     # ── Markdown formatting ────────────────────────────────────────
+
+    @staticmethod
+    def _handle_emoji_full_line(markdown: str) -> str:
+        """Merge standalone emoji/icon lines with the following paragraph.
+
+        Some sites (e.g. ifanr morning briefings) use CSS ``float: left``
+        on a single-emoji ``<p>`` to make it appear inline with the next
+        ``<p>``. readability-lxml strips the CSS signal. After markdownify
+        the emoji ends up isolated on its own line::
+
+            📈
+
+            标题文本
+
+        We collapse the blank-line separator into a space, producing
+        ``📈 标题文本``.
+        """
+        import re
+
+        # Match a line of 1-6 non-text characters (emoji / dingbats /
+        # symbols — anything that isn't a letter, digit, whitespace,
+        # CJK, or markdown syntax), followed by one or more blank lines,
+        # followed by non-blank content. Collapse the separator.
+        return re.sub(
+            r'^([ \t]*[^\w\s一-鿿#*>|\-`\d]{1,6})[ \t]*\n([ \t]*\n)+(?=\S)',
+            r'\1 ',
+            markdown,
+            flags=re.MULTILINE,
+        )
 
     @staticmethod
     def _handle_markdown_bold(markdown: str) -> str:
@@ -318,9 +384,10 @@ class HtmlParser:
         """Post-process trafilatura output: normalize bold formatting and
         remove praise-button noise (``- +1``) from thepaper.cn widgets."""
         markdown = re.sub(r"^- \+1\n+(?=# )", "", markdown, count=1)
+        markdown = HtmlParser._handle_emoji_full_line(markdown)
         return HtmlParser._handle_markdown_bold(markdown)
 
-    # ── Unified result builder ──────────────────────────────────────
+    # ── Unified result builder ─────────────────────────────────────
 
     @staticmethod
     def _build_result(

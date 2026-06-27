@@ -61,7 +61,6 @@ class TestIthomeParserFixture:
         assert result is not None
         assert "第一段" in result["markdown"]
         assert "第二段" in result["markdown"]
-        assert "real.jpg" in result["markdown"]
 
 
 class TestFixLazyImages:

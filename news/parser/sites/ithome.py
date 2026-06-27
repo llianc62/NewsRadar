@@ -2,13 +2,7 @@
 
 from __future__ import annotations
 
-import re
-import html as _html
-
-from typing import Any, Dict, Optional
-
 from lxml import html as lxml_html
-from markdownify import markdownify as _md
 
 from news.parser.parser import HtmlParser
 
@@ -59,60 +53,18 @@ class IthomeParser(HtmlParser):
                 count += 1
         return count
 
-    def _extract(self, html: str, url: str = "") -> Optional[Dict[str, Any]]:
-        # 1. Extract content from #paragraph div — use lxml cssselect
-        #    (regex with non-greedy (.*?)</div> truncates at nested <div>s)
+    def _extract(self, html: str, url: str = "") -> tuple[str, dict]:
+        """从 #paragraph 容器提取正文 HTML。"""
         try:
             tree = lxml_html.fromstring(html)
         except Exception:
-            return None
+            return html, {}
 
         p_divs = tree.cssselect("#paragraph")
         if not p_divs:
-            return None
+            return html, {}
 
         content_html = lxml_html.tostring(
             p_divs[0], encoding="unicode", method="html"
         )
-
-        # 2. Convert to markdown
-        markdown = _md(
-            content_html,
-            heading_style="ATX",
-            strip=["script", "style"],
-            escape_asterisks=False,
-            escape_underscores=False,
-        )
-
-        if not markdown or len(markdown.strip()) <= 50:
-            return None
-
-        markdown = self._beautify_markdown_formatting(markdown).strip()
-
-        # 3. Title: prefer og:title → <title>
-        title = self._extract_title_from_html(html)
-        if not title:
-            title_match = re.search(r'<h1[^>]*>(.*?)</h1>', html, re.DOTALL)
-            if title_match:
-                title = _html.unescape(
-                    re.sub(r'<[^>]+>', '', title_match.group(1))
-                ).strip()
-
-        # 4. Metadata from page
-        author = self._extract_meta(html, r'name=["\']author["\']')
-        summary = self._extract_meta(
-            html, r'name=["\']description["\']'
-        ) or self._extract_meta(
-            html, r'property=["\']og:description["\']'
-        )
-        published_at = self._extract_meta(
-            html, r'property=["\']article:published_time["\']'
-        )
-
-        return self._build_result(
-            markdown=markdown,
-            title=title,
-            author=author,
-            published_at=published_at,
-            summary=summary,
-        )
+        return content_html, {}

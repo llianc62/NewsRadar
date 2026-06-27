@@ -41,13 +41,3 @@ class TestParseEdgeCases:
         parser = HtmlParser()
         result = parser.parse("")
         assert result is None
-
-    def test_truncates_content_over_max_length(self):
-        parser = HtmlParser()
-        parser.max_content_length = 200
-        long_text = "正文内容。" * 100  # ~600 chars
-        html = f"<html><body><article><p>{long_text}</p></article></body></html>"
-        result = parser.parse(html)
-        assert result is not None
-        assert len(result["markdown"]) <= parser.max_content_length + len("\n\n... (truncated)")
-        assert "... (truncated)" in result["markdown"]

@@ -15,29 +15,31 @@ class TestZaobaoParser:
         """Real zaobao.com.sg article fixture — verifies full extraction pipeline."""
         html = (FIXTURES / "zaobao.html").read_text(encoding="utf-8")
         parser = ZaobaoParser()
-        result = parser._extract(html)
-        assert result is not None
-        assert len(result["markdown"]) > 200
-        assert "亚细安" in result["markdown"]
+        content_html, meta = parser._extract(html)
+        assert content_html
+        assert len(content_html) > 200
         # Author from JSON-LD
-        assert result["author"] == "李庚洧"
+        assert meta["author"] == "李庚洧"
         # Published_at from JSON-LD
-        assert result["published_at"] == "2026-01-16T06:05:34.000Z"
+        assert meta["published_at"] == "2026-01-16T06:05:34.000Z"
         # Title from JSON-LD headline
-        assert "亚细安推区域反诈指南" in result["title"]
+        assert "亚细安推区域反诈指南" in meta["title"]
 
     def test_returns_none_no_article_body(self):
-        """Negative test — no div.articleBody present."""
+        """No div.articleBody present — _extract returns original HTML with empty meta."""
         parser = ZaobaoParser()
-        result = parser._extract("<html><body><p>no article here</p></body></html>")
-        assert result is None
+        html = "<html><body><p>no article here</p></body></html>"
+        content_html, meta = parser._extract(html)
+        assert content_html == html
+        assert meta == {}
 
     def test_returns_none_short_content(self):
-        """Negative test — articleBody present but content too short."""
+        """articleBody present but content too short — _extract returns original HTML."""
         html = '<html><body><div class="articleBody"><p>短</p></div></body></html>'
         parser = ZaobaoParser()
-        result = parser._extract(html)
-        assert result is None
+        content_html, meta = parser._extract(html)
+        assert content_html == html
+        assert meta == {}
 
     def test_find_article_body_found(self):
         """_find_article_body — finds div.articleBody and returns its HTML."""

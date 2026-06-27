@@ -10,9 +10,6 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
-
-from markdownify import markdownify as _md
 
 from news.parser.parser import HtmlParser
 
@@ -24,52 +21,22 @@ class WallstreetcnParser(HtmlParser):
     包含干净的正文 HTML，无需 readability 二次清洗。
     """
 
-    def _extract(self, html: str, url: str = "") -> Optional[Dict[str, Any]]:
-        # 1. Extract __SSR__ JSON
+    def _extract(self, html: str, url: str = "") -> tuple[str, dict]:
+        """从 __SSR__ JSON 提取正文 HTML 和元数据。"""
         ssr_data = self._find_ssr_json(html)
         if ssr_data is None:
-            return None
+            return html, {}
 
-        # 2. Navigate to article dict
         article = self._find_article(ssr_data)
         if article is None:
-            return None
+            return html, {}
 
-        # 3. Validate article has content
         content_html = article.get("content", "")
         if not isinstance(content_html, str) or len(content_html.strip()) < 100:
-            return None
+            return html, {}
 
-        # 4. Handle blockquote-wrapped images: unwrap so markdownify preserves them
-        content_html = self._unwrap_blockquote_images(content_html)
-
-        # 5. Fix lazy images (data-src → src)
-        content_html = self._fix_lazy_images(content_html)
-
-        # 6. Wrap bare <img> in <p> so readability/markdownify preserves them
-        content_html = self._wrap_bare_images(content_html)
-
-        # 7. Convert to markdown — content is already clean article HTML
-        try:
-            markdown = _md(
-                content_html,
-                heading_style="ATX",
-                strip=["script", "style"],
-                escape_asterisks=False,
-                escape_underscores=False,
-            )
-        except Exception:
-            return None
-
-        if not markdown or len(markdown.strip()) <= 50:
-            return None
-
-        markdown = self._beautify_markdown_formatting(markdown)
-
-        # 8. Build metadata
+        # Build metadata
         title = article.get("title", "")
-        if not title:
-            title = self._extract_title_from_html(html)
 
         # Author: from SSR author object or source_name fallback
         author_obj = article.get("author", {})
@@ -86,10 +53,7 @@ class WallstreetcnParser(HtmlParser):
                 dt = datetime.fromtimestamp(int(display_time), tz=timezone.utc)
                 published_at = dt.isoformat()
             except (ValueError, OSError):
-                # Fallback to meta extraction from HTML
-                published_at = self._extract_meta(
-                    html, "property=[\"']article:published_time[\"']"
-                )
+                pass
 
         # Noise categories from SSR — site navigation labels, not article topics
         _NOISE_CATEGORIES = frozenset({
@@ -112,29 +76,32 @@ class WallstreetcnParser(HtmlParser):
                 if isinstance(t, str) and t not in tags and t not in _NOISE_CATEGORIES:
                     tags.append(t)
 
-        # Summary: content_short → og:description → None
+        # Summary
         summary = article.get("content_short", "")
-        if not summary:
-            summary = (
-                self._extract_meta(html, "name=[\"']description[\"']")
-                or self._extract_meta(
-                    html, "property=[\"']og:description[\"']"
-                )
-            )
 
-        return self._build_result(
-            markdown=markdown.strip(),
-            title=title,
-            author=author,
-            published_at=published_at,
-            summary=summary,
-            tags=tags,
-            category=next(
-                (c["name"] for c in categories
-                 if isinstance(c, dict) and c.get("name", "") not in _NOISE_CATEGORIES),
-                "",
-            ),
+        # Category
+        category = next(
+            (c["name"] for c in categories
+             if isinstance(c, dict) and c.get("name", "") not in _NOISE_CATEGORIES),
+            "",
         )
+
+        return content_html, {
+            "title": title,
+            "author": author,
+            "published_at": published_at,
+            "summary": summary,
+            "tags": tags,
+            "category": category,
+        }
+
+    def _preprocess(self, html: str, url: str) -> str:
+        """清理图片标签：解包 blockquote、修复懒加载、包裹裸 img、展平 li 内 p。"""
+        html = self._remove_audio_components(html)
+        html = self._unwrap_blockquote_images(html)
+        html = self._fix_lazy_images(html)
+        html = self._wrap_bare_images(html)
+        return html
 
     # ── Internal helpers ────────────────────────────────────────────
 
@@ -263,6 +230,35 @@ class WallstreetcnParser(HtmlParser):
         html_text = re.sub(
             r"<img([^>]*?)>\s*(?!<)",
             r"<img\1></p>",
+            html_text,
+        )
+        return html_text
+
+    @staticmethod
+    def _remove_audio_components(html_text: str) -> str:
+        """Remove audio player components identified by ``data-wscntype="audio"``.
+
+        Wallstreetcn embeds ``<audio>`` in the morning briefing. The block
+        consists of an ``<h2>`` (e.g. "华见早安之声"), a ``<p
+        class="shield-text">`` (upgrade notice), and a ``<p>`` wrapping an
+        ``<img data-wscntype="audio">``. All three are stripped.
+        """
+        # The audio <img> inside its <p> wrapper
+        html_text = re.sub(
+            r'<p[^>]*>\s*<img[^>]*\bdata-wscntype="audio"[^>]*>\s*</p>',
+            "",
+            html_text,
+        )
+        # The "华见早安之声" heading that labels the audio section
+        html_text = re.sub(
+            r"<h2[^>]*>华见早安之声</h2>",
+            "",
+            html_text,
+        )
+        # The upgrade-notice paragraph
+        html_text = re.sub(
+            r'<p[^>]*class="shield-text"[^>]*>.*?</p>',
+            "",
             html_text,
         )
         return html_text

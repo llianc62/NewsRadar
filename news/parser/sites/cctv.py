@@ -12,9 +12,6 @@ from __future__ import annotations
 
 import html as _html
 import re
-from typing import Any, Dict, Optional
-
-from markdownify import markdownify as _md
 
 from news.parser.parser import HtmlParser
 
@@ -33,32 +30,13 @@ class CctvParser(HtmlParser):
         re.DOTALL,
     )
 
-    def _extract(self, html: str, url: str = "") -> Optional[Dict[str, Any]]:
-        # 1. Extract content HTML from JS variable
+    def _extract(self, html: str, url: str = "") -> tuple[str, dict]:
+        """从 JS 变量提取正文 HTML，清洗标题后缀。"""
         content_html = self._extract_contentdate(html)
         if not content_html:
-            return None
+            return html, {}
 
-        # 2. Convert to markdown
-        try:
-            markdown = _md(
-                content_html,
-                heading_style="ATX",
-                strip=["script", "style"],
-                escape_asterisks=False,
-                escape_underscores=False,
-            )
-        except Exception:
-            return None
-
-        # 央视快讯正文可能很短（<50字），contentdate 即是有效正文，
-        # 仅过滤掉纯空白或无实际内容的极端情况
-        if not markdown or len(markdown.strip()) <= 5:
-            return None
-
-        markdown = self._beautify_markdown_formatting(markdown).strip()
-
-        # 3. Title — the page <title> is usually clean for CCTV
+        # Title — the page <title> is usually clean for CCTV
         title = self._extract_title_from_html(html)
         # Strip site suffix " _新闻频道_央视网(cctv.com)" etc.
         if title:
@@ -66,23 +44,7 @@ class CctvParser(HtmlParser):
             title = re.sub(r"[-_]\s*央视网.*$", "", title)
             title = title.strip()
 
-        # 4. Metadata
-        author = self._extract_meta(html, r'name=["\']author["\']')
-        summary = (
-            self._extract_meta(html, r'name=["\']description["\']')
-            or self._extract_meta(html, r'property=["\']og:description["\']')
-        )
-        published_at = self._extract_meta(
-            html, r'property=["\']article:published_time["\']'
-        )
-
-        return self._build_result(
-            markdown=markdown,
-            title=title,
-            author=author,
-            published_at=published_at,
-            summary=summary,
-        )
+        return content_html, {"title": title}
 
     @classmethod
     def _extract_contentdate(cls, html_text: str) -> str:

@@ -66,15 +66,6 @@ class TestHtmlParserBase:
         )
         assert result["tags"] == ["科技", "经济"]
 
-    def test_max_content_length_truncation(self):
-        parser = HtmlParser({"crawler": {"max_content_length": 50}})
-        result = parser.parse("x" * 100)
-        # Empty HTML won't parse, so test via direct parse
-        html = "<html><head><title>T</title></head><body>" + "<p>" + "word " * 200 + "</p></body></html>"
-        result = parser.parse(html)
-        if result:
-            assert len(result["markdown"]) <= 50 + len("\n\n... (truncated)")
-
 
 class TestSplitKeywordTags:
     def test_comma_separated(self):
@@ -96,12 +87,12 @@ class TestParserRegistry:
 
         class DummyParser(HtmlParser):
             def _extract(self, html, url):
-                return self._build_result(markdown="dummy result")
+                return "<p>dummy content that is long enough to pass the fifty character minimum threshold</p>", {"title": "dummy result"}
 
         reg.register("dummy", DummyParser())
         result = reg.parse("dummy", "<html></html>", "")
         assert result is not None
-        assert result["markdown"] == "dummy result"
+        assert result["title"] == "dummy result"
 
     def test_unregistered_source_id_falls_back_to_default(self):
         reg = Registry()

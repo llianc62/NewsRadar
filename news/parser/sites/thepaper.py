@@ -6,10 +6,6 @@ import json
 import re
 import html as _html
 
-from typing import Any, Dict, Optional
-from readability import Document
-from markdownify import markdownify as _md
-
 from news.parser.parser import HtmlParser
 
 
@@ -20,8 +16,8 @@ class ThepaperParser(HtmlParser):
     ``<script id="__NEXT_DATA__" type="application/json">`` 中。
     """
 
-    def _extract(self, html: str, url: str = "") -> Optional[Dict[str, Any]]:
-        # 1. Find __NEXT_DATA__ JSON candidates
+    def _extract(self, html: str, url: str = "") -> tuple[str, dict]:
+        """从 __NEXT_DATA__ JSON 提取正文 HTML 和元数据。"""
         for candidate in self._find_next_data_candidates(html):
             article = self._find_article_in_json(candidate)
             if not article:
@@ -29,76 +25,30 @@ class ThepaperParser(HtmlParser):
             if not self._is_valid_article(article):
                 continue
 
-            # 2. Fix lazy images (data-src → src) for thepaper
-            content_html = self._fix_lazy_images(article["content"])
+            content_html = article["content"]
 
-            # 3. Wrap bare <img> in <p> so readability preserves them
-            content_html = re.sub(
-                r'(?<!>)\s*<img\s',
-                '<p><img ',
-                content_html,
-                count=1,
-            )
-            content_html = re.sub(
-                r'<img([^>]*?)>\s*(?!<)',
-                r'<img\1></p>',
-                content_html,
-            )
-
-            # 4. Convert to markdown via readability
-            try:
-                doc = Document(content_html, url=url)
-                article_html = doc.summary()
-            except Exception:
-                continue
-
-            if not article_html or not article_html.strip():
-                continue
-
-            markdown = _md(
-                article_html,
-                heading_style="ATX",
-                strip=["script", "style"],
-                escape_asterisks=False,
-                escape_underscores=False,
-            )
-
-            if not markdown or len(markdown.strip()) <= 50:
-                # Image-heavy content fallback
-                markdown = self._build_image_markdown(content_html)
-                if not markdown or len(markdown.strip()) <= 50:
-                    continue
-
-            markdown = self._beautify_markdown_formatting(markdown)
-
-            # 5. Metadata: JSON title has priority
             title = article.get("title", "")
-            if not title:
-                title = self._extract_title_from_html(html)
-
-            # Summary: JSON description → og:description
             summary = article.get("description", "")
-            if not summary:
-                summary = self._extract_meta(
-                    html, r'name=["\']description["\']'
-                ) or self._extract_meta(
-                    html, r'property=["\']og:description["\']'
-                )
-
             published_at = article.get("datePublished", "")
             tags = article.get("keywords", [])
             if isinstance(tags, str):
                 tags = [t.strip() for t in tags.split(",") if t.strip()]
 
-            return self._build_result(
-                markdown=markdown.strip(),
-                title=title,
-                published_at=published_at,
-                summary=summary,
-                tags=tags,
-            )
+            return content_html, {
+                "title": title,
+                "published_at": published_at,
+                "summary": summary,
+                "tags": tags,
+            }
 
-        return None
+        return html, {}
+
+    def _preprocess(self, html: str, url: str) -> str:
+        """修复懒加载图片，包裹裸 img。"""
+        html = self._fix_lazy_images(html)
+        html = re.sub(r'(?<!>)\s*<img\s', '<p><img ', html, count=1)
+        html = re.sub(r'<img([^>]*?)>\s*(?!<)', r'<img\1></p>', html)
+        return html
 
     # ── Internal helpers ────────────────────────────────────────────
 
