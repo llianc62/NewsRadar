@@ -18,6 +18,7 @@ from news.parser.sites.gelonghui import GelonghuiParser
 from news.parser.sites.huanqiu import HuanqiuParser
 from news.parser.sites.ifanr import IfanrParser
 from news.parser.sites.xinhua import XinhuaParser
+from news.parser.sites.yicai import YicaiParser
 
 # Default parser for unregistered source_ids
 registry.set_default(HtmlParser())
@@ -48,3 +49,4 @@ registry.register("cctv-world", CctvParser(), domains=["cctv.com", "cctvnews.cct
 registry.register("xinhua-politics", _xinhua, domains=["xinhuanet.com", "news.cn"])
 registry.register("xinhua-finance", _xinhua, domains=["xinhuanet.com", "news.cn"])
 registry.register("xinhua-world", _xinhua, domains=["xinhuanet.com", "news.cn"])
+registry.register("yicai-news", YicaiParser(), domains=["yicai.com"])

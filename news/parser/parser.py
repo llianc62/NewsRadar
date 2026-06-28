@@ -17,12 +17,17 @@ from markdownify import markdownify
 
 
 def split_keyword_tags(tags: List[str]) -> List[str]:
-    """Normalise keyword tags: split comma/space-separated strings into
-    individual tags and remove duplicates while preserving order."""
+    """Normalise keyword tags: split on common separators into individual
+    tags and remove duplicates while preserving order.
+
+    Handles ASCII and CJK separators: ``,``, ``;``, ``；``, ``，``, ``、``,
+    ``|``, and whitespace.
+    """
+    _SEP_RE = re.compile(r'[,;；，、|\s]+')
+
     result: List[str] = []
     for tag in tags:
-        # Split on comma or whitespace, drop empties
-        parts = [t.strip() for t in re.split(r'[,\s]+', tag) if t.strip()]
+        parts = [t.strip() for t in _SEP_RE.split(tag) if t.strip()]
         for p in parts:
             if p not in result:
                 result.append(p)

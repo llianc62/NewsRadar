@@ -77,6 +77,44 @@ class TestSplitKeywordTags:
     def test_dedup_preserves_order(self):
         assert split_keyword_tags(["科技,AI,科技"]) == ["科技", "AI"]
 
+    # ── CJK separators ──────────────────────────────────────────────
+
+    def test_chinese_semicolon_separated(self):
+        """； (U+FF1B) — 第一财经等网站使用。"""
+        assert split_keyword_tags(["全国统一大市场；反内卷；公平竞争"]) == [
+            "全国统一大市场", "反内卷", "公平竞争"
+        ]
+
+    def test_chinese_comma_separated(self):
+        """， (U+FF0C) — 中文全角逗号。"""
+        assert split_keyword_tags(["半导体，AI，芯片"]) == ["半导体", "AI", "芯片"]
+
+    def test_enumeration_comma_separated(self):
+        """、 (U+3001) — 中文顿号。"""
+        assert split_keyword_tags(["OpenAI、Anthropic、Google"]) == [
+            "OpenAI", "Anthropic", "Google"
+        ]
+
+    def test_english_semicolon_separated(self):
+        """; 英文分号。"""
+        assert split_keyword_tags(["tech;AI;cloud"]) == ["tech", "AI", "cloud"]
+
+    def test_pipe_separated(self):
+        """| 竖线分隔。"""
+        assert split_keyword_tags(["科技|AI|经济"]) == ["科技", "AI", "经济"]
+
+    def test_mixed_separators(self):
+        """混合使用多种分隔符。"""
+        assert split_keyword_tags(["科技,AI；半导体、芯片|5G"]) == [
+            "科技", "AI", "半导体", "芯片", "5G"
+        ]
+
+    def test_multiple_elements_in_list(self):
+        """列表中多个元素各自拆分后去重。"""
+        assert split_keyword_tags(["科技；AI", "AI、半导体,科技"]) == [
+            "科技", "AI", "半导体"
+        ]
+
 
 class TestParserRegistry:
     """Test routing behavior."""
