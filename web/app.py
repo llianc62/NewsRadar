@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from markupsafe import Markup
 
-from storage.files import S3Storage
+from storage.files import FileStorage, LocalStorage, S3Storage
 from news.crawler import Crawler, OutputStyle
 from news.constants import (
     TIER_LABELS, TIER_COLORS, TIER_BG,
@@ -271,8 +271,13 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
         return response
     app.state.queues = queues or {}
 
-    # S3 storage — required for /media/ proxy
-    app.state.s3_storage = S3Storage(s3_config)
+    # Media storage — S3 when configured, local filesystem otherwise
+    if any(s3_config.get(k) for k in (
+        "endpoint_url", "bucket_name", "access_key_id", "secret_access_key"
+    )):
+        app.state.media_storage: FileStorage = S3Storage(s3_config)
+    else:
+        app.state.media_storage = LocalStorage("output")
 
     # Refetch state
     global _refetch_executor
@@ -520,21 +525,19 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
         html = render_template("pages/news_detail.html", active_page="hot-news", article=article)
         return HTMLResponse(html)
 
-    # ── Media proxy (S3 presigned redirect) ──────────────────────
+    # ── Media proxy ──────────────────────────────────────────────
 
     @app.get("/media/{path:path}")
     async def media_proxy(path: str):
-        """Proxy S3 object access via presigned redirect.
+        """Serve media from S3 (presigned redirect) or local filesystem."""
+        from fastapi.responses import FileResponse, RedirectResponse
 
-        Takes an S3 object key as *path*, generates a short-lived
-        presigned GET URL (1 hour), and redirects.  This keeps
-        stored content URLs stable while bucket access stays private.
-        """
-        from fastapi.responses import RedirectResponse
-
-        storage = app.state.s3_storage
-        url = storage.get(path, expires_in=3600)
-        return RedirectResponse(url=url)
+        storage: FileStorage = app.state.media_storage
+        if isinstance(storage, S3Storage):
+            url = storage.get(path, expires_in=3600)
+            return RedirectResponse(url=url)
+        else:
+            return FileResponse(storage.get(path))
 
     # ── Manual trigger API ───────────────────────────────────────
 

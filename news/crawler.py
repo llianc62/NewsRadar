@@ -87,9 +87,14 @@ class Crawler:
         data_dir = storage_conf.get("local", {}).get("data_path", "output")
         self._local_storage = LocalStorage(data_dir)
 
-        # Resource storage — local MinIO/S3 for project files/images (required)
+        # Resource storage — S3 for images when configured, else local filesystem
         resource_cfg = storage_conf.get("resource", {})
-        self._resource_storage = S3Storage(resource_cfg)
+        if any(resource_cfg.get(k) for k in (
+            "endpoint_url", "bucket_name", "access_key_id", "secret_access_key"
+        )):
+            self._resource_storage: FileStorage = S3Storage(resource_cfg)
+        else:
+            self._resource_storage = self._local_storage
 
         # Thread pool (lazy)
         self._executor: Optional[ThreadPoolExecutor] = None

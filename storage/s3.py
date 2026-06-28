@@ -48,6 +48,11 @@ class S3Client:
         region: str = "",
     ):
 
+        # Normalize endpoint URL — boto3 requires a scheme
+        endpoint_url = endpoint_url.strip()
+        if not endpoint_url.startswith(("http://", "https://")):
+            endpoint_url = f"https://{endpoint_url}"
+
         self.endpoint_url = endpoint_url
         self.bucket_name = bucket_name
 

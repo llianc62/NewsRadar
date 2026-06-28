@@ -1,4 +1,4 @@
-name: Notify News
+name: News Notify
 
 on:
   schedule:

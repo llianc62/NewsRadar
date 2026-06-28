@@ -1,4 +1,4 @@
-name: Crawl News
+name: News Crawl
 
 on:
   schedule:
