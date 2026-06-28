@@ -14,7 +14,7 @@ import random
 import re
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -450,6 +450,37 @@ class RssFetcher(Fetcher):
             # Apply max_items limit (0 = no limit)
             if feed.max_items > 0:
                 parsed_items = parsed_items[: feed.max_items]
+
+            # Apply max_age_days filter (None/0 = disabled)
+            if feed.max_age_days is not None and feed.max_age_days > 0:
+                cutoff = datetime.now(timezone.utc) - timedelta(
+                    days=feed.max_age_days
+                )
+                kept = []
+                dropped = 0
+                for item in parsed_items:
+                    pub_str = item.published_at or ""
+                    if not pub_str:
+                        kept.append(item)
+                        continue
+                    try:
+                        pub_dt = datetime.fromisoformat(
+                            pub_str.replace("Z", "+00:00")
+                        )
+                        if pub_dt.tzinfo is None:
+                            pub_dt = pub_dt.replace(tzinfo=timezone.utc)
+                        if pub_dt >= cutoff:
+                            kept.append(item)
+                        else:
+                            dropped += 1
+                    except (ValueError, TypeError):
+                        kept.append(item)
+                if dropped:
+                    print(
+                        f"[RSS] {feed.name}: dropped {dropped} items "
+                        f"older than {feed.max_age_days}d"
+                    )
+                parsed_items = kept
 
             entries = []
             for parsed in parsed_items:

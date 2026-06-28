@@ -80,21 +80,21 @@ crawler:
         url: "http://www.xinhuanet.com/politics/news_politics.xml"
         tier: 2
         priority: 88
-        enabled: true
+        enabled: false  # feed 已停止更新 (lastBuildDate: 2022-12-14)
         max_age_days: 1
       - id: "xinhua-finance"
         name: "新华社·财经"
         url: "http://www.xinhuanet.com/fortune/news_fortune.xml"
         tier: 1
         priority: 85
-        enabled: true
+        enabled: false  # feed 已停止更新 (lastBuildDate: 2022-12-14)
         max_age_days: 1
       - id: "xinhua-world"
         name: "新华社·国际"
         url: "http://www.xinhuanet.com/world/news_world.xml"
         tier: 2
         priority: 78
-        enabled: true
+        enabled: false  # feed 已停止更新 (lastBuildDate: 2022-12-14)
         max_age_days: 1
       - id: "people"
         name: "人民日报"
@@ -124,7 +124,7 @@ crawler:
         tier: 2
         priority: 80
         enabled: true
-        max_age_days: 2
+        max_age_days: 1
       # ═══ 市场快讯 ═══
       - id: "jin10"
         name: "金十数据"
@@ -163,28 +163,28 @@ crawler:
         tier: 2
         priority: 80
         enabled: false
-        max_age_days: 2
+        max_age_days: 1
       - id: "bbc-world"
         name: "BBC国际"
         url: "https://rsshub.rssforever.com/bbc/world"
         tier: 2
         priority: 74
         enabled: false
-        max_age_days: 2
+        max_age_days: 1
       - id: "cctv-world"
         name: "央视国际"
         url: "https://rsshub.rssforever.com/cctv/world"
         tier: 2
         priority: 80
         enabled: true
-        max_age_days: 2
+        max_age_days: 1
       - id: "aljazeera-en"
         name: "半岛电视台"
         url: "https://rsshub.rssforever.com/aljazeera/english"
         tier: 3
         priority: 56
         enabled: false
-        max_age_days: 2
+        max_age_days: 1
       - id: "yahoo-finance"
         name: "雅虎财经"
         url: "https://finance.yahoo.com/news/rssindex"
