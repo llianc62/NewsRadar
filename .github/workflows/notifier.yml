@@ -11,6 +11,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   notify:
@@ -42,7 +43,7 @@ jobs:
             --status success \
             --limit 1 \
             --json createdAt \
-            --jq '.[0].createdAt // ""')
+            --jq '.[0].createdAt // ""' || echo "")
           echo "since=$SINCE" >> $GITHUB_OUTPUT
 
       - name: Run notifier
@@ -55,4 +56,4 @@ jobs:
           EMAIL_FROM_ADDR: ${{ secrets.EMAIL_FROM_ADDR }}
           EMAIL_TO_ADDR: ${{ secrets.EMAIL_TO_ADDR }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-        run: python -m cli notify --start-time "${{ steps.last_run.outputs.since }}"
+        run: uv run python -m cli notify --start-time "${{ steps.last_run.outputs.since }}"
