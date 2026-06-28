@@ -251,6 +251,18 @@ postgresql:
 analyzer:
   enabled: true
   backend: jieba  # jieba / agent
+  heat:
+    half_life_hours: 12
+    tier_base:
+      1: 60
+      2: 44
+      3: 28
+      4: 12
+    boost_cap:
+      1: 25
+      2: 30
+      3: 35
+      4: 40
 
 web:
   host: "0.0.0.0"

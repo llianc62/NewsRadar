@@ -11,7 +11,7 @@ class AgentAnalyzer(Analyzer):
         super().__init__(config, db)
         raise NotImplementedError("AgentAnalyzer 尚未实现")
 
-    def analyze_heat(self, source_id: str, items: list, db_map: dict) -> None:
+    def analyze_heat(self, items: list) -> None:
         raise NotImplementedError("AgentAnalyzer 尚未实现")
 
     def analyze_sentiment(self, items: list) -> None:

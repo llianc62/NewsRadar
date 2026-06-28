@@ -175,9 +175,15 @@ def _load_web_config(raw: Dict) -> Dict:
 
 def _load_analyzer_config(raw: Dict) -> Dict:
     analyzer = raw.get("analyzer", {})
+    heat_cfg = analyzer.get("heat", {})
     return {
         "enabled": analyzer.get("enabled", True),
         "backend": analyzer.get("backend", "jieba"),
+        "heat": {
+            "half_life_hours": heat_cfg.get("half_life_hours", 12),
+            "tier_base": heat_cfg.get("tier_base", {1: 60, 2: 44, 3: 28, 4: 12}),
+            "boost_cap": heat_cfg.get("boost_cap", {1: 25, 2: 30, 3: 35, 4: 40}),
+        },
     }
 
 

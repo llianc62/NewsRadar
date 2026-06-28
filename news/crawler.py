@@ -28,7 +28,7 @@ from news.fetcher import NewsnowFetcher, RssFetcher
 from news.parser import registry as parser
 from news.images import ImageProcessor
 from news.models import NewsData, NewsItem
-from storage.files import LocalStorage, S3Storage
+from storage.files import FileStorage, LocalStorage, S3Storage
 from utils import (
     format_date_today, format_datetime_now, format_time_now, sanitize_filename,
     http_get_with_retry,
@@ -183,33 +183,6 @@ class Crawler:
                 db = None
             self._analyzer = create_analyzer(self._config, db=db)
         return self._analyzer
-
-    def _query_today_hotlist(self, source_id: str) -> dict:
-        """查询当天该 source 的 DB 快照，供 analyze_heat 使用。
-
-        Returns:
-            {url: {"heat_score": int, "ranks": list}}
-        """
-        import psycopg2.extras
-
-        pg = self._get_pg_db()
-        db_map: dict = {}
-        with pg.get_conn() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(
-                    """SELECT url, heat_score, ranks
-                       FROM news_articles
-                       WHERE source_id = %s
-                         AND source_type = 'hotlist'
-                         AND updated_at::date = CURRENT_DATE""",
-                    (source_id,),
-                )
-                for row in cur.fetchall():
-                    db_map[row["url"]] = {
-                        "heat_score": row["heat_score"],
-                        "ranks": row["ranks"] if row["ranks"] else [],
-                    }
-        return db_map
 
     def _build_source_tiers(self) -> dict:
         """Build ``{source_id: {tier, priority}}`` mapping from config."""
@@ -407,20 +380,16 @@ class Crawler:
             if contentful_items:
                 analyzer.analyze_sentiment(contentful_items)
 
-            # Heat: group hotlist items by source, query DB snapshots,
-            # then process
-            hotlist_items = [it for it in all_items
-                           if isinstance(it, dict) and it.get("source_type") == "hotlist"]
-            if hotlist_items:
-                # Group by source_id
-                by_source: Dict[str, list] = {}
-                for it in hotlist_items:
+            # Heat: compute heat score for ALL items (hotlist + RSS)
+            # using tier-base × time-decay formula — no DB roundtrip
+            if all_items:
+                # Inject tier from source config (fetcher item dicts
+                # don't carry tier — it's added later during persistence)
+                for it in all_items:
                     sid = it.get("source_id", "")
-                    by_source.setdefault(sid, []).append(it)
-
-                for sid, items in by_source.items():
-                    db_map = self._query_today_hotlist(sid)
-                    analyzer.analyze_heat(sid, items, db_map)
+                    ti = self._source_tiers.get(sid, {})
+                    it.setdefault("tier", ti.get("tier", 4))
+                analyzer.analyze_heat(all_items)
 
         # ── Persistence ────────────────────────────────────────────
         self.persist(*all_items, output_style=output_style)

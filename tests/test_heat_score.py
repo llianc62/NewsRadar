@@ -1,295 +1,304 @@
 # coding=utf-8
-"""Tests for heat score calculation and hotlist heat processing."""
+"""Tests for unified heat score calculation (tier-base × time-decay)."""
 
-import json
+import math
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from news.analyzer.jieba import JiebaAnalyzer
+from news.analyzer.analyzer import Analyzer
 
 
-class TestCalcHeatScore:
-    """Unit tests for _calc_heat_score."""
+# ── Concrete subclass for testing (Analyzer is ABC) ───────────────
 
-    # ── First appearance ────────────────────────────────────────────
+class _TestAnalyzer(Analyzer):
+    """Concrete analyzer — sentiment is a no-op, heat inherited from base."""
 
-    def test_first_appearance_top_rank(self):
-        """#1/20 → 95."""
-        score = JiebaAnalyzer._calc_heat_score(None, [], [1, 20])
-        assert score == 95
-
-    def test_first_appearance_mid_rank(self):
-        """#7/20 → 65."""
-        score = JiebaAnalyzer._calc_heat_score(None, [], [7, 20])
-        assert score == 65
-
-    def test_first_appearance_bottom_rank(self):
-        """#20/20 → 0."""
-        score = JiebaAnalyzer._calc_heat_score(None, [], [20, 20])
-        assert score == 0
-
-    def test_first_appearance_50_total_top(self):
-        """#1/50 → 98."""
-        score = JiebaAnalyzer._calc_heat_score(None, [], [1, 50])
-        assert score == 98
-
-    def test_first_appearance_prev_heat_none(self):
-        """prev_heat=None with valid ranks still counts as first."""
-        score = JiebaAnalyzer._calc_heat_score(None, [[7, 20]], [5, 20])
-        assert score == 75
-
-    # ── Still on list: rank up ──────────────────────────────────────
-
-    def test_rank_up_increases_heat(self):
-        """#7/20 → #5/20: 65% → 75%, +10pp → +3 heat."""
-        prev_ranks = [[7, 20]]
-        score = JiebaAnalyzer._calc_heat_score(65, prev_ranks, [5, 20])
-        assert score == 68  # 65 + round(10 * 0.3) = 68
-
-    def test_rank_up_big_jump(self):
-        """#20/20 → #1/20: 0% → 95%, +95pp → +28 heat."""
-        prev_ranks = [[20, 20]]
-        score = JiebaAnalyzer._calc_heat_score(0, prev_ranks, [1, 20])
-        assert score == 28  # 0 + round(95 * 0.3) = 28
-
-    def test_rank_up_multi_round(self):
-        """Accumulates across multiple rounds."""
-        prev_ranks = [[7, 20], [5, 20]]  # last is [5,20]
-        # prev_heat=68, #5→#2: 75%→90%, delta=15, 68+15*0.3=72.5→72
-        score = JiebaAnalyzer._calc_heat_score(68, prev_ranks, [2, 20])
-        assert score == 72
-
-    # ── Still on list: rank down ────────────────────────────────────
-
-    def test_rank_down_decreases_heat(self):
-        """#5/20 → #8/20: 75% → 60%, -15pp → -4.5 → -4 heat."""
-        prev_ranks = [[5, 20]]
-        score = JiebaAnalyzer._calc_heat_score(75, prev_ranks, [8, 20])
-        assert score == 70  # 75 + round(-15 * 0.3) = 75 - 4 = 71? No.
-        # 75 - 4.5 = 70.5. Python round(70.5) = 70 (banker's rounding)
-
-    def test_rank_down_severe(self):
-        """#1/20 → #15/20: 95% → 25%, -70pp → -21 heat."""
-        prev_ranks = [[1, 20]]
-        score = JiebaAnalyzer._calc_heat_score(95, prev_ranks, [15, 20])
-        assert score == 74  # 95 + round(-70 * 0.3) = 74
-
-    # ── Still on list: no change ────────────────────────────────────
-
-    def test_same_rank_no_change(self):
-        """Same rank → heat unchanged."""
-        prev_ranks = [[5, 20]]
-        score = JiebaAnalyzer._calc_heat_score(75, prev_ranks, [5, 20])
-        assert score == 75
-
-    # ── Different total sizes ────────────────────────────────────────
-
-    def test_total_changes_between_rounds(self):
-        """#5/20 (75%) → #5/50 (90%): ranking stronger in larger pool."""
-        prev_ranks = [[5, 20]]
-        score = JiebaAnalyzer._calc_heat_score(75, prev_ranks, [5, 50])
-        assert score == 80  # 75 + round(15 * 0.3) = 80
-
-    # ── Clamp boundaries ────────────────────────────────────────────
-
-    def test_clamp_to_100(self):
-        """Heat cannot exceed 100."""
-        prev_ranks = [[5, 20]]
-        score = JiebaAnalyzer._calc_heat_score(99, prev_ranks, [1, 20])
-        assert score == 100  # 99 + 6 = 105 → clamped to 100
-
-    def test_clamp_to_0(self):
-        """Heat cannot go below 0."""
-        prev_ranks = [[10, 20]]
-        score = JiebaAnalyzer._calc_heat_score(1, prev_ranks, [20, 20])
-        assert score == 0
-
-    # ── Rounding ────────────────────────────────────────────────────
-
-    def test_rounding(self):
-        """delta × 0.3 = 1.5, Python round() uses banker's rounding."""
-        prev_ranks = [[7, 20]]
-        # 65% → 70%: delta=5, 5*0.3=1.5, 65+1.5=66.5
-        # Python round(66.5)=66 (banker's rounding: ties to even)
-        score = JiebaAnalyzer._calc_heat_score(65, prev_ranks, [6, 20])
-        assert score == 66
+    def analyze_sentiment(self, items):
+        pass
 
 
-@pytest.mark.skip(reason="Superseded by JiebaAnalyzer.analyze_heat — see test_analyzer.py")
-class TestProcessHotlistHeat:
-    """Tests for _process_hotlist_heat using mocked DB (removed from PostgreSQL)."""
+# ── Config helpers ─────────────────────────────────────────────────
 
-    @staticmethod
-    def _make_db_row(url, heat_score, ranks):
-        """Helper: build a RealDictRow-compatible return for fetchall."""
-        return {"url": url, "heat_score": heat_score, "ranks": ranks}
+def _cfg(**heat_overrides):
+    """Build a minimal config dict for _TestAnalyzer with defaults overridden."""
+    defaults = {
+        "half_life_hours": 12,
+        "tier_base": {1: 60, 2: 44, 3: 28, 4: 12},
+        "boost_cap": {1: 25, 2: 30, 3: 35, 4: 40},
+    }
+    defaults.update(heat_overrides)
+    return {"analyzer": {"heat": defaults}}
 
-    # ── Helper ──────────────────────────────────────────────────────
 
-    @staticmethod
-    def _make_item(title, source_id, url, rank, total, heat_score=0):
-        """Build a NewsItem with ranks derived from rank + total."""
-        from news.models import NewsItem
-        return NewsItem(
-            title=title,
-            source_id=source_id,
-            source_type="hotlist",
-            url=url,
-            rank=rank,
-            ranks=[[rank, total]],
-            heat_score=heat_score,
-        )
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
-    def test_new_url_first_appearance(self, db, mock_cursor):
-        """URL not in DB → percentile-based score."""
-        mock_cursor.fetchall.return_value = []  # DB has no records
 
-        items = [self._make_item("Brand new", "test-source",
-                                 "https://a.com/new1", rank=3, total=20)]
-        db._process_hotlist_heat("test-source", items)
+def _ago_iso(hours: float) -> str:
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
 
-        assert items[0].heat_score == 85  # (1 - 3/20) * 100 = 85
-        assert items[0].ranks == [[3, 20]]
 
-    def test_existing_url_rank_up(self, db, mock_cursor):
-        """URL in DB → delta adjustment from old heat."""
-        mock_cursor.fetchall.return_value = [
-            self._make_db_row("https://a.com/news1", 65, [[7, 20]]),
-        ]
+# ═══════════════════════════════════════════════════════════════════════
+# _time_decay
+# ═══════════════════════════════════════════════════════════════════════
 
-        items = [self._make_item("Existing news #1", "test-source",
-                                 "https://a.com/news1", rank=5, total=20)]
-        db._process_hotlist_heat("test-source", items)
+class TestTimeDecay:
+    """Unit tests for Analyzer._time_decay."""
 
-        # 65% → 75%, delta=10, +3 → 68
-        assert items[0].heat_score == 68
-        assert items[0].ranks == [[7, 20], [5, 20]]
+    def test_zero_age_returns_one(self):
+        assert Analyzer._time_decay(0.0, half_life=12) == 1.0
 
-    def test_existing_url_rank_down(self, db, mock_cursor):
-        """URL in DB → delta adjustment (negative)."""
-        mock_cursor.fetchall.return_value = [
-            self._make_db_row("https://a.com/news1", 65, [[7, 20]]),
-        ]
+    def test_negative_age_returns_one(self):
+        assert Analyzer._time_decay(-5.0, half_life=12) == 1.0
 
-        items = [self._make_item("Existing news #1", "test-source",
-                                 "https://a.com/news1", rank=12, total=20)]
-        db._process_hotlist_heat("test-source", items)
+    def test_exactly_half_life(self):
+        # e^(-ln2 * 12 / 12) = e^(-ln2) = 0.5
+        assert Analyzer._time_decay(12.0, half_life=12) == pytest.approx(0.5)
 
-        # 65% → 40%, delta=-25, 65-7.5=57.5 → 58 (banker's rounding)
-        assert items[0].heat_score == 58
-        assert items[0].ranks == [[7, 20], [12, 20]]
+    def test_two_half_lives(self):
+        # e^(-ln2 * 24 / 12) = e^(-2*ln2) = 0.25
+        assert Analyzer._time_decay(24.0, half_life=12) == pytest.approx(0.25)
 
-    def test_dropped_url_decay(self, db, mock_cursor):
-        """URL in DB but not this round → ×0.7."""
-        mock_cursor.fetchall.return_value = [
-            self._make_db_row("https://a.com/old1", 65, [[7, 20]]),
-            self._make_db_row("https://a.com/old2", 50, [[10, 20]]),
-        ]
+    def test_default_half_life_is_12(self):
+        assert Analyzer._time_decay(12.0) == pytest.approx(0.5)
 
-        items: list = []  # Empty — no URLs in this round
-        db._process_hotlist_heat("test-source", items)
+    def test_custom_half_life(self):
+        # e^(-ln2 * 6 / 6) = 0.5
+        assert Analyzer._time_decay(6.0, half_life=6) == pytest.approx(0.5)
 
-        # Verify decay UPDATE was called
-        from tests.conftest_db import capture_sql
-        sql, params = capture_sql(mock_cursor)
-        assert "SET heat_score" in sql
-        assert "0.7" in sql
-        assert "test-source" in params
-        assert set(params[1]) == {"https://a.com/old1", "https://a.com/old2"}
 
-    def test_mixed_scenario(self, db, mock_cursor):
-        """New + existing + dropped all in one round."""
-        mock_cursor.fetchall.return_value = [
-            self._make_db_row("https://a.com/news1", 65, [[7, 20]]),
-            self._make_db_row("https://a.com/news2", 50, [[10, 20]]),
-        ]
+# ═══════════════════════════════════════════════════════════════════════
+# _parse_published_at
+# ═══════════════════════════════════════════════════════════════════════
 
+class TestParsePublishedAt:
+    """Unit tests for Analyzer._parse_published_at."""
+
+    def test_empty_string(self):
+        assert Analyzer._parse_published_at("") is None
+
+    def test_iso_with_timezone_offset(self):
+        dt = Analyzer._parse_published_at("2026-06-28T10:30:00+08:00")
+        assert dt is not None
+        assert dt.year == 2026
+        assert dt.hour == 10
+
+    def test_iso_with_z_suffix(self):
+        dt = Analyzer._parse_published_at("2026-06-28T10:30:00Z")
+        assert dt is not None
+        assert dt.hour == 10
+
+    def test_date_only(self):
+        dt = Analyzer._parse_published_at("2026-06-28")
+        assert dt is not None
+        assert dt.year == 2026
+        assert dt.month == 6
+        assert dt.day == 28
+
+    def test_datetime_no_tz(self):
+        dt = Analyzer._parse_published_at("2026-06-28 10:30:00")
+        assert dt is not None
+        assert dt.hour == 10
+
+    def test_datetime_with_T_no_tz(self):
+        dt = Analyzer._parse_published_at("2026-06-28T10:30:00")
+        assert dt is not None
+        assert dt.hour == 10
+
+    def test_unparseable_returns_none(self):
+        assert Analyzer._parse_published_at("not a date") is None
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# _age_hours
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestAgeHours:
+    """Unit tests for Analyzer._age_hours."""
+
+    def test_empty_string_returns_zero(self):
+        assert Analyzer._age_hours("") == 0.0
+
+    def test_recent_date(self):
+        one_hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        assert Analyzer._age_hours(one_hour_ago) == pytest.approx(1.0, abs=0.2)
+
+    def test_date_only_assumes_midnight_utc(self):
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        age = Analyzer._age_hours(today_str)
+        assert 0 <= age <= 24
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# analyze_heat
+# ═══════════════════════════════════════════════════════════════════════
+
+class TestAnalyzeHeat:
+    """Integration tests for Analyzer.analyze_heat with dict items."""
+
+    # ── Tier base scores ─────────────────────────────────────────────
+
+    def test_tier1_fresh_hotlist_top1(self):
+        """T1 #1/20, fresh → 60 + 23.75 = 83.75 → 84."""
+        a = _TestAnalyzer(_cfg())
+        item = {"tier": 1, "ranks": [[1, 20]], "published_at": _now_iso()}
+        a.analyze_heat([item])
+        # boost = (1 - 1/20) * 25 = 23.75, raw = 60 + 23.75 = 83.75 → 84
+        assert item["heat_score"] == pytest.approx(84, abs=1)
+
+    def test_tier1_fresh_hotlist_mid(self):
+        """T1 #10/20, fresh → 60 + 12.5 = 72.5 → 72 (banker's rounding)."""
+        a = _TestAnalyzer(_cfg())
+        item = {"tier": 1, "ranks": [[10, 20]], "published_at": _now_iso()}
+        a.analyze_heat([item])
+        # boost = (1 - 10/20) * 25 = 12.5, raw = 72.5 → 72
+        assert item["heat_score"] == pytest.approx(72, abs=1)
+
+    def test_tier1_fresh_hotlist_last(self):
+        """T1 #20/20, fresh → base only, no boost."""
+        a = _TestAnalyzer(_cfg())
+        item = {"tier": 1, "ranks": [[20, 20]], "published_at": _now_iso()}
+        a.analyze_heat([item])
+        assert item["heat_score"] == pytest.approx(60, abs=1)
+
+    def test_tier2_fresh_hotlist_top1(self):
+        """T2 #1/20, fresh → 44 + 28.5 = 72.5 → 72."""
+        a = _TestAnalyzer(_cfg())
+        item = {"tier": 2, "ranks": [[1, 20]], "published_at": _now_iso()}
+        a.analyze_heat([item])
+        assert item["heat_score"] == pytest.approx(72, abs=1)
+
+    def test_tier3_fresh_hotlist_top1(self):
+        """T3 #1/20, fresh → 28 + 33.25 = 61.25 → 61."""
+        a = _TestAnalyzer(_cfg())
+        item = {"tier": 3, "ranks": [[1, 20]], "published_at": _now_iso()}
+        a.analyze_heat([item])
+        assert item["heat_score"] == pytest.approx(61, abs=1)
+
+    def test_tier4_fresh_hotlist_top1(self):
+        """T4 #1/20, fresh → 12 + 38 = 50."""
+        a = _TestAnalyzer(_cfg())
+        item = {"tier": 4, "ranks": [[1, 20]], "published_at": _now_iso()}
+        a.analyze_heat([item])
+        assert item["heat_score"] == pytest.approx(50, abs=1)
+
+    # ── RSS (no ranks) ──────────────────────────────────────────────
+
+    def test_rss_tier1_fresh(self):
+        """RSS T1 has no ranks → boost=0, pure tier_base."""
+        a = _TestAnalyzer(_cfg())
+        item = {"tier": 1, "ranks": [], "source_type": "rss", "published_at": _now_iso()}
+        a.analyze_heat([item])
+        assert item["heat_score"] == pytest.approx(60, abs=1)
+
+    def test_rss_tier4_fresh(self):
+        a = _TestAnalyzer(_cfg())
+        item = {"tier": 4, "ranks": [], "source_type": "rss", "published_at": _now_iso()}
+        a.analyze_heat([item])
+        assert item["heat_score"] == pytest.approx(12, abs=1)
+
+    def test_rss_no_ranks_key(self):
+        """Item without 'ranks' key at all → treated as RSS, boost=0."""
+        a = _TestAnalyzer(_cfg())
+        item = {"tier": 1, "source_type": "rss", "published_at": _now_iso()}
+        a.analyze_heat([item])
+        assert item["heat_score"] == pytest.approx(60, abs=1)
+
+    # ── Time decay ──────────────────────────────────────────────────
+
+    def test_hotlist_6h_old(self):
+        """T1 #1/20, 6h old → (60+23.75) × 0.707 ≈ 59."""
+        a = _TestAnalyzer(_cfg())
+        item = {"tier": 1, "ranks": [[1, 20]], "published_at": _ago_iso(6)}
+        a.analyze_heat([item])
+        # decay(6h, hl=12) = e^(-ln2*6/12) = e^(-0.5*ln2) = 0.7071
+        # raw = 83.75, heat = 83.75 * 0.7071 ≈ 59.2 → 59
+        assert item["heat_score"] == pytest.approx(59, abs=1)
+
+    def test_rss_6h_old(self):
+        """RSS T1, 6h old → 60 × 0.707 ≈ 42."""
+        a = _TestAnalyzer(_cfg())
+        item = {"tier": 1, "ranks": [], "published_at": _ago_iso(6)}
+        a.analyze_heat([item])
+        assert item["heat_score"] == pytest.approx(42, abs=1)
+
+    def test_24h_old(self):
+        """24h old → decay = 0.25."""
+        a = _TestAnalyzer(_cfg())
+        item = {"tier": 1, "ranks": [[1, 20]], "published_at": _ago_iso(24)}
+        a.analyze_heat([item])
+        # 83.75 * 0.25 = 20.9 → 21
+        assert item["heat_score"] == pytest.approx(21, abs=1)
+
+    # ── Empty published_at ──────────────────────────────────────────
+
+    def test_empty_published_at_max_freshness(self):
+        """Empty published_at → age=0 → decay=1.0."""
+        a = _TestAnalyzer(_cfg())
+        item = {"tier": 1, "ranks": [[1, 20]], "published_at": ""}
+        a.analyze_heat([item])
+        assert item["heat_score"] == pytest.approx(84, abs=1)
+
+    def test_missing_published_at_key(self):
+        """No published_at key → defaults to '' → age=0."""
+        a = _TestAnalyzer(_cfg())
+        item = {"tier": 1, "ranks": [[1, 20]]}
+        a.analyze_heat([item])
+        assert item["heat_score"] == pytest.approx(84, abs=1)
+
+    # ── Missing tier ────────────────────────────────────────────────
+
+    def test_missing_tier_defaults_to_4(self):
+        a = _TestAnalyzer(_cfg())
+        item = {"ranks": [[1, 20]], "published_at": _now_iso()}
+        a.analyze_heat([item])
+        # tier=4: base=12, boost=(1-1/20)*40=38, raw=50
+        assert item["heat_score"] == pytest.approx(50, abs=1)
+
+    # ── Batch processing ────────────────────────────────────────────
+
+    def test_multiple_items_all_scored(self):
+        a = _TestAnalyzer(_cfg())
+        now = _now_iso()
         items = [
-            self._make_item("Existing news #1", "test-source",
-                            "https://a.com/news1", rank=3, total=20),
-            self._make_item("Brand new", "test-source",
-                            "https://a.com/new1", rank=1, total=20),
-            # Note: news2 is NOT in items → it's dropped
+            {"tier": 1, "ranks": [[1, 20]], "published_at": now},
+            {"tier": 4, "ranks": [], "published_at": now},
         ]
-        db._process_hotlist_heat("test-source", items)
+        a.analyze_heat(items)
+        assert items[0]["heat_score"] == pytest.approx(84, abs=1)
+        assert items[1]["heat_score"] == pytest.approx(12, abs=1)
 
-        # Existing: 65% → 85%, delta=20, +6 → 71
-        assert items[0].heat_score == 71
-        assert items[0].ranks == [[7, 20], [3, 20]]
+    # ── Config defaults ─────────────────────────────────────────────
 
-        # New: (1 - 1/20) * 100 = 95
-        assert items[1].heat_score == 95
-        assert items[1].ranks == [[1, 20]]
+    def test_empty_config_uses_defaults(self):
+        """No heat config at all → defaults still work."""
+        a = _TestAnalyzer({"analyzer": {}})
+        item = {"tier": 1, "ranks": [[1, 20]], "published_at": _now_iso()}
+        a.analyze_heat([item])
+        assert item["heat_score"] == pytest.approx(84, abs=1)
 
-        # Decay UPDATE was called for news2
-        from tests.conftest_db import capture_sql
-        sql, params = capture_sql(mock_cursor)
-        assert "0.7" in sql
-        assert "https://a.com/news2" in params[1]
+    def test_custom_half_life(self):
+        """Custom half_life=3 → faster decay."""
+        a = _TestAnalyzer({"analyzer": {"heat": {"half_life_hours": 3}}})
+        # 3h old, hl=3 → decay = e^(-ln2*3/3) = 0.5
+        item = {"tier": 1, "ranks": [[1, 20]], "published_at": _ago_iso(3)}
+        a.analyze_heat([item])
+        # raw = 60 + 23.75 = 83.75, heat = 83.75 * 0.5 ≈ 42
+        assert item["heat_score"] == pytest.approx(42, abs=1)
 
-    def test_other_source_not_affected(self, db, mock_cursor):
-        """Processing one source only queries that source."""
-        mock_cursor.fetchall.return_value = []
+    # ── Edge cases ──────────────────────────────────────────────────
 
-        items = [self._make_item("Other source news", "other-source",
-                                 "https://b.com/o1", rank=5, total=20)]
-        db._process_hotlist_heat("other-source", items)
+    def test_total_zero_in_ranks(self):
+        """rank[0][1] = 0 → no boost (avoid division by zero)."""
+        a = _TestAnalyzer(_cfg())
+        item = {"tier": 1, "ranks": [[5, 0]], "published_at": _now_iso()}
+        a.analyze_heat([item])
+        assert item["heat_score"] == pytest.approx(60, abs=1)
 
-        assert items[0].heat_score == 75
-
-    def test_cross_day_data_not_included(self, db, mock_cursor):
-        """Yesterday's data is excluded by WHERE updated_at::date = CURRENT_DATE."""
-        mock_cursor.fetchall.return_value = []  # yesterday's data excluded
-
-        items = [self._make_item("Today's news", "test-source",
-                                 "https://a.com/today", rank=1, total=20)]
-        db._process_hotlist_heat("test-source", items)
-
-        # Should be first appearance (not matching yesterday's data)
-        assert items[0].heat_score == 95
-        assert items[0].ranks == [[1, 20]]
-
-    def test_null_heat_score_treated_as_first(self, db, mock_cursor):
-        """Records with heat_score=NULL → treated as first appearance."""
-        mock_cursor.fetchall.return_value = [
-            self._make_db_row("https://a.com/news1", None, [[7, 20]]),
-        ]
-
-        items = [self._make_item("News with null heat", "test-source",
-                                 "https://a.com/news1", rank=5, total=20)]
-        db._process_hotlist_heat("test-source", items)
-
-        # prev_heat=None → falls into first-appearance branch
-        assert items[0].heat_score == 75
-        assert items[0].ranks == [[7, 20], [5, 20]]
-
-    def test_empty_ranks_treated_as_first(self, db, mock_cursor):
-        """Records with empty ranks → treated as first appearance."""
-        mock_cursor.fetchall.return_value = [
-            self._make_db_row("https://a.com/news1", 50, []),
-        ]
-
-        items = [self._make_item("News with empty ranks", "test-source",
-                                 "https://a.com/news1", rank=3, total=20)]
-        db._process_hotlist_heat("test-source", items)
-
-        # prev_ranks=[] → falls into first-appearance branch
-        assert items[0].heat_score == 85
-
-    def test_item_with_heat_score_no_ranks_skipped(self, db, mock_cursor):
-        """Item with heat_score but no ranks (synced data) → skipped, keeps heat_score."""
-        from news.models import NewsItem
-
-        mock_cursor.fetchall.return_value = []
-
-        items = [
-            NewsItem(title="Synced item", source_id="test-source",
-                     source_type="hotlist", url="https://a.com/synced",
-                     rank=0, heat_score=85),
-            # ranks=[] (default), so it should be skipped
-        ]
-        db._process_hotlist_heat("test-source", items)
-
-        # Skipped by valid_items filter (no ranks) → keeps snapshot heat_score
-        assert items[0].heat_score == 85
-        assert items[0].ranks == []
+    def test_tier_greater_than_4(self):
+        """Unknown tier → fallback to tier 4 defaults."""
+        a = _TestAnalyzer(_cfg())
+        item = {"tier": 99, "ranks": [[1, 20]], "published_at": _now_iso()}
+        a.analyze_heat([item])
+        assert item["heat_score"] == pytest.approx(50, abs=1)
