@@ -7,7 +7,7 @@ ifanr 页面结构清晰，正文统一在 ``<article>`` 容器内，其余为�
 
 from __future__ import annotations
 
-from bs4 import BeautifulSoup
+from lxml import html as lxml_html
 
 from news.parser.parser import HtmlParser
 
@@ -26,8 +26,11 @@ class IfanrParser(HtmlParser):
 
         若找不到匹配的 article 元素，返回原始 HTML 让 readability 自行判断。
         """
-        soup = BeautifulSoup(html, "html.parser")
-        article = soup.select_one(_ARTICLE_SELECTOR)
-        if article is None:
+        try:
+            tree = lxml_html.fromstring(html)
+        except Exception:
             return html
-        return str(article)
+        articles = tree.cssselect(_ARTICLE_SELECTOR)
+        if not articles:
+            return html
+        return lxml_html.tostring(articles[0], encoding="unicode")
