@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS news_images (
 
 -- Dedup indexes (partial unique, matching SQLite logic)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_dedup_hotlist
-    ON news_articles (source_id, url)
+    ON news_articles (url)
     WHERE source_type = 'hotlist' AND url != '';
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_dedup_rss

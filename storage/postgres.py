@@ -76,12 +76,7 @@ _UPDATE_SET_OVERWRITE = """title = EXCLUDED.title,
         content = EXCLUDED.content"""
 
 _HOTLIST_INSERT_SQL = f"""{_INSERT_PREFIX}
-ON CONFLICT (source_id, url)
-WHERE source_type = 'hotlist' AND url != ''
-DO UPDATE SET {_UPDATE_SET}"""
-
-_HOTLIST_INSERT_SKIP_SQL = f"""{_INSERT_PREFIX}
-ON CONFLICT (source_id, url)
+ON CONFLICT (url)
 WHERE source_type = 'hotlist' AND url != ''
 DO NOTHING"""
 
@@ -314,6 +309,27 @@ class PostgreSQL:
                     conn.commit()
                     print("[DB] Migration complete: crawled_at column dropped.")
 
+                # Migration 006: change hotlist dedup from (source_id, url)
+                # to (url) only, so same article from different source_ids
+                # of the same provider is not duplicated.
+                cur.execute(
+                    """SELECT EXISTS (
+                        SELECT 1 FROM pg_indexes
+                        WHERE indexname = 'idx_dedup_hotlist'
+                          AND indexdef LIKE '%source_id%'
+                    )"""
+                )
+                if cur.fetchone()[0]:
+                    print("[DB] Migrating: rebuilding idx_dedup_hotlist on (url) only...")
+                    cur.execute("DROP INDEX IF EXISTS idx_dedup_hotlist")
+                    cur.execute(
+                        """CREATE UNIQUE INDEX idx_dedup_hotlist
+                           ON news_articles (url)
+                           WHERE source_type = 'hotlist' AND url != ''"""
+                    )
+                    conn.commit()
+                    print("[DB] Migration complete: idx_dedup_hotlist rebuilt on (url).")
+
         finally:
             self._pool.putconn(conn)
 
@@ -408,10 +424,7 @@ class PostgreSQL:
         with self.get_conn() as conn:
             with conn.cursor() as cur:
                 if hotlist_rows:
-                    sql = (
-                        _HOTLIST_INSERT_SKIP_SQL if skip_existing
-                        else _HOTLIST_INSERT_SQL
-                    )
+                    sql = _HOTLIST_INSERT_SQL  # always DO NOTHING on URL conflict
                     n, s = self._execute_batch(cur, sql, hotlist_rows)
                     processed += n
                     skipped += s

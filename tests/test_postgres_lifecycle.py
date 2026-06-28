@@ -83,6 +83,7 @@ class TestInitSchema:
             [True],    # migration 003: failed_tasks table exists
             ["jsonb"], # migration 004: ranks column already JSONB
             [False],   # migration 005: crawled_at column does not exist (already dropped)
+            [False],   # migration 006: idx_dedup_hotlist already on (url) only
         ]
 
         pg_unconnected.init_schema()
@@ -105,6 +106,7 @@ class TestInitSchema:
             [True],   # migration 003: ok
             ["jsonb"], # migration 004: ranks column already JSONB
             [False],   # migration 005: crawled_at column does not exist (already dropped)
+            [False],   # migration 006: idx_dedup_hotlist already on (url)
         ]
 
         pg_unconnected.init_schema()
@@ -129,6 +131,7 @@ class TestRunMigrations:
             [True],  # migration 003: failed_tasks table exists
             ["jsonb"],  # migration 004: ranks column already JSONB
             [False],   # migration 005: crawled_at column does not exist
+            [False],   # migration 006: idx_dedup_hotlist already on (url)
         ]
         return mock_cursor
 
@@ -171,7 +174,7 @@ class TestRunMigrations:
 
         # Reset mock for second call
         mock_cur2 = MagicMock()
-        mock_cur2.fetchone.side_effect = [[True], [True], [True], ["jsonb"], [False]]
+        mock_cur2.fetchone.side_effect = [[True], [True], [True], ["jsonb"], [False], [False]]
         pg_unconnected._pool.getconn.return_value.cursor.return_value.__enter__.return_value = mock_cur2
 
         pg_unconnected._run_migrations()

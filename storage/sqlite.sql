@@ -21,9 +21,9 @@ CREATE TABLE IF NOT EXISTS news_items (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Dedup: hot-list by (source_id, url)
+-- Dedup: hot-list by url only
 CREATE UNIQUE INDEX IF NOT EXISTS idx_dedup_hotlist
-    ON news_items(source_id, url) WHERE source_type = 'hotlist' AND url != '';
+    ON news_items(url) WHERE source_type = 'hotlist' AND url != '';
 
 -- Dedup: RSS by (source_id, guid)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_dedup_rss
