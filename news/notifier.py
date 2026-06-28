@@ -176,7 +176,7 @@ def send_email(
 
     try:
         msg = MIMEMultipart("alternative")
-        msg["From"] = formataddr(("NewsNow Crawler", from_addr))
+        msg["From"] = formataddr(("NewsRadar", from_addr))
         msg["To"] = to_addr
         msg["Subject"] = subject
         msg["Date"] = formatdate(localtime=True)
