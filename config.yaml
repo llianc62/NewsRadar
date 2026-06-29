@@ -254,7 +254,7 @@ crawler:
         url: "https://rss.huxiu.com/"
         tier: 3
         priority: 72
-        enabled: false
+        enabled: true
         max_age_days: 1
       - id: "nea"
         name: "国家能源局"

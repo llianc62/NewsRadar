@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 import requests
 
@@ -51,6 +52,10 @@ class StorageTarget(Enum):
     RESOURCE = "resource"
 
 MAX_IMAGE_PROCESSOR_WORKERS = 20  # Limit for concurrent image downloads
+
+# Domains that require Playwright (headless browser) to bypass WAF / JS Challenge.
+# requests + curl_cffi both fail — the WAF requires full JS execution.
+_WAF_DOMAINS: frozenset[str] = frozenset({"xueqiu.com", "huxiu.com"})
 
 
 class Crawler:
@@ -111,6 +116,11 @@ class Crawler:
 
         # Analyzer (lazy) — shared analyzer instance
         self._analyzer: Any = None
+
+        # Playwright (lazy) — shared browser for WAF-protected sites
+        self._pw: Any = None                # sync_playwright instance
+        self._pw_browser: Any = None        # chromium browser
+        self._pw_lock = threading.Lock()    # serialize access (sync API is not thread-safe)
 
     # ── HTTP session ─────────────────────────────────────────────────
 
@@ -283,16 +293,22 @@ class Crawler:
         }
 
         # ── Download HTML ──────────────────────────────────────────
-        try:
-            resp = self.session().get(url, timeout=self.timeout)
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            raise requests.RequestException(
-                f"HTTP 请求失败: {e}"
-            ) from e
+        if self._needs_playwright(url):
+            html, error = self._download_with_playwright(url, self.timeout)
+            if html is None:
+                raise Exception(f"Playwright 页面下载失败: {error}")
+        else:
+            try:
+                resp = self.session().get(url, timeout=self.timeout)
+                resp.raise_for_status()
+            except requests.RequestException as e:
+                raise requests.RequestException(
+                    f"HTTP 请求失败: {e}"
+                ) from e
+            html = resp.text
 
         # ── Parse to Markdown ──────────────────────────────────────
-        result = self.parser.parse(item["source_id"], resp.text, url)
+        result = self.parser.parse(item["source_id"], html, url)
         if not result:
             raise Exception(f"无法提取页面正文内容: {url}")
 
@@ -543,27 +559,106 @@ class Crawler:
 
         print(f"[Crawler] Phase 1 done: {success}/{len(valid)} success")
 
+    @staticmethod
+    def _needs_playwright(url: str) -> bool:
+        """Check whether *url* requires Playwright to bypass WAF."""
+        try:
+            hostname = urlparse(url).hostname or ""
+            return any(domain in hostname for domain in _WAF_DOMAINS)
+        except Exception:
+            return False
+
+    def _get_playwright_browser(self) -> Any:
+        """Lazy-init headless Chromium browser.
+
+        Caller **must** hold ``self._pw_lock`` — the sync Playwright
+        API is not thread-safe.
+        """
+        if self._pw_browser is None:
+            from playwright.sync_api import sync_playwright
+
+            pw = sync_playwright().start()
+            browser = pw.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                ],
+            )
+            self._pw = pw
+            self._pw_browser = browser
+        return self._pw_browser
+
+    def _download_with_playwright(
+        self,
+        url: str,
+        timeout: int,
+    ) -> tuple[str | None, str | None]:
+        """Download HTML via headless Playwright for WAF-protected sites.
+
+        Returns:
+            ``(html, None)`` on success, ``(None, error_message)`` on failure.
+        """
+        with self._pw_lock:
+            try:
+                browser = self._get_playwright_browser()
+                context = browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/131.0.0.0 Safari/537.36"
+                    ),
+                    locale="zh-CN",
+                )
+                page = context.new_page()
+                # Mask Playwright automation markers that WAFs detect
+                page.add_init_script(
+                    "Object.defineProperty(navigator, 'webdriver', "
+                    "{get: () => undefined});"
+                )
+                try:
+                    page.goto(url, wait_until="domcontentloaded",
+                              timeout=timeout * 1_000)
+                    html = page.content()
+                    return html, None
+                finally:
+                    context.close()
+            except Exception as e:
+                return None, str(e)
+
     def _download_and_parse(self, item: Dict[str, Any]) -> bool:
         """Download HTML for a single item, parse to Markdown (no images).
 
         Sets ``item["content"]`` (Markdown), and metadata fields
         (title, author, published_at, summary, category, tags)
         extracted from the page.
+
+        WAF-protected domains (e.g. xueqiu.com) are routed through
+        headless Playwright; all others use the standard ``requests``
+        session.
         """
         url = item.get("url", "")
         if not url:
             return False
 
-        resp, error = http_get_with_retry(
-            self.session(), url, self.timeout, label=url
-        )
-        if resp is None:
-            print(f"[Crawler] HTTP error for {url}: {error}")
-            self._record_content_fetch_failure(item, error)
-            return False
+        if self._needs_playwright(url):
+            html, error = self._download_with_playwright(url, self.timeout)
+            if html is None:
+                print(f"[Crawler] Playwright error for {url}: {error}")
+                self._record_content_fetch_failure(item, error)
+                return False
+        else:
+            resp, error = http_get_with_retry(
+                self.session(), url, self.timeout, label=url
+            )
+            if resp is None:
+                print(f"[Crawler] HTTP error for {url}: {error}")
+                self._record_content_fetch_failure(item, error)
+                return False
+            html = resp.text
 
         # Pure text parsing — no image processing
-        result = self.parser.parse(item["source_id"], resp.text, url)
+        result = self.parser.parse(item["source_id"], html, url)
         if result is None:
             print(f"[Crawler] No content extracted: {url}")
             return False
