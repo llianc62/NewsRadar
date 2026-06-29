@@ -13,6 +13,7 @@ from news.parser.sites.sspai import SspaiParser
 from news.parser.sites.thepaper import ThepaperParser
 from news.parser.sites.wallstreetcn import WallstreetcnParser
 from news.parser.sites.cctv import CctvParser
+from news.parser.sites.csrc import CsrcParser
 from news.parser.sites.zaobao import ZaobaoParser
 from news.parser.sites.gelonghui import GelonghuiParser
 from news.parser.sites.huanqiu import HuanqiuParser
@@ -46,6 +47,7 @@ registry.register("ifanr", IfanrParser(), domains=["ifanr.com"])
 registry.register("gelonghui-hot", GelonghuiParser(), domains=["gelonghui.com"])
 registry.register("huanqiu", HuanqiuParser(), domains=["huanqiu.com"])
 registry.register("cctv-world", CctvParser(), domains=["cctv.com", "cctvnews.cctv.com", "news.cctv.com"])
+registry.register("csrc-news", CsrcParser(), domains=["csrc.gov.cn"])
 registry.register("xinhua-politics", _xinhua, domains=["xinhuanet.com", "news.cn"])
 registry.register("xinhua-finance", _xinhua, domains=["xinhuanet.com", "news.cn"])
 registry.register("xinhua-world", _xinhua, domains=["xinhuanet.com", "news.cn"])

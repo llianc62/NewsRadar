@@ -125,6 +125,27 @@ crawler:
         priority: 80
         enabled: true
         max_age_days: 1
+      - id: "csrc-news"
+        name: "证监会"
+        url: "https://rsshub.rssforever.com/gov/csrc/news"
+        tier: 1
+        priority: 88
+        enabled: true
+        max_age_days: 0
+      - id: "ndrc"
+        name: "发改委"
+        url: "https://rsshub.rssforever.com/gov/ndrc/zfxxgk"
+        tier: 1
+        priority: 86
+        enabled: true
+        max_age_days: 0
+      - id: "samrdprc"
+        name: "市场监管总局"
+        url: "https://rsshub.rssforever.com/samrdprc/news/xfpzh/xfpgnzh"
+        tier: 3
+        priority: 55
+        enabled: true
+        max_age_days: 0
       # ═══ 市场快讯 ═══
       - id: "jin10"
         name: "金十数据"
@@ -148,13 +169,27 @@ crawler:
         priority: 62
         enabled: true
         max_age_days: 1
+      - id: "xueqiu-hot"
+        name: "雪球"
+        url: "https://xueqiu.com/hots/topic/rss"
+        tier: 2
+        priority: 70
+        enabled: true
+        max_age_days: 1
       # ═══ 股票信息 ═══
       - id: "eastmoney-stock"
-        name: "东方财富·A股"
-        url: "https://rsshub.rssforever.com/eastmoney/a"
-        tier: 3
+        name: "东方财富"
+        url: "https://rss.eastmoney.com/rss_stock.xml"
+        tier: 2
         priority: 78
-        enabled: false
+        enabled: true
+        max_age_days: 1
+      - id: "eastmoney-partener"
+        name: "东方财富"
+        url: "https://rss.eastmoney.com/rss_partener.xml"
+        tier: 2
+        priority: 72
+        enabled: true
         max_age_days: 1
       # ═══ 国际/世界格局 ═══
       - id: "bloomberg"
@@ -176,6 +211,13 @@ crawler:
         url: "https://rsshub.rssforever.com/cctv/world"
         tier: 2
         priority: 80
+        enabled: true
+        max_age_days: 1
+      - id: "guancha"
+        name: "观察者网"
+        url: "https://rsshub.rssforever.com/guancha/headline"
+        tier: 2
+        priority: 75
         enabled: true
         max_age_days: 1
       - id: "aljazeera-en"
@@ -214,6 +256,20 @@ crawler:
         priority: 72
         enabled: false
         max_age_days: 1
+      - id: "nea"
+        name: "国家能源局"
+        url: "https://rsshub.rssforever.com/gov/nea/sjzz/ghs"
+        tier: 3
+        priority: 65
+        enabled: true
+        max_age_days: 0
+      - id: "chinacdc"
+        name: "疾控中心"
+        url: "https://rsshub.rssforever.com/chinacdc/zxyw"
+        tier: 4
+        priority: 40
+        enabled: true
+        max_age_days: 0
 
 notification:
   frequency_words: "frequency_words.txt"
