@@ -14,6 +14,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 历史开发记录在 `docs/superpowers/`（plans + specs），不主动加载。
 
+## CLI 模块结构
+
+CLI 使用 Typer 框架，入口在 `cli/__init__.py`：
+
+```
+cli/
+├── __init__.py   # Typer app 创建 + 子命令注册
+├── crawl.py      # python -m cli crawl — 抓取 → SQLite
+├── notify.py     # python -m cli notify — 关键词匹配 → 邮件
+├── grab.py       # python -m cli grab-one — 单 URL 测试
+└── db.py         # python -m cli db clear — 数据库维护
+```
+
+`python -m cli` 自动路由到 `cli.__main__`，后者调用 `cli.app()`。
+
 ## Commands
 
 ```bash
@@ -39,10 +54,6 @@ uv pip install pytest  # pytest NOT in pyproject.toml
 # Docker infrastructure (PostgreSQL 16 + MinIO)
 docker compose up -d
 
-# Run tests
-pytest
-pytest tests/test_parser.py::TestTrimNoise::test_trims_footer_copyright -v
-pytest --cov=. --cov-report=term-missing
 ```
 
 ## Architecture
@@ -60,9 +71,47 @@ Config sources ──► NewsnowFetcher (hot-list API) ──► NewsData ──
                                                     └── Optional: trafilatura body + images
 ```
 
-Key modules:
+### Fetcher hierarchy
+
+```
+Fetcher (ABC, news/fetcher/fetcher.py)
+├── NewsnowFetcher — NewsNow 热点列表 API，逐 source 并发拉取
+└── RssFetcher     — RSS/Atom/JSON Feed，支持 If-Modified-Since
+```
+
+All fetchers return `list[dict]` — flat list of standardised item dicts. Failures are logged internally; fetchers never raise.
+
+### Crawler: fetch_all() 完整流程
+
+`Crawler.fetch_all()` 执行以下步骤（在 daemon 和 CLI 中共享）：
+
+1. **Fetch** — NewsnowFetcher + RssFetcher 并发拉取
+2. **Dedup** — `_dedup_items_by_url()` 按 URL 去重，同 URL 保留 priority 最高的来源
+3. **Skip existing** — `_filter_existing_content_urls()` 查询 PG，跳过已有正文的 URL
+4. **Enrich** — `enrich_content()` 双阶段管线：
+   - Phase 1: `_run_batch_parse()` — ThreadPoolExecutor 并发下载 HTML → parse Markdown
+   - Phase 2: `_run_batch_image_download()` — 收集图片 URL → 并发下载 → replace in-place
+5. **Analyze** — sentiment（仅正文非空项）+ heat score（全部项）
+6. **Persist** — `persist()` 按 OutputStyle 路由到对应后端
+7. **Retry** （仅 daemon） — `retry_failed_tasks()` 重试之前失败的 content_fetch 和 image_download
+
+### Cloud sync 流程
+
+`Crawler.sync_from_cloud()` 将 CI 抓取的 SQLite 快照增量合并到 PG：
+1. 查询 PG 中最新的 `crawled_from='cloud'` 记录的 `updated_at`
+2. 列出 S3 `db/` 前缀下所有 `.db` 文件，过滤日期 >= 阈值
+3. 逐日下载，按 `created_at` 过滤增量行，enrich → UPSERT（非 DO NOTHING，会刷新元数据）
+
+### 失败重试系统
+
+- `failed_tasks` 表记录失败的 content_fetch 和 image_download，带 `max_retry` 和 `retry_count`
+- `retry_failed_tasks()` 查询 pending 任务，重试成功则标记 completed，失败则递增 retry_count
+- image 重试必须在 content 重试 + persist 之后执行（需要文章已在 DB 中才能 UPDATE 图片路径）
+
+### Key modules
 - `news/crawler.py` — `Crawler` class. Public API: `fetch()`, `fetch_all()`, `enrich_content()`, `sync_from_cloud()`, `retry_failed_tasks()`
 - `news/models.py` — `NewsItem` / `NewsData` dataclasses. `NewsItem.ranks` = `[[rank, total], ...]` JSONB; `heat_score` = 0-100
+- `news/fetcher/` — `Fetcher` ABC + `NewsnowFetcher` + `RssFetcher`
 - `news/parser/` — HtmlParser + Registry + 12 site-specific parsers. Three-tier extraction: custom hook → readability → HTML-strip fallback
 - `news/analyzer/` — `Analyzer` ABC + `JiebaAnalyzer` (heat + sentiment + keywords) + `AgentAnalyzer` (reserved)
 - `news/images.py` — `ImageProcessor`: concurrent download → `FileStorage` backend
@@ -70,7 +119,7 @@ Key modules:
 - `news/keywords.py` — parses `frequency_words.txt` format
 - `news/constants.py` — tier labels/colors, source types, sentiment thresholds
 - `utils.py` — time formatting (timezone-aware, default `Asia/Shanghai`), `normalize_url()`
-- `config/loader.py` — YAML + env vars, env takes precedence
+- `config/loader.py` — YAML + env vars, **env 优先级高于 YAML**
 
 ### Storage (详见 [docs/storage.md](docs/storage.md))
 
@@ -111,6 +160,30 @@ To add a new site parser:
 ## Tests
 
 25+ test files in `tests/`. Site-specific parser tests use real HTML fixtures in `tests/parser_sites/`. Shared fixtures in `conftest.py` and `conftest_db.py`.
+
+### DB 测试模式
+
+`tests/conftest_db.py` 提供 mock PostgreSQL 连接链：`db` → `mock_pool` → `mock_conn` → `mock_cursor`。`capture_sql(mock_cursor)` 工具函数从最后一次 `execute()` 调用中提取 `(sql_template, params_tuple)`，用于断言生成的 SQL 而非 mock 返回值：
+
+```python
+def test_xxx(db, mock_cursor):
+    mock_cursor.fetchone.return_value = [42]
+    result = db.get_news_count()
+    sql, params = capture_sql(mock_cursor)
+    assert "COUNT(*)" in sql
+```
+
+### Parser 站点测试
+
+`tests/parser_sites/` 下每个文件测试一个站点解析器。`tests/parser_sites/test_framework.py` 包含 30 个通用解析器测试（标题提取、正文提取、边界情况等），使用参数化 fixture 对多个站点执行。
+
+### 运行
+
+```bash
+pytest
+pytest tests/test_parser.py::TestTrimNoise::test_trims_footer_copyright -v
+pytest --cov=. --cov-report=term-missing
+```
 
 ## Key env vars
 
