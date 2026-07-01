@@ -1387,7 +1387,7 @@ class Crawler:
                 rank=row.get("rank") or 0,
                 heat_score=row.get("heat_score") or 0,
                 guid=row.get("guid", ""),
-                published_at=row.get("published_at", ""),
+                published_at=row.get("published_at") or format_datetime_now(),
                 summary=row.get("summary", ""),
                 content=row.get("content", ""),
                 author=row.get("author", ""),
