@@ -238,6 +238,32 @@ def _iso_to_db_format(iso_str: str | None, target_tz: str = "Asia/Shanghai") -> 
         return None
 
 
+# ── Rules (filters applied sequentially before keyword matching) ─────
+
+
+def rules_blacklist(items: list[dict], black_list: list[str]) -> list[dict]:
+    """按 source_id 黑名单过滤新闻。
+
+    Args:
+        items: 新闻 dict 列表，每条需有 ``source_id`` 字段。
+        black_list: 要排除的 source_id 列表。
+
+    Returns:
+        过滤后的新闻列表。
+    """
+    if not black_list:
+        return items
+    before = len(items)
+    items = [it for it in items if it.get("source_id") not in black_list]
+    skipped = before - len(items)
+    if skipped:
+        print(
+            f"[Notifier] rules_blacklist: filtered {skipped} items "
+            f"({len(items)} remaining)"
+        )
+    return items
+
+
 def run_notifier(
     config: dict,
     dry_run: bool = False,
@@ -301,6 +327,10 @@ def run_notifier(
     # Convert rows to dicts
     items = [dict(row) for row in rows]
     print(f"Total items: {len(items)}")
+
+    # ── Apply rules ───────────────────────────────────────────────
+    black_list = config.get("notification", {}).get("black_list", [])
+    items = rules_blacklist(items, black_list)
 
     # Load keywords and match
     freq_path = config.get("notification", {}).get(

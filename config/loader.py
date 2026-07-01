@@ -97,6 +97,7 @@ def _load_notification_config(raw: Dict) -> Dict:
     return {
         "frequency_words": notification.get("frequency_words", "frequency_words.txt"),
         "keyword_limit_news": notification.get("keyword_limit_news", 0),
+        "black_list": notification.get("black_list", []),
         "email": {
             "from_addr": _get_env_str("EMAIL_FROM_ADDR")
             or email.get("from_addr", ""),
