@@ -100,12 +100,33 @@ class ClsParser(HtmlParser):
         }
 
     def _preprocess(self, html: str, url: str) -> str:
-        """修复懒加载图片和包裹裸 img。"""
+        """修复懒加载图片、包裹裸 img、剔除自定义协议链接。
+
+        cls.cn 正文中存在 ``<a href="cailianshe://...">`` 自定义协议链接，
+        readability-lxml 无法识别该协议，导致整篇文章被判定为非正文而丢弃。
+        这里将其转为纯文本（保留链接文字，移除 <a> 标签）。
+        """
+        html = self._strip_custom_protocol_links(html)
         html = ClsParser._fix_lazy_images(html)
         html = ClsParser._wrap_bare_images(html)
         return html
 
     # ── Internal helpers ────────────────────────────────────────────
+
+    @staticmethod
+    def _strip_custom_protocol_links(html_text: str) -> str:
+        """Remove ``<a href="cailianshe://...">`` tags, keeping inner text.
+
+        readability-lxml rejects content with unrecognised URL protocols,
+        treating the entire article as non-content.  Stripping these
+        links before readability avoids the false negative.
+        """
+        return re.sub(
+            r'<a\s[^>]*href="cailianshe://[^"]*"[^>]*>(.*?)</a>',
+            r'\1',
+            html_text,
+            flags=re.DOTALL,
+        )
 
     @staticmethod
     def _find_next_data(html_text: str) -> Optional[Dict[str, Any]]:

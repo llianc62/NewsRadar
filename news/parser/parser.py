@@ -166,6 +166,13 @@ class HtmlParser:
         if not content_html.strip():
             return None
 
+        # readability may return an empty shell (<html><body></body></html>)
+        # when no article content is detected — treat as failure so the
+        # caller can fall back to alternative extraction.
+        text_content = re.sub(r"<[^>]+>", "", content_html).strip()
+        if not text_content:
+            return None
+
         return content_html
 
     def _to_markdown(self, html: str) -> str:

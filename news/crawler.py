@@ -53,8 +53,6 @@ class StorageTarget(Enum):
 
 MAX_IMAGE_PROCESSOR_WORKERS = 20  # Limit for concurrent image downloads
 
-# Domains that require Playwright (headless browser) to bypass WAF / JS Challenge.
-# requests + curl_cffi both fail — the WAF requires full JS execution.
 _WAF_DOMAINS: frozenset[str] = frozenset({"xueqiu.com", "huxiu.com"})
 
 
@@ -117,10 +115,12 @@ class Crawler:
         # Analyzer (lazy) — shared analyzer instance
         self._analyzer: Any = None
 
-        # Playwright (lazy) — shared browser for WAF-protected sites
-        self._pw: Any = None                # sync_playwright instance
-        self._pw_browser: Any = None        # chromium browser
-        self._pw_lock = threading.Lock()    # serialize access (sync API is not thread-safe)
+        # Playwright — per-domain browser for WAF-protected sites.
+        # Each WAF domain gets a dedicated single-thread executor; the
+        # worker thread owns the browser, satisfying sync_playwright's
+        # greenlet thread-affinity.
+        self._playwright_executors: dict[str, ThreadPoolExecutor] = {}
+        self._playwright_browsers: dict[str, tuple[Any, Any]] = {}
 
     # ── HTTP session ─────────────────────────────────────────────────
 
@@ -534,6 +534,9 @@ class Crawler:
 
         Sets ``item["content"]`` (Markdown) and metadata fields
         (title, author, published_at, summary, category, tags).
+
+        ``_download_and_parse`` internally routes WAF URLs through
+        the per-domain Playwright executor.
         """
         valid = [it for it in items if it.get("url") and not it.get("content")]
         if not valid:
@@ -560,34 +563,62 @@ class Crawler:
         print(f"[Crawler] Phase 1 done: {success}/{len(valid)} success")
 
     @staticmethod
+    def _get_url_domain(url: str) -> str:
+        """Extract the hostname portion of *url*."""
+        return urlparse(url).hostname or ""
+
+    @staticmethod
     def _needs_playwright(url: str) -> bool:
         """Check whether *url* requires Playwright to bypass WAF."""
-        try:
-            hostname = urlparse(url).hostname or ""
-            return any(domain in hostname for domain in _WAF_DOMAINS)
-        except Exception:
-            return False
+        domain = Crawler._get_url_domain(url)
+        return any(waf in domain for waf in _WAF_DOMAINS)
 
-    def _get_playwright_browser(self) -> Any:
-        """Lazy-init headless Chromium browser.
+    def _get_playwright_browser(self, domain: str):
+        """Return the headless Chromium browser for *domain*, creating it on
+        first call via the domain executor so the browser lives on the
+        same thread that uses it.
 
-        Caller **must** hold ``self._pw_lock`` — the sync Playwright
-        API is not thread-safe.
+        Returns ``None`` if *domain* is not WAF-protected.
         """
-        if self._pw_browser is None:
+        if domain not in _WAF_DOMAINS:
+            return None
+        if domain not in self._playwright_browsers:
+            # Trigger the executor's initializer (creates browser in
+            # the executor's worker thread), then wait for it to finish.
+            self._get_playwright_executor(domain).submit(lambda: None).result()
+        return self._playwright_browsers[domain][1]
+
+    def _get_playwright_executor(self, domain: str) -> ThreadPoolExecutor:
+        """Return the single-thread executor for *domain*, creating it on
+        first call.
+
+        Stores the executor in ``_playwright_executors`` *before* calling
+        ``_get_playwright_browser`` so the recursive call inside
+        ``_get_playwright_browser`` can short-circuit.
+        """
+        if domain in self._playwright_executors:
+            return self._playwright_executors[domain]
+
+        def _init_worker() -> None:
             from playwright.sync_api import sync_playwright
 
             pw = sync_playwright().start()
-            browser = pw.chromium.launch(
+            self._playwright_browsers[domain] = (pw, pw.chromium.launch(
                 headless=True,
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-features=IsolateOrigins,site-per-process",
                 ],
-            )
-            self._pw = pw
-            self._pw_browser = browser
-        return self._pw_browser
+            ))
+
+        self._playwright_executors[domain] = ThreadPoolExecutor(
+            max_workers=1, initializer=_init_worker,
+        )
+        # Ensure the browser is ready before returning
+        self._get_playwright_browser(domain)
+        return self._playwright_executors[domain]
 
     def _download_with_playwright(
         self,
@@ -596,26 +627,40 @@ class Crawler:
     ) -> tuple[str | None, str | None]:
         """Download HTML via headless Playwright for WAF-protected sites.
 
+        Dispatches to the domain executor internally — safe to call from
+        any thread.
+
         Returns:
             ``(html, None)`` on success, ``(None, error_message)`` on failure.
         """
-        with self._pw_lock:
+        domain = self._get_url_domain(url)
+        # Both calls are idempotent — browser & executor are created
+        # once per domain and reused.
+        browser = self._get_playwright_browser(domain)
+
+        def _do():
             try:
-                browser = self._get_playwright_browser()
                 context = browser.new_context(
                     user_agent=(
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "Mozilla/5.0 (X11; Linux x86_64) "
                         "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/131.0.0.0 Safari/537.36"
+                        "Chrome/149.0.0.0 Safari/537.36"
                     ),
+                    viewport={"width": 1920, "height": 1080},
                     locale="zh-CN",
                 )
                 page = context.new_page()
-                # Mask Playwright automation markers that WAFs detect
-                page.add_init_script(
-                    "Object.defineProperty(navigator, 'webdriver', "
-                    "{get: () => undefined});"
-                )
+                page.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined,
+                    });
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [1, 2, 3, 4, 5],
+                    });
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['zh-CN', 'zh', 'en'],
+                    });
+                """)
                 try:
                     page.goto(url, wait_until="domcontentloaded",
                               timeout=timeout * 1_000)
@@ -625,6 +670,8 @@ class Crawler:
                     context.close()
             except Exception as e:
                 return None, str(e)
+
+        return self._get_playwright_executor(domain).submit(_do).result()
 
     def _download_and_parse(self, item: Dict[str, Any]) -> bool:
         """Download HTML for a single item, parse to Markdown (no images).
