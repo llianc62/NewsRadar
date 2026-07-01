@@ -290,11 +290,17 @@ def run_notifier(
     from utils import format_date_today, format_time_now, get_configured_time, DEFAULT_TIMEZONE
 
     timezone = config.get("app", {}).get("timezone", DEFAULT_TIMEZONE)
-    date = format_date_today(timezone)
-    time_str = format_time_now(timezone)
+    # 数据日期：默认今天，可通过 --start-time 指定历史日期
+    if start_time:
+        data_date = start_time[:10]  # "2026-07-01T00:00:00" → "2026-07-01"
+    else:
+        data_date = format_date_today(timezone)
+    # 报告日期始终取系统当前时间
+    report_date = format_date_today(timezone)
+    report_time = format_time_now(timezone)
     time_filename = get_configured_time(timezone).strftime("%H-%M-%S")
 
-    print(f"=== Notifier === {date} {time_str}")
+    print(f"=== Notifier === data={data_date} report={report_date} {report_time}")
 
     storage_config = config.get("storage", {})
     data_dir = storage_config.get("local", {}).get("data_path", "output")
@@ -307,10 +313,10 @@ def run_notifier(
             "notify requires S3 storage. "
             "Configure storage.cloud in config.yaml or set CLOUD_S3_* env vars."
         )
-    db_path = Path(data_dir) / "db" / f"{date}.db"
-    if s3.object_exists(f"db/{date}.db"):
+    db_path = Path(data_dir) / "db" / f"{data_date}.db"
+    if s3.object_exists(f"db/{data_date}.db"):
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        if s3.download_file(f"db/{date}.db", db_path):
+        if s3.download_file(f"db/{data_date}.db", db_path):
             print("[Notify] Restored DB from S3")
         else:
             print("[Notify] Failed to download DB from S3")
@@ -318,7 +324,7 @@ def run_notifier(
     db = Sqlite(data_dir=data_dir, timezone=timezone)
     db_start = _iso_to_db_format(start_time, timezone)
     db_end = _iso_to_db_format(end_time, timezone)
-    rows = db.get_all(date, start_time=db_start, end_time=db_end)
+    rows = db.get_all(data_date, start_time=db_start, end_time=db_end)
     if not rows:
         print("No items to notify")
         db.cleanup()
@@ -348,10 +354,10 @@ def run_notifier(
         grouped = {"全部新闻": items}
 
     # Build HTML report
-    html = build_html_report(grouped, date, time_str, len(items))
+    html = build_html_report(grouped, report_date, report_time, len(items))
 
     # Save to output directory
-    save_html_report(html, data_dir, date, time_filename)
+    save_html_report(html, data_dir, report_date, time_filename)
 
     # Send email (skip in dry-run mode)
     if dry_run:

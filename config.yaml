@@ -274,6 +274,10 @@ crawler:
 notification:
   frequency_words: "frequency_words.txt"
   keyword_limit_news: 0
+  email:
+    from_addr: ""
+    to_addr: ""
+    password: ""
   black_list:
     - people          # 人民日报
     - cankaoxiaoxi    # 参考新闻
@@ -283,10 +287,6 @@ notification:
     - nea             # 国家能源局
     - samrdprc        # 市场监管总局
     - ndrc            # 发改委
-  email:
-    from_addr: ""
-    to_addr: ""
-    password: ""
 
 storage:
   local:
