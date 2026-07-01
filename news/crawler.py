@@ -53,7 +53,7 @@ class StorageTarget(Enum):
 
 MAX_IMAGE_PROCESSOR_WORKERS = 20  # Limit for concurrent image downloads
 
-_WAF_DOMAINS: frozenset[str] = frozenset({"xueqiu.com", "huxiu.com"})
+_WAF_DOMAINS: frozenset[str] = frozenset({"xueqiu.com", "huxiu.com", "juejin.cn"})
 
 
 class Crawler:
@@ -545,6 +545,7 @@ class Crawler:
         print(f"[Crawler] Phase 1 — downloading & parsing {len(valid)} items "
               f"(workers={self.max_workers})")
 
+        begin = time.time()
         executor = self._get_executor()
         futures = {
             executor.submit(self._download_and_parse, it): it
@@ -560,18 +561,22 @@ class Crawler:
                 item = futures[future]
                 print(f"[Crawler] Worker error for {item.get('url', '?')}: {e}")
 
-        print(f"[Crawler] Phase 1 done: {success}/{len(valid)} success")
+        elapsed = time.time() - begin
+        print(f"[Crawler] Phase 1 done: {success}/{len(valid)} success "
+              f"({elapsed:.1f}s)")
 
     @staticmethod
     def _get_url_domain(url: str) -> str:
-        """Extract the hostname portion of *url*."""
-        return urlparse(url).hostname or ""
+        """Extract the hostname portion of *url*, stripping ``www.`` prefix."""
+        host = urlparse(url).hostname or ""
+        if host.startswith("www."):
+            host = host[4:]
+        return host
 
     @staticmethod
     def _needs_playwright(url: str) -> bool:
         """Check whether *url* requires Playwright to bypass WAF."""
-        domain = Crawler._get_url_domain(url)
-        return any(waf in domain for waf in _WAF_DOMAINS)
+        return Crawler._get_url_domain(url) in _WAF_DOMAINS
 
     def _get_playwright_browser(self, domain: str):
         """Return the headless Chromium browser for *domain*, creating it on
@@ -664,6 +669,21 @@ class Crawler:
                 try:
                     page.goto(url, wait_until="domcontentloaded",
                               timeout=timeout * 1_000)
+                    # Wait for post-WAF-challenge reloads to settle
+                    # (e.g. juejin.cn / xueqiu.com load content
+                    # dynamically after JS challenge).
+                    # Some sites (huxiu.com, etc.) have persistent
+                    # analytics/ads connections that prevent networkidle
+                    # from ever firing — don't fail the whole request,
+                    # page.content() is already available after
+                    # domcontentloaded for those sites.
+                    try:
+                        page.wait_for_load_state(
+                            "networkidle",
+                            timeout=timeout * 1_000,
+                        )
+                    except Exception:
+                        pass
                     html = page.content()
                     return html, None
                 finally:
@@ -771,21 +791,33 @@ class Crawler:
             print("[Crawler] Phase 2 done (no images downloaded)")
             return
 
-        # Replace URLs in-place: iterate downloaded keys and do substring
-        # replacement — avoids a second regex extraction per item
+        # Build a single regex that matches any downloaded image URL.
+        # Sort by length descending so longer URLs are tried first —
+        # prevents a shorter URL from matching inside a longer one.
+        _escaped = [
+            re.escape(url) for url in
+            sorted(url_map.keys(), key=len, reverse=True)
+        ]
+        _pattern = re.compile("|".join(_escaped))
+
+        def _replacer(m: re.Match) -> str:
+            return url_map[m.group(0)]
+
+        t0 = time.time()
         replaced = 0
         for item in items:
             md = item.get("content", "")
             if not md:
                 continue
-            for old_url, new_path in url_map.items():
-                if old_url in md:
-                    md = md.replace(old_url, new_path)
-                    replaced += 1
-            item["content"] = md
+            new_md, n = _pattern.subn(_replacer, md)
+            if n:
+                item["content"] = new_md
+                replaced += n
 
+        elapsed = time.time() - t0
+        article_count = sum(1 for item in items if item.get("content"))
         print(f"[Crawler] Phase 2 done: {replaced} replacements across "
-              f"{sum(1 for item in items if item.get('content'))} articles")
+              f"{article_count} articles ({elapsed:.1f}s)")
 
     def _extract_image_urls(self, markdown: str) -> List[str]:
         """Extract image URLs from Markdown text.

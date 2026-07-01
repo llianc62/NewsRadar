@@ -4,7 +4,7 @@ app:
 crawler:
   timeout: 30
   max_retry: 3
-  max_workers: 8
+  max_workers: 16
   crawl_circle: 60        # 抓取新闻周期（分钟）
   sync_circle: 60         # 云端同步周期（分钟）
 
@@ -294,6 +294,7 @@ storage:
     access_key_id: ""
     secret_access_key: ""
     region: ""
+    max_connections: 30
 
 postgresql:
   host: "localhost"

@@ -110,7 +110,7 @@ pytest tests/test_parser.py::TestTrimNoise::test_trims_footer_copyright -v
 | `storage.resource` | S3/MinIO 配置（图片/文件），env: `RESOURCE_S3_*` |
 | `postgresql` | PostgreSQL 连接信息，env: `PG_*` |
 | `analyzer` | 分析引擎开关与后端选择（`jieba`） |
-| `web` | FastAPI 监听地址与端口，env: `NEWSNOW_WEB_*` |
+| `web` | FastAPI 监听地址与端口，env: `WEB_*` |
 
 ### 关键环境变量
 

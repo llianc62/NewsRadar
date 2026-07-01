@@ -540,20 +540,23 @@ class PostgreSQL:
     ) -> Tuple[int, int]:
         """Attempt a batch INSERT; on failure, divide and retry.
 
-        Falls back from *page_size* → 10 → 1, each level using savepoint
-        isolation so good rows always survive.
+        Each attempt wraps the batch in a savepoint (``with conn:``) so
+        a single bad row rolls back only that savepoint — previously
+        inserted rows in the same transaction survive.
         """
         try:
-            psycopg2.extras.execute_values(
-                cur, sql, batch, page_size=page_size,
-            )
+            with conn:  # savepoint — auto-rolled-back on failure
+                psycopg2.extras.execute_values(
+                    cur, sql, batch, page_size=page_size,
+                )
             return len(batch), 0
         except psycopg2.Error as e:
             if page_size <= 1:
                 print(f"[DB]   Row failed: {e}")
                 return 0, 1
 
-            # Divide into smaller sub-batches
+            # Batch failed — divide into smaller sub-batches.
+            # Each sub-batch gets its own savepoint via recursion.
             next_size = max(1, min(10, page_size // 10))
             print(
                 f"[DB] Batch of {len(batch)} failed: {e}"

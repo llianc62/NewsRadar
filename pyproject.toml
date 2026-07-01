@@ -27,6 +27,7 @@ dependencies = [
 packages = ["."]
 
 [tool.pytest.ini_options]
+addopts = "-m 'not integration'"
 markers = [
     "integration: Integration tests that require external services (PostgreSQL, MinIO, httpbin.org).",
 ]

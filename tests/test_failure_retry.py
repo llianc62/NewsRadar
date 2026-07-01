@@ -76,7 +76,8 @@ class TestHttpGetWithRetry:
             mock_resp,
         ]
 
-        resp, error = http_get_with_retry(session, "http://example.com")
+        with patch("time.sleep"):  # skip 2s backoff
+            resp, error = http_get_with_retry(session, "http://example.com")
         assert resp is mock_resp
         assert error is None
         assert session.get.call_count == 2
@@ -89,7 +90,8 @@ class TestHttpGetWithRetry:
         import requests
         session.get.side_effect = requests.ConnectionError("timeout")
 
-        resp, error = http_get_with_retry(session, "http://example.com")
+        with patch("time.sleep"):  # skip 2s+4s backoff
+            resp, error = http_get_with_retry(session, "http://example.com")
         assert resp is None
         assert error is not None
         assert "timeout" in error
@@ -409,16 +411,23 @@ def _httpbin_reachable() -> bool:
 
 @pytest.fixture(scope="module")
 def integration_pg_db():
-    """PostgreSQL instance connected to the real test database.
+    """PostgreSQL instance connected to a dedicated test database.
 
-    The schema is initialised (including the ``failed_tasks`` table)
-    before tests, and the pool is closed afterwards.
+    Uses the ``PG_TEST_DATABASE`` env var if set, otherwise falls back
+    to the production config.  Always keep this separate from the
+    running daemon to avoid lock contention.
+
+    Schema is initialised before tests and the pool closed afterwards.
     """
+    import os
+    from copy import deepcopy
     from config.loader import load_config
     from storage.postgres import PostgreSQL
 
     config = load_config("config.yaml")
-    db = PostgreSQL(config["postgresql"])
+    pg_config = deepcopy(config["postgresql"])
+    pg_config["database"] = os.environ.get("PG_TEST_DATABASE", "newsradar_test")
+    db = PostgreSQL(pg_config)
     db.connect()
     db.init_schema()
     yield db

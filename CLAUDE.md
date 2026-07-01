@@ -29,11 +29,29 @@ cli/
 
 `python -m cli` 自动路由到 `cli.__main__`，后者调用 `cli.app()`。
 
+## 环境设置
+
+```bash
+# 1. 安装依赖 (Python >= 3.12)
+uv sync
+uv pip install pytest  # pytest 不在 pyproject.toml 中
+
+# 2. 启动基础设施 (PostgreSQL 16 + MinIO)
+docker compose up -d
+
+# 3. 配置环境变量
+cp env.example .env
+# 按需编辑 .env，至少填写 EMAIL_* 和 S3 相关变量
+```
+
+配置优先级：**环境变量 > config.yaml**。可通过 `CONFIG_PATH` 指定配置文件路径。
+
 ## Commands
 
 ```bash
 # Local daemon — PostgreSQL + FastAPI web dashboard
 python main.py
+CONFIG_PATH=/path/to/custom.yaml python main.py  # 指定配置文件
 
 # Cloud CI (GitHub Actions) — fetch + SQLite + S3
 python -m cli crawl
@@ -46,13 +64,6 @@ python -m cli grab-one "https://example.com" --output-style postgresql --images
 # Database maintenance
 python -m cli db clear --before 2026-06-01 --force
 python -m cli db clear --all --force
-
-# Install dependencies (requires Python >= 3.12)
-uv sync
-uv pip install pytest  # pytest NOT in pyproject.toml
-
-# Docker infrastructure (PostgreSQL 16 + MinIO)
-docker compose up -d
 
 ```
 
@@ -80,6 +91,16 @@ Fetcher (ABC, news/fetcher/fetcher.py)
 ```
 
 All fetchers return `list[dict]` — flat list of standardised item dicts. Failures are logged internally; fetchers never raise.
+
+### OutputStyle 枚举
+
+`OutputStyle`（`news/crawler.py:38`）决定 `Crawler.persist()` 的路由：
+
+| 值 | 存储目标 | 场景 |
+|----|----------|------|
+| `POSTGRESQL` | PostgreSQL（UPSERT） | daemon 本地运行 |
+| `SQLITE` | SQLite（按日分库 `output/news_YYYY-MM-DD.db`） | Cloud CI |
+| `MARKDOWN` | 本地 `.md` 文件 | `grab-one` 调试 |
 
 ### Crawler: fetch_all() 完整流程
 
@@ -131,7 +152,7 @@ All fetchers return `list[dict]` — flat list of standardised item dicts. Failu
 ### Analyzer (详见 [docs/analyzer.md](docs/analyzer.md))
 
 `JiebaAnalyzer` provides three capabilities:
-- **Heat Score**: percentile-based for new items, delta-adjusted for existing, decay for dropped. `_calc_heat_score()` is a pure static method.
+- **Heat Score**: percentile-based for new items, delta-adjusted for existing, decay for dropped. `_calc_heat_score()` is a pure static method. Config 参数：`half_life_hours`（衰减半衰期）、`tier_base`（各 tier 基础分）、`boost_cap`（各 tier 排名加成上限）。
 - **Sentiment**: jieba tokenization + 4 dictionaries (positive/negative/negation/degree), tanh mapping to 0-100.
 - **Keywords**: TF-IDF with custom IDF corpus from DB articles, TextRank fallback with POS filtering.
 
@@ -139,11 +160,37 @@ Config: `analyzer.enabled: true/false`, `analyzer.backend: jieba`.
 
 ### Web frontend (详见 [docs/web.md](docs/web.md))
 
-FastAPI + Jinja2 SSR. `/` (overview), `/hot-news` (paginated cards, URL-as-state filters), `/news/{id}` (detail). Mistune GFM rendering. Notifications in-memory (capped 50, resets on restart).
+FastAPI + Jinja2 SSR，路由：
+
+| 路由 | 说明 |
+|------|------|
+| `GET /` | 市场概览（T1-T4 统计、热门来源） |
+| `GET /hot-news` | 分页卡片流，URL-as-state 筛选（tier / sentiment / keyword / search / date） |
+| `GET /news/{id}` | 新闻详情，Mistune GFM 渲染 |
+| `GET /media/{path}` | 图片代理 — S3 presigned URL 重定向或本地文件 |
+| `POST /api/trigger/crawl` | 手动触发抓取（409 如果正在运行），通过 SSE 推送通知 |
+| `POST /api/trigger/sync` | 手动触发云端同步 |
+| `POST /api/news/fetch` | 按 URL 提交后台抓取任务（refetch） |
+| `GET /api/notifications/stream` | SSE 端点，推送实时通知更新 |
+
+通知系统：内存存储（上限 50 条），重启后重置。
 
 ### Daemon (详见 [docs/daemon.md](docs/daemon.md))
 
-Signal-driven: `Timer → set() → asyncio.Event ← await → Worker → exec`. Blocking I/O in ThreadPoolExecutor (max 4). Configurable intervals in `config.yaml`.
+**Channel 模式**（Go-style signal + data carrier）— 每个任务类型拥有独立的 `asyncio.Queue`：
+
+```
+Timer ──put(None)──▶ asyncio.Queue ◀──get── Worker ──job──▶
+Manual trigger ──put(callback)──▶  (callback 用于 SSE 通知)
+```
+
+- **Timer** 每 N 分钟向 queue 放入 `None`（跳过通知）
+- **Manual trigger**（Web API）向 queue 放入 callback（通过 SSE 推送完成通知）
+- **Worker** 从 queue 取任务执行，`asyncio.Lock` 防止重复触发
+- Blocking I/O 在 `ThreadPoolExecutor(max_workers=4)` 中执行
+- 优雅关闭：signal → set event → cancel tasks → shutdown executor → close DB
+
+启动序列（7 步）：DB init → signal handlers → web server → Workers → Timers → manual trigger（当前已注释）→ await shutdown。
 
 ## Parser Registry
 
@@ -161,6 +208,18 @@ To add a new site parser:
 
 25+ test files in `tests/`. Site-specific parser tests use real HTML fixtures in `tests/parser_sites/`. Shared fixtures in `conftest.py` and `conftest_db.py`.
 
+### 运行
+
+```bash
+pytest                                          # 默认跳过集成测试
+pytest -m integration                           # 仅集成测试（需要 PostgreSQL/MinIO/httpbin.org）
+pytest -m "not integration"                     # 仅单元测试（与默认行为相同）
+pytest tests/test_parser.py::TestTrimNoise::test_trims_footer_copyright -v
+pytest --cov=. --cov-report=term-missing
+```
+
+默认 `addopts = "-m 'not integration'"`（见 `pyproject.toml`），因此 `pytest` 会跳过标记为 `integration` 的测试。
+
 ### DB 测试模式
 
 `tests/conftest_db.py` 提供 mock PostgreSQL 连接链：`db` → `mock_pool` → `mock_conn` → `mock_cursor`。`capture_sql(mock_cursor)` 工具函数从最后一次 `execute()` 调用中提取 `(sql_template, params_tuple)`，用于断言生成的 SQL 而非 mock 返回值：
@@ -175,16 +234,8 @@ def test_xxx(db, mock_cursor):
 
 ### Parser 站点测试
 
-`tests/parser_sites/` 下每个文件测试一个站点解析器。`tests/parser_sites/test_framework.py` 包含 30 个通用解析器测试（标题提取、正文提取、边界情况等），使用参数化 fixture 对多个站点执行。
-
-### 运行
-
-```bash
-pytest
-pytest tests/test_parser.py::TestTrimNoise::test_trims_footer_copyright -v
-pytest --cov=. --cov-report=term-missing
-```
+`tests/parser_sites/` 下每个文件测试一个站点解析器。`tests/parser_sites/test_framework.py` 包含 30 个通用解析器测试（标题提取、正文提取、边界情况等），使用参数化 fixture 对多个站点执行。`tests/helpers.py` 提供共享测试工具。
 
 ## Key env vars
 
-`PG_*`, `CLOUD_S3_*` (SQLite transfer), `RESOURCE_S3_*` (images/MinIO), `EMAIL_PASSWORD`, `NEWSNOW_EMAIL_*`, `NEWSNOW_WEB_HOST/PORT`, `CONFIG_PATH`.
+`PG_*`, `CLOUD_S3_*` (SQLite transfer), `RESOURCE_S3_*` (images/MinIO), `EMAIL_*`, `AI_API_*` (LLM，预留给 AgentAnalyzer), `WEB_HOST/PORT`, `CONFIG_PATH`.

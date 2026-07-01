@@ -46,6 +46,7 @@ class S3Client:
         access_key_id: str,
         secret_access_key: str,
         region: str = "",
+        max_connections: int = 8,
     ):
 
         # Normalize endpoint URL — boto3 requires a scheme
@@ -67,6 +68,7 @@ class S3Client:
         boto_config = BotoConfig(
             s3={"addressing_style": "path"},
             signature_version=signature_version,
+            max_pool_connections=max_connections,
         )
 
         client_kwargs = {
@@ -285,7 +287,7 @@ class S3Client:
         """Create an S3Client from a config dict.
 
         Config dict keys: bucket_name, access_key_id, secret_access_key,
-        endpoint_url, region.
+        endpoint_url, region, max_connections.
 
         Returns ``None`` when S3 is *not* configured (all required keys
         are empty or missing). This is the legitimate "S3 disabled" case.
@@ -303,4 +305,8 @@ class S3Client:
         if missing:
             raise ValueError(f"S3 partially configured. Missing: {', '.join(missing)}")
 
-        return cls(**vals, region=config.get("region", ""))
+        return cls(
+            **vals,
+            region=config.get("region", ""),
+            max_connections=config.get("max_connections", 8),
+        )

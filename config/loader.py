@@ -168,8 +168,8 @@ def _load_postgresql_config(raw: Dict) -> Dict:
 def _load_web_config(raw: Dict) -> Dict:
     web = raw.get("web", {})
     return {
-        "host": _get_env_str("NEWSNOW_WEB_HOST") or web.get("host", "0.0.0.0"),
-        "port": _get_env_int("NEWSNOW_WEB_PORT") or web.get("port", 8000),
+        "host": _get_env_str("WEB_HOST") or web.get("host", "0.0.0.0"),
+        "port": _get_env_int("WEB_PORT") or web.get("port", 8000),
     }
 
 
