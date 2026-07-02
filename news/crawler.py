@@ -691,7 +691,17 @@ class Crawler:
             except Exception as e:
                 return None, str(e)
 
-        return self._get_playwright_executor(domain).submit(_do).result()
+        executor = self._get_playwright_executor(domain)
+        for attempt in range(2):
+            html, error = executor.submit(_do).result()
+            if html is not None:
+                return html, None
+            # Retry on timeout — WAF challenges can take longer under load
+            if "Timeout" in (error or "") and attempt == 0:
+                print(f"[Crawler] Playwright timeout for {url}, retrying...")
+                continue
+            return None, error
+        return None, "Playwright: max retries exceeded"
 
     def _download_and_parse(self, item: Dict[str, Any]) -> bool:
         """Download HTML for a single item, parse to Markdown (no images).
