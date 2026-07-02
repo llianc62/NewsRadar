@@ -122,6 +122,11 @@ class Analyzer(ABC):
                 continue
         return None
 
+    # ── Keywords (concrete, overridable) ────────────────────────────
+
+    def analyze_keywords(self, items: list) -> None:
+        """从正文提取关键词，原地修改 item['tags']。子类可覆写。"""
+
     # ── Sentiment (abstract) ────────────────────────────────────────
 
     @abstractmethod

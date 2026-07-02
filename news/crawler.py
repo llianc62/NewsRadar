@@ -205,59 +205,6 @@ class Crawler:
         tiers["manual"] = {"tier": 4, "priority": 0}
         return tiers
 
-    def _dedup_items_by_url(
-        self,
-        items: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        """Deduplicate items by URL, keeping the highest-priority source.
-
-        When multiple items share the same URL, the item from the source
-        with the highest ``priority`` (from :meth:`_build_source_tiers`)
-        is kept.  Items with equal priority retain the first encountered.
-        Items with empty URLs are passed through without dedup.
-        """
-        seen: Dict[str, int] = {}       # url -> index in result
-        result: List[Dict[str, Any]] = []
-        duplicates_removed = 0
-
-        for item in items:
-            url = item.get("url", "")
-            if not url:
-                result.append(item)
-                continue
-
-            if url not in seen:
-                seen[url] = len(result)
-                result.append(item)
-                continue
-
-            # URL collision — compare priorities
-            existing_idx = seen[url]
-            existing_item = result[existing_idx]
-
-            existing_sid = existing_item.get("source_id", "")
-            current_sid = item.get("source_id", "")
-
-            existing_prio = self._source_tiers.get(
-                existing_sid, {}
-            ).get("priority", 0)
-            current_prio = self._source_tiers.get(
-                current_sid, {}
-            ).get("priority", 0)
-
-            if current_prio > existing_prio:
-                result[existing_idx] = item
-
-            duplicates_removed += 1
-
-        if duplicates_removed > 0:
-            print(
-                f"[Crawler] Dedup: removed {duplicates_removed} duplicate URLs "
-                f"(kept {len(result)} of {len(items)} items)"
-            )
-
-        return result
-
     # ═══════════════════════════════════════════════════════════════════
     # Public API
     # ═══════════════════════════════════════════════════════════════════
@@ -319,24 +266,16 @@ class Crawler:
         item["category"] = result.get("category", "")
         item["tags"] = result.get("tags", [])
 
-        if not with_content:
-            self.persist(item, output_style=output_style)
-            return
-
-        # ── Persistence ────────────────────────────────────────────
         if with_content:
-            # Phase 1: download HTML + parse Markdown
             item["content"] = result["markdown"]
-            if not item["tags"] and item.get("content"):
-                item["tags"] = self._extract_keywords(item["content"])
-
-            # Phase 2: batch image download (if requested)
             if with_image:
                 storage = self._resource_storage
                 if target_storage == StorageTarget.LOCAL:
                     storage = self._local_storage
                 self._run_batch_image_download([item], storage)
 
+        # ── Analysis + Persistence ──────────────────────────────────
+        self._analyze_items(item)
         self.persist(item, output_style=output_style)
 
     def fetch_all(
@@ -389,23 +328,7 @@ class Crawler:
             self.enrich_content(*all_items, with_image=with_image)
 
         # ── Analysis ───────────────────────────────────────────────
-        analyzer = self._get_analyzer()
-        if analyzer is not None:
-            # Sentiment: analyze items that have content body
-            contentful_items = [it for it in all_items if it.get("content")]
-            if contentful_items:
-                analyzer.analyze_sentiment(contentful_items)
-
-            # Heat: compute heat score for ALL items (hotlist + RSS)
-            # using tier-base × time-decay formula — no DB roundtrip
-            if all_items:
-                # Inject tier from source config (fetcher item dicts
-                # don't carry tier — it's added later during persistence)
-                for it in all_items:
-                    sid = it.get("source_id", "")
-                    ti = self._source_tiers.get(sid, {})
-                    it.setdefault("tier", ti.get("tier", 4))
-                analyzer.analyze_heat(all_items)
+        self._analyze_items(*all_items)
 
         # ── Persistence ────────────────────────────────────────────
         self.persist(*all_items, output_style=output_style)
@@ -443,89 +366,37 @@ class Crawler:
                 image_storage=self._resource_storage
             )
 
+    def _analyze_items(self, *items) -> None:
+        """Run sentiment, keywords, and heat analysis on fetched items.
+
+        Sentiment + keywords only for items with ``content`` body.
+        Heat is computed for ALL items (hotlist + RSS).
+        """
+        analyzer = self._get_analyzer()
+        if analyzer is None:
+            return
+
+        items = list(items)
+        # Sentiment + keywords: analyze items that have content body
+        contentful_items = [it for it in items if it.get("content")]
+        if contentful_items:
+            analyzer.analyze_sentiment(contentful_items)
+            analyzer.analyze_keywords(contentful_items)
+
+        # Heat: compute heat score for ALL items (hotlist + RSS)
+        # using tier-base × time-decay formula — no DB roundtrip
+        if items:
+            # Inject tier from source config (fetcher item dicts
+            # don't carry tier — it's added later during persistence)
+            for it in items:
+                sid = it.get("source_id", "")
+                ti = self._source_tiers.get(sid, {})
+                it.setdefault("tier", ti.get("tier", 4))
+            analyzer.analyze_heat(items)
+
     # ═══════════════════════════════════════════════════════════════════
     # Internal — batch content fetch
     # ═══════════════════════════════════════════════════════════════════
-
-    def _filter_existing_content_urls(
-        self,
-        items: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        """Remove items whose content already exists in the DB.
-
-        For items with a URL, checks by URL.  For items without a URL
-        (e.g. RSS feeds that only ship inline HTML), checks by
-        ``(source_id, guid)``.
-
-        If the DB is unavailable, all items pass through unchanged.
-        """
-        try:
-            pg = self._get_pg_db()
-        except Exception:
-            return items
-
-        # ── URL-based check ───────────────────────────────────────
-        url_items = [it for it in items if it.get("url")]
-        existing_urls: set = set()
-        if url_items:
-            try:
-                existing_urls = pg.get_urls_with_content(
-                    [it["url"] for it in url_items]
-                )
-            except Exception:
-                pass
-
-        # ── GUID-based check (no-URL items only) ───────────────────
-        existing_guids: set = set()
-        no_url_pairs = [
-            (it["source_id"], it["guid"])
-            for it in items
-            if not it.get("url") and it.get("guid")
-        ]
-        if no_url_pairs:
-            # Group by source_id for batch query
-            by_source: Dict[str, List[str]] = {}
-            for sid, guid in no_url_pairs:
-                by_source.setdefault(sid, []).append(guid)
-
-            try:
-                with pg.get_conn() as conn:
-                    with conn.cursor() as cur:
-                        for sid, guids in by_source.items():
-                            cur.execute(
-                                """SELECT guid FROM news_articles
-                                   WHERE source_id = %s
-                                     AND guid = ANY(%s)
-                                     AND content IS NOT NULL
-                                     AND content != ''""",
-                                (sid, guids),
-                            )
-                            for row in cur:
-                                existing_guids.add((sid, row[0]))
-            except Exception:
-                pass
-
-        if not existing_urls and not existing_guids:
-            return items
-
-        skipped = 0
-        filtered = []
-        for it in items:
-            if it.get("url") and it["url"] in existing_urls:
-                skipped += 1
-            elif (not it.get("url")
-                  and (it.get("source_id"), it.get("guid")) in existing_guids):
-                skipped += 1
-            else:
-                filtered.append(it)
-
-        if skipped:
-            print(
-                f"[Crawler] Skipping {skipped} items that already have content in DB"
-            )
-
-        return filtered
-
     def _run_batch_parse(
         self,
         items: List[Dict[str, Any]],
@@ -565,18 +436,16 @@ class Crawler:
         print(f"[Crawler] Phase 1 done: {success}/{len(valid)} success "
               f"({elapsed:.1f}s)")
 
-    @staticmethod
-    def _get_url_domain(url: str) -> str:
+    def _get_url_domain(self, url: str) -> str:
         """Extract the hostname portion of *url*, stripping ``www.`` prefix."""
         host = urlparse(url).hostname or ""
         if host.startswith("www."):
             host = host[4:]
         return host
 
-    @staticmethod
-    def _needs_playwright(url: str) -> bool:
+    def _needs_playwright(self, url: str) -> bool:
         """Check whether *url* requires Playwright to bypass WAF."""
-        return Crawler._get_url_domain(url) in _WAF_DOMAINS
+        return self._get_url_domain(url) in _WAF_DOMAINS
 
     def _get_playwright_browser(self, domain: str):
         """Return the headless Chromium browser for *domain*, creating it on
@@ -746,8 +615,6 @@ class Crawler:
         item["summary"] = result.get("summary", "")
         item["category"] = result.get("category", "")
         item["tags"] = result.get("tags", [])
-        if not item["tags"] and item.get("content"):
-            item["tags"] = self._extract_keywords(item["content"])
         return True
 
     def _run_batch_image_download(
@@ -829,6 +696,141 @@ class Crawler:
         print(f"[Crawler] Phase 2 done: {replaced} replacements across "
               f"{article_count} articles ({elapsed:.1f}s)")
 
+    # ═══════════════════════════════════════════════════════════════════
+    # duplication filter
+    # ═══════════════════════════════════════════════════════════════════
+    def _dedup_items_by_url(
+        self,
+        items: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Deduplicate items by URL, keeping the highest-priority source.
+
+        When multiple items share the same URL, the item from the source
+        with the highest ``priority`` (from :meth:`_build_source_tiers`)
+        is kept.  Items with equal priority retain the first encountered.
+        Items with empty URLs are passed through without dedup.
+        """
+        seen: Dict[str, int] = {}       # url -> index in result
+        result: List[Dict[str, Any]] = []
+        duplicates_removed = 0
+
+        for item in items:
+            url = item.get("url", "")
+            if not url:
+                result.append(item)
+                continue
+
+            if url not in seen:
+                seen[url] = len(result)
+                result.append(item)
+                continue
+
+            # URL collision — compare priorities
+            existing_idx = seen[url]
+            existing_item = result[existing_idx]
+
+            existing_sid = existing_item.get("source_id", "")
+            current_sid = item.get("source_id", "")
+
+            existing_prio = self._source_tiers.get(
+                existing_sid, {}
+            ).get("priority", 0)
+            current_prio = self._source_tiers.get(
+                current_sid, {}
+            ).get("priority", 0)
+
+            if current_prio > existing_prio:
+                result[existing_idx] = item
+
+            duplicates_removed += 1
+
+        if duplicates_removed > 0:
+            print(
+                f"[Crawler] Dedup: removed {duplicates_removed} duplicate URLs "
+                f"(kept {len(result)} of {len(items)} items)"
+            )
+
+        return result
+
+    def _filter_existing_content_urls(
+        self,
+        items: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Remove items whose content already exists in the DB.
+
+        For items with a URL, checks by URL.  For items without a URL
+        (e.g. RSS feeds that only ship inline HTML), checks by
+        ``(source_id, guid)``.
+
+        If the DB is unavailable, all items pass through unchanged.
+        """
+        try:
+            pg = self._get_pg_db()
+        except Exception:
+            return items
+
+        # ── URL-based check ───────────────────────────────────────
+        url_items = [it for it in items if it.get("url")]
+        existing_urls: set = set()
+        if url_items:
+            try:
+                existing_urls = pg.get_urls_with_content(
+                    [it["url"] for it in url_items]
+                )
+            except Exception:
+                pass
+
+        # ── GUID-based check (no-URL items only) ───────────────────
+        existing_guids: set = set()
+        no_url_pairs = [
+            (it["source_id"], it["guid"])
+            for it in items
+            if not it.get("url") and it.get("guid")
+        ]
+        if no_url_pairs:
+            # Group by source_id for batch query
+            by_source: Dict[str, List[str]] = {}
+            for sid, guid in no_url_pairs:
+                by_source.setdefault(sid, []).append(guid)
+
+            try:
+                with pg.get_conn() as conn:
+                    with conn.cursor() as cur:
+                        for sid, guids in by_source.items():
+                            cur.execute(
+                                """SELECT guid FROM news_articles
+                                   WHERE source_id = %s
+                                     AND guid = ANY(%s)
+                                     AND content IS NOT NULL
+                                     AND content != ''""",
+                                (sid, guids),
+                            )
+                            for row in cur:
+                                existing_guids.add((sid, row[0]))
+            except Exception:
+                pass
+
+        if not existing_urls and not existing_guids:
+            return items
+
+        skipped = 0
+        filtered = []
+        for it in items:
+            if it.get("url") and it["url"] in existing_urls:
+                skipped += 1
+            elif (not it.get("url")
+                  and (it.get("source_id"), it.get("guid")) in existing_guids):
+                skipped += 1
+            else:
+                filtered.append(it)
+
+        if skipped:
+            print(
+                f"[Crawler] Skipping {skipped} items that already have content in DB"
+            )
+
+        return filtered
+
     def _extract_image_urls(self, markdown: str) -> List[str]:
         """Extract image URLs from Markdown text.
 
@@ -842,6 +844,9 @@ class Crawler:
         urls.extend(re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', markdown, re.IGNORECASE))
         return urls
 
+    # ═══════════════════════════════════════════════════════════════════
+    # Failure Task Recorder
+    # ═══════════════════════════════════════════════════════════════════
     def _record_content_fetch_failure(
         self, item: Dict[str, Any], error: str,
     ) -> None:
@@ -1106,8 +1111,7 @@ class Crawler:
 
     # ── Backend-specific persist ─────────────────────────────────────
 
-    @staticmethod
-    def _yaml_str(value: str) -> str:
+    def _yaml_str(self, value: str) -> str:
         """Escape a string for safe YAML value output.
 
         Unquoted when safe; double-quoted with internal escapes otherwise.
@@ -1127,8 +1131,7 @@ class Crawler:
         escaped = value.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{escaped}"'
 
-    @staticmethod
-    def _build_frontmatter(item: NewsItem) -> str:
+    def _build_frontmatter(self, item: NewsItem) -> str:
         """Build YAML frontmatter block from a :class:`NewsItem`."""
         hostname = ""
         if item.url:
@@ -1139,13 +1142,13 @@ class Crawler:
 
         lines = ["---"]
         if item.title:
-            lines.append(f"title: {Crawler._yaml_str(item.title)}")
+            lines.append(f"title: {self._yaml_str(item.title)}")
         if item.url:
-            lines.append(f"url: {Crawler._yaml_str(item.url)}")
+            lines.append(f"url: {self._yaml_str(item.url)}")
         if hostname:
-            lines.append(f"hostname: {Crawler._yaml_str(hostname)}")
+            lines.append(f"hostname: {self._yaml_str(hostname)}")
         if item.summary:
-            lines.append(f"description: {Crawler._yaml_str(item.summary)}")
+            lines.append(f"description: {self._yaml_str(item.summary)}")
         if item.published_at:
             lines.append(f"date: {item.published_at[:10]}")
         lines.append("---\n")
@@ -1297,7 +1300,7 @@ class Crawler:
             day_skipped = 0
 
             try:
-                rows = Crawler._read_sqlite_db(tmp)
+                rows = self._read_sqlite_db(tmp)
                 print(f"[Sync] Read {len(rows)} rows from {date_str}.db")
 
                 # ── Incremental filtering ─────────────────────────
@@ -1317,7 +1320,7 @@ class Crawler:
                 if rows:
                     self.enrich_content(*rows, with_image=True)
 
-                    news_data = Crawler._rows_to_newsdata(rows, date_str)
+                    news_data = self._rows_to_newsdata(rows, date_str)
                     result = pg_db.save_news_data(
                         news_data, self._source_tiers, crawled_from="cloud", skip_existing=False,
                     )
@@ -1348,8 +1351,7 @@ class Crawler:
             "days": len(db_keys),
         }
 
-    @staticmethod
-    def _read_sqlite_db(db_path) -> List[Dict[str, Any]]:
+    def _read_sqlite_db(self, db_path) -> List[Dict[str, Any]]:
         """Read all rows from a SQLite news_items table."""
         import sqlite3
 
@@ -1361,9 +1363,8 @@ class Crawler:
         finally:
             conn.close()
 
-    @staticmethod
     def _rows_to_newsdata(
-        rows: List[Dict[str, Any]], date_str: str
+        self, rows: List[Dict[str, Any]], date_str: str
     ) -> NewsData:
         """Convert SQLite rows (optionally enriched) to a NewsData object."""
         items: Dict[str, List[NewsItem]] = {}
@@ -1407,20 +1408,6 @@ class Crawler:
             items[source_id].append(item)
 
         return NewsData(date=date_str, items=items)
-
-    # ── Keyword extraction (delegates to analyzer) ─────────────────
-
-    def _extract_keywords(self, content: str, topk: int = 5) -> list[str]:
-        """从 Markdown 正文提取关键词，委托给 Analyzer。
-
-        当 analyzer 启用时使用 TF-IDF（优先）+ TextRank（兜底），
-        禁用时退回到模块级 TextRank。
-        """
-        analyzer = self._get_analyzer()
-        if analyzer is not None:
-            return analyzer.extract_keywords(content, topk=topk)
-        from news.analyzer.jieba import extract_keywords_textrank
-        return extract_keywords_textrank(content, topk=topk)
 
     def close(self) -> None:
         """Close connections, thread pools, and resources."""
