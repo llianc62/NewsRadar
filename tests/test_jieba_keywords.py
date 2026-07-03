@@ -137,25 +137,8 @@ def test_extract_keywords_no_db_falls_back_to_textrank(monkeypatch):
     assert all(isinstance(t, str) and len(t) > 0 for t in tags)
 
 
-def test_extract_keywords_with_idf_file(monkeypatch, tmp_path):
-    """有 IDF 文件时优先使用 TF-IDF"""
-    from news.analyzer.jieba import _IDF_PATH
-
-    # 构造一个 IDF 文件，使 "公司" 的 IDF 极低（通用词）
-    idf_content = """特朗普 5.0
-会谈 4.5
-G7 5.5
-公司 0.01
-企业 0.01
-项目 0.01
-"""
-    idf_file = tmp_path / "jieba_idf.txt"
-    idf_file.write_text(idf_content, encoding="utf-8")
-
-    monkeypatch.setattr(
-        "news.analyzer.jieba._IDF_PATH", str(idf_file),
-    )
-
+def test_extract_keywords_filters_generic_words():
+    """默认 jieba IDF 应自动压低通用词权重，关键词不包含"公司"等泛化词"""
     analyzer = _make_analyzer(db=None)
     content = (
         "美国前总统特朗普在G7峰会期间与日本首相高市早苗会谈，"
@@ -164,7 +147,7 @@ G7 5.5
     )
     tags = analyzer._extract_keywords(content)
     assert len(tags) >= 1
-    # "公司""企业""项目" 的 IDF 极低，不应被选为关键词
+    # "公司""企业""项目" 在几乎所有文档中出现，默认 IDF 应压低
     generic = {"公司", "企业", "项目"}
     assert not any(t in generic for t in tags), (
         f"Generic words should be filtered by IDF, got: {tags}"

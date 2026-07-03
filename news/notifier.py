@@ -291,10 +291,14 @@ def run_notifier(
 
     timezone = config.get("app", {}).get("timezone", DEFAULT_TIMEZONE)
     # 数据日期：默认今天，可通过 --start-time 指定历史日期
+    data_date = format_date_today(timezone)
     if start_time:
-        data_date = start_time[:10]  # "2026-07-01T00:00:00" → "2026-07-01"
-    else:
-        data_date = format_date_today(timezone)
+        # _iso_to_db_format returns None for unparseable input — fall back to today
+        if _iso_to_db_format(start_time, timezone) is not None:
+            data_date = start_time[:10]  # "2026-07-01T00:00:00" → "2026-07-01"
+        else:
+            print(f"[Notifier] Invalid --start-time {start_time!r}, using today ({data_date})")
+            start_time = None  # treat as unset, so no filter is applied
     # 报告日期始终取系统当前时间
     report_date = format_date_today(timezone)
     report_time = format_time_now(timezone)

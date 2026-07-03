@@ -4,18 +4,15 @@
 import os
 import re
 import math
-from typing import Any, Dict, List, Optional
+from typing import Dict, Optional
 
 import jieba
 import jieba.analyse
 
 from news.analyzer.analyzer import Analyzer
 
-# 词典文件默认路径
+# 情感词典路径
 _DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
-
-# IDF 语料路径 — 从数据库文章构建，供 TF-IDF 压低通用词使用
-_IDF_PATH = os.path.join(_DATA_DIR, "jieba_idf.txt")
 
 
 class JiebaAnalyzer(Analyzer):
@@ -184,39 +181,36 @@ class JiebaAnalyzer(Analyzer):
         """从正文提取关键词，原地修改 item['tags']。
 
         对每个 item 提取 content → TF-IDF（优先）→ TextRank（兜底）。
+        若 parser 阶段已提取到 tags 则跳过，保留原始元数据标签。
         兼容 dict 和 NewsItem 两种输入。
         """
         for item in items:
+            if self._get_value(item, "tags"):
+                continue
             content = self._get_value(item, "content") or ""
             self._set_value(item, "tags", self._extract_keywords(content, topk=topk))
 
     def _extract_keywords(self, content: str, topk: int = 5) -> list[str]:
         """从单篇 Markdown 正文提取关键词。
 
-        TF-IDF 优先（需 IDF 语料），失败或不可用时回退到 TextRank。
+        默认使用 jieba 内置 IDF 做 TF-IDF 提取，失败则回退到 TextRank。
         """
         text = self._clean_markdown_syntax(content)
         if len(text) < 50:
             return []
-
+        
         # ── TF-IDF (优先) ──────────────────────────────────────────
-        idf_path = self._ensure_idf_corpus()
-        if idf_path is not None:
-            try:
-                default_idf = jieba.analyse.idf_path
-                jieba.analyse.set_idf_path(idf_path)
-                keywords = jieba.analyse.tfidf(
-                    text,
-                    topK=topk,
-                    withWeight=False,
-                    allowPOS=('ns', 'nr', 'nt', 'nz'),
-                )
-                if default_idf:
-                    jieba.analyse.set_idf_path(default_idf)
-                if keywords:
-                    return keywords
-            except Exception:
-                pass
+        try:
+            keywords = jieba.analyse.tfidf(
+                text,
+                topK=topk,
+                withWeight=False,
+                allowPOS=('ns', 'nr', 'nt', 'nz'),
+            )
+            if keywords:
+                return keywords
+        except Exception:
+            pass
 
         # ── TextRank (兜底) ─────────────────────────────────────────
         return self._analyze_keywords_textrank(content, topk=topk)
@@ -250,66 +244,3 @@ class JiebaAnalyzer(Analyzer):
         text = re.sub(r'\[([^\]]*)\]\(.*?\)', r'\1', text)      # 链接保留文字
         text = re.sub(r'[#*>`|~\-_]', ' ', text)                # 格式标记
         return re.sub(r'\s+', ' ', text).strip()
-
-    def _ensure_idf_corpus(self) -> Optional[str]:
-        """确保自定义 IDF 语料文件存在，不存在则从数据库构建。
-
-        Returns:
-            IDF 文件路径，或 None 当数据库无可用文章或构建失败。
-        """
-        if os.path.exists(_IDF_PATH):
-            return _IDF_PATH
-
-        if self._db is None:
-            return None
-
-        # ── 从数据库收集文章正文 ──────────────────────────────────
-        contents: List[str] = []
-        try:
-            with self._db.get_conn() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SELECT content FROM news_articles "
-                        "WHERE content IS NOT NULL AND content != '' "
-                        "ORDER BY created_at DESC LIMIT 2000"
-                    )
-                    rows = cur.fetchall()
-        except Exception as e:
-            print(f"[Analyzer] IDF corpus query failed: {e}")
-            return None
-
-        for (body,) in rows:
-            cleaned = self._clean_markdown_syntax(body)
-            if len(cleaned) >= 50:
-                contents.append(cleaned)
-
-        if len(contents) < 10:
-            return None
-
-        # ── 分词 + 文档频率统计 ───────────────────────────────────
-
-        df: Dict[str, int] = {}
-        for text in contents:
-            words = set(jieba.cut(text))
-            for w in words:
-                if len(w) < 2:
-                    continue
-                df[w] = df.get(w, 0) + 1
-
-        total_docs = len(contents)
-
-        # ── 写入 IDF 文件 ─────────────────────────────────────────
-        os.makedirs(os.path.dirname(_IDF_PATH), exist_ok=True)
-        try:
-            with open(_IDF_PATH, "w", encoding="utf-8") as f:
-                for word, count in df.items():
-                    idf = math.log(total_docs / count)
-                    f.write(f"{word} {idf:.6f}\n")
-            print(
-                f"[Analyzer] Built IDF corpus: {len(df)} words "
-                f"from {total_docs} articles → {_IDF_PATH}"
-            )
-            return _IDF_PATH
-        except OSError as e:
-            print(f"[Analyzer] Failed to write IDF corpus: {e}")
-            return None

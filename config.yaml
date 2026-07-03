@@ -4,7 +4,7 @@ app:
 crawler:
   timeout: 30
   max_retry: 3
-  max_workers: 16
+  max_workers: 20
   crawl_circle: 60        # 抓取新闻周期（分钟）
   sync_circle: 60         # 云端同步周期（分钟）
 
