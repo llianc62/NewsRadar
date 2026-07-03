@@ -20,6 +20,7 @@ from news.parser.sites.huanqiu import HuanqiuParser
 from news.parser.sites.ifanr import IfanrParser
 from news.parser.sites.xinhua import XinhuaParser
 from news.parser.sites.yicai import YicaiParser
+from news.parser.sites.eastmoney import EastmoneyParser
 
 # Default parser for unregistered source_ids
 registry.set_default(HtmlParser())
@@ -29,6 +30,7 @@ registry.set_default(HtmlParser())
 _wsc = WallstreetcnParser()
 _cls = ClsParser()
 _xinhua = XinhuaParser()
+_eastmoney = EastmoneyParser()
 
 registry.register("wallstreetcn-hot", _wsc, domains=["wallstreetcn.com"])
 registry.register("wallstreetcn-news", _wsc)
@@ -52,3 +54,5 @@ registry.register("xinhua-politics", _xinhua, domains=["xinhuanet.com", "news.cn
 registry.register("xinhua-finance", _xinhua, domains=["xinhuanet.com", "news.cn"])
 registry.register("xinhua-world", _xinhua, domains=["xinhuanet.com", "news.cn"])
 registry.register("yicai-news", YicaiParser(), domains=["yicai.com"])
+registry.register("eastmoney-stock", _eastmoney, domains=["eastmoney.com"])
+registry.register("eastmoney-partener", _eastmoney)
