@@ -21,6 +21,11 @@ from news.parser.sites.ifanr import IfanrParser
 from news.parser.sites.xinhua import XinhuaParser
 from news.parser.sites.yicai import YicaiParser
 from news.parser.sites.eastmoney import EastmoneyParser
+from news.parser.sites.kr36 import Kr36Parser
+from news.parser.sites.samrdprc import SamrdprcParser
+from news.parser.sites.stcn import StcnParser
+from news.parser.sites.huxiu import HuxiuParser
+from news.parser.sites.xueqiu import XueqiuParser
 
 # Default parser for unregistered source_ids
 registry.set_default(HtmlParser())
@@ -56,3 +61,8 @@ registry.register("xinhua-world", _xinhua, domains=["xinhuanet.com", "news.cn"])
 registry.register("yicai-news", YicaiParser(), domains=["yicai.com"])
 registry.register("eastmoney-stock", _eastmoney, domains=["eastmoney.com"])
 registry.register("eastmoney-partener", _eastmoney)
+registry.register("36kr-news", Kr36Parser(), domains=["36kr.com"])
+registry.register("samrdprc", SamrdprcParser(), domains=["samrdprc.org.cn"])
+registry.register("stcn-hot", StcnParser(), domains=["stcn.com"])
+registry.register("huxiu", HuxiuParser(), domains=["huxiu.com"])
+registry.register("xueqiu-hot", XueqiuParser(), domains=["xueqiu.com"])

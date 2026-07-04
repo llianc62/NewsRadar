@@ -82,8 +82,9 @@ class TestInitSchema:
             [True],    # migration 002: idx_fulltext_trgm exists
             [True],    # migration 003: failed_tasks table exists
             ["jsonb"], # migration 004: ranks column already JSONB
-            [False],   # migration 005: crawled_at column does not exist (already dropped)
             [False],   # migration 006: idx_dedup_hotlist already on (url) only
+            [False],   # migration 007: crawled_at column not yet added
+            [False],   # migration 008: news_images table not yet created
         ]
 
         pg_unconnected.init_schema()
@@ -105,14 +106,16 @@ class TestInitSchema:
             [True],   # migration 002: ok
             [True],   # migration 003: ok
             ["jsonb"], # migration 004: ranks column already JSONB
-            [False],   # migration 005: crawled_at column does not exist (already dropped)
             [False],   # migration 006: idx_dedup_hotlist already on (url)
+            [False],   # migration 007: crawled_at column not yet added
+            [False],   # migration 008: news_images table not yet created
         ]
 
         pg_unconnected.init_schema()
         executes = [str(c[0][0]) for c in mock_cursor.execute.call_args_list if c[0]]
         ddl_calls = [s for s in executes if "CREATE TABLE" in s]
-        assert len(ddl_calls) == 0  # DDL 被跳过
+        # Schema DDL is skipped, but migration 008 may create news_images
+        assert len(ddl_calls) == 1 and "news_images" in ddl_calls[0]
 
 
 class TestRunMigrations:
@@ -130,8 +133,9 @@ class TestRunMigrations:
             [idx_trgm_exists],
             [True],  # migration 003: failed_tasks table exists
             ["jsonb"],  # migration 004: ranks column already JSONB
-            [False],   # migration 005: crawled_at column does not exist
             [False],   # migration 006: idx_dedup_hotlist already on (url)
+            [False],   # migration 007: crawled_at column not yet added
+            [False],   # migration 008: news_images table not yet created
         ]
         return mock_cursor
 
@@ -174,7 +178,7 @@ class TestRunMigrations:
 
         # Reset mock for second call
         mock_cur2 = MagicMock()
-        mock_cur2.fetchone.side_effect = [[True], [True], [True], ["jsonb"], [False], [False]]
+        mock_cur2.fetchone.side_effect = [[True], [True], [True], ["jsonb"], [False], [True], [True]]
         pg_unconnected._pool.getconn.return_value.cursor.return_value.__enter__.return_value = mock_cur2
 
         pg_unconnected._run_migrations()

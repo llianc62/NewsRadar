@@ -160,6 +160,98 @@ def test_extract_keywords_short_content_returns_empty():
     assert analyzer._extract_keywords("短。") == []
 
 
+# ── POS 过滤移除后回归测试 ─────────────────────────────────────────
+
+def test_no_pos_filter_allows_common_nouns():
+    """不限词性时应能提取普通名词（"AI""芯片""算力"等财经科技词）。"""
+    analyzer = _make_analyzer(db=None)
+    content = (
+        "Meta收跌5%创下近期新低，扎克伯格在AI和算力领域的巨额投资令市场担忧。"
+        "分析人士指出，人工智能基础设施建设的回报周期较长，短期内难以看到盈利改善。"
+        "不过，多位华尔街分析师仍然看好Meta在智能硬件方面的长期布局。"
+    )
+    tags = analyzer._extract_keywords(content)
+    assert len(tags) >= 1
+    # 不限词性后，"AI""算力""智能"等非专有名词应能被提取
+    assert any(t in {"AI", "算力", "智能", "Meta", "投资"} for t in tags), (
+        f"Non-proper-noun tech/finance terms should appear, got: {tags}"
+    )
+
+
+def test_no_pos_filter_allows_tech_terms():
+    """不限词性时应能提取科技类普通名词。"""
+    analyzer = _make_analyzer(db=None)
+    content = (
+        "CPO（共封装光学）技术被认为是AI光互联领域的重要突破。"
+        "ams OSRAM和英伟达在CPO领域的合作引发市场关注，"
+        "VCSEL和硅光技术成为下一代数据中心互连的关键方向。"
+        "业内专家认为，CPO将大幅降低数据中心功耗并提升带宽密度。"
+    )
+    tags = analyzer._extract_keywords(content)
+    assert len(tags) >= 1
+    # "CPO""技术""领域" 等非专有名词应能被提取
+    assert any(t in {"CPO", "技术", "光互联", "数据中心"} for t in tags), (
+        f"Tech terms should appear without POS filter, got: {tags}"
+    )
+
+
+# ── 标题参与提取测试 ─────────────────────────────────────────────────
+
+def test_title_included_in_keyword_extraction():
+    """analyze_keywords 应将标题与正文拼接后提取关键词。"""
+    analyzer = _make_analyzer()
+    items = [
+        {
+            "title": "宇树科技科创板IPO注册生效",
+            "content": (
+                "机器人企业宇树科技近日完成科创板IPO注册。"
+                "该公司主营四足机器人研发制造，产品广泛应用于工业巡检和消费领域。"
+                "此次上市将助力公司进一步扩大产能和研发投入规模。"
+            ),
+            "tags": [],
+        },
+    ]
+    analyzer.analyze_keywords(items)
+    tags = items[0]["tags"]
+    assert len(tags) >= 1
+    # 标题中的"宇树""IPO"应在关键词中出现
+    assert any("宇树" in t or "IPO" in t for t in tags), (
+        f"Title keywords should appear in extracted tags, got: {tags}"
+    )
+
+
+def test_only_content_no_title_still_works():
+    """只有 content 没有 title 时正常提取不报错。"""
+    analyzer = _make_analyzer()
+    items = [
+        {
+            "title": "",
+            "content": (
+                "美国前总统特朗普在G7峰会期间与日本首相高市早苗会谈，"
+                "双方讨论了贸易和安全议题。会谈持续约两小时，会后双方发表了联合声明。"
+            ),
+            "tags": [],
+        },
+    ]
+    analyzer.analyze_keywords(items)
+    assert len(items[0]["tags"]) >= 1
+
+
+def test_title_only_no_content():
+    """只有 title 没有 content 时使用 title 提取。"""
+    analyzer = _make_analyzer()
+    items = [
+        {
+            "title": "宇树科技科创板IPO注册生效 机器人行业迎利好",
+            "content": "",
+            "tags": [],
+        },
+    ]
+    analyzer.analyze_keywords(items)
+    # 标题太短（<50字符）应返回空
+    assert items[0]["tags"] == []
+
+
 # ── analyze_keywords(items) 批量接口 ────────────────────────────────
 
 def test_analyze_keywords_batch_sets_tags_on_items():
@@ -289,3 +381,46 @@ def test_download_and_parse_short_content_preserves_tags(monkeypatch):
     ok = crawler._download_and_parse(item)
     assert ok is True
     assert item["tags"] == []
+
+
+# ── _clean_tags 标签清理测试 ──────────────────────────────────────────
+
+def test_clean_tags_filters_junk_regex():
+    """启发式规则过滤纯数字、数字开头量值、纯符号、单字符。"""
+    analyzer = _make_analyzer()
+    tags = {"123", "3.5亿", "10000亿元", "---", "a", "AI", "芯片", "特朗普"}
+    cleaned = analyzer._clean_tags(tags)
+    assert set(cleaned) == {"AI", "芯片", "特朗普"}
+
+
+def test_clean_tags_filters_blacklist():
+    """黑名单过滤已知垃圾标签。"""
+    analyzer = _make_analyzer()
+    tags = {"屏蔽外部", "许可证", "归母", "中证", "中证网", "AI", "半导体"}
+    cleaned = analyzer._clean_tags(tags)
+    assert set(cleaned) == {"AI", "半导体"}
+
+
+def test_clean_tags_empty_set():
+    analyzer = _make_analyzer()
+    assert analyzer._clean_tags(set()) == []
+
+
+def test_analyze_keywords_merges_and_cleans():
+    """端到端：合并页面标签 + Jieba 关键词，过滤后写入。"""
+    analyzer = _make_analyzer()
+    items = [{
+        "title": "特朗普与Meta讨论AI芯片合作",
+        "content": (
+            "美国前总统特朗普与Meta公司高管讨论了AI芯片领域的合作事宜。"
+            "双方就半导体供应链和技术出口管制等议题交换了意见。"
+            "分析人士认为这一合作将对全球芯片产业格局产生深远影响。"
+        ),
+        "tags": ["特朗普", "屏蔽外部", "AI"],  # "屏蔽外部" 应在黑名单中被过滤
+    }]
+    analyzer.analyze_keywords(items)
+    tags = items[0]["tags"]
+    assert "屏蔽外部" not in tags
+    assert "特朗普" in tags  # 页面标签保留
+    assert "AI" in tags      # 页面标签保留（同时也是 Jieba 关键词）
+    assert len(tags) >= 3     # 至少还有 Jieba 提取的新词

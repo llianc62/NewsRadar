@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS news_articles (
     is_analyzed     BOOLEAN NOT NULL DEFAULT FALSE,
     published_at     TIMESTAMPTZ DEFAULT NULL,
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    crawled_at       TIMESTAMPTZ DEFAULT NULL
 );
 
 -- News images table

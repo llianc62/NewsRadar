@@ -20,6 +20,7 @@ from markupsafe import Markup
 
 from storage.files import FileStorage, LocalStorage, S3Storage
 from news.crawler import Crawler, OutputStyle
+from utils import format_date_today
 from news.constants import (
     TIER_LABELS, TIER_COLORS, TIER_BG,
     SENTIMENT_POSITIVE_THRESHOLD, SENTIMENT_NEGATIVE_THRESHOLD,
@@ -308,11 +309,16 @@ def create_app(db, s3_config: dict, queues: dict = None, crawler=None):
             for s in stats["by_source"][:8]
         ]
 
+        # 3D word cloud keywords — today's top tags by frequency
+        today_str = format_date_today()
+        keyword_counts = db.get_keyword_counts(date_from=today_str, limit=40)
+
         html = render_template(
             "pages/market_overview.html",
             active_page="home",
             index_cards=index_cards,
             hot_sources=hot_sources,
+            keywords=keyword_counts,
         )
         return HTMLResponse(html)
 

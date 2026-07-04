@@ -403,8 +403,21 @@ class RssFetcher(Fetcher):
         """Whether this fetcher has enabled feeds."""
         return self._enabled and len(self._active_feeds) > 0
 
+    @staticmethod
+    def _fix_response_encoding(response, *args, **kwargs):
+        """Response hook: correct encoding when the server omits charset.
+
+        RFC 2616 §3.7.1 defaults to ISO-8859-1 when no charset is
+        specified, but real-world feeds serve UTF-8.  Without this hook,
+        ``resp.text`` decodes UTF-8 bytes as Latin-1, producing garbled
+        CJK titles that end up in the database.
+        """
+        if response.encoding == "ISO-8859-1":
+            response.encoding = response.apparent_encoding
+        return response
+
     def _create_session(self) -> requests.Session:
-        """Create a requests Session with default headers."""
+        """Create a requests Session with default headers and encoding fix."""
         session = requests.Session()
         session.headers.update(
             {
@@ -421,6 +434,7 @@ class RssFetcher(Fetcher):
                 "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             }
         )
+        session.hooks["response"].append(self._fix_response_encoding)
         return session
 
     # ── Single feed ────────────────────────────────────────────────

@@ -1,10 +1,10 @@
 # coding=utf-8
 """Database maintenance commands.
 
-``python -m cli db clear --all --force``
+``python -m cli db clear --start 2026-07-02 --end 2026-07-04 --force``
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -22,17 +22,26 @@ app.add_typer(db_app, name="db")
 # ═══════════════════════════════════════════════════════════════════
 
 
-def _next_day(date_str: str) -> str:
-    """Return *date_str* + 1 day as ISO date string."""
-    d = datetime.strptime(date_str, "%Y-%m-%d").date()
-    return (d + timedelta(days=1)).isoformat()
+def _parse_datetime(value: str) -> str:
+    """Validate and normalise a datetime string.
+
+    Accepts ``YYYY-MM-DD`` or ``YYYY-MM-DD HH:MM:SS`` and returns the
+    value unchanged.  Raises ``ValueError`` on invalid format.
+    """
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            datetime.strptime(value, fmt)
+            return value
+        except ValueError:
+            continue
+    raise ValueError(f"Invalid datetime format: {value!r}")
 
 
 def _build_where(
     delete_all: bool,
-    before: Optional[str],
-    after: Optional[str],
-    col: str = "published_at",
+    start: Optional[str],
+    end: Optional[str],
+    col: str = "created_at",
 ) -> tuple[str, list]:
     """Build a SQL WHERE clause from time-range parameters.
 
@@ -45,12 +54,12 @@ def _build_where(
     conditions: list[str] = []
     params: list[str] = []
 
-    if before:
-        conditions.append(f"{col} < %s")
-        params.append(_next_day(before))
-    if after:
+    if start:
         conditions.append(f"{col} >= %s")
-        params.append(after)
+        params.append(start)
+    if end:
+        conditions.append(f"{col} < %s")
+        params.append(end)
 
     if not conditions:
         return "", []
@@ -60,9 +69,9 @@ def _build_where(
 
 def _build_sqlite_where(
     delete_all: bool,
-    before: Optional[str],
-    after: Optional[str],
-    col: str = "published_at",
+    start: Optional[str],
+    end: Optional[str],
+    col: str = "created_at",
 ) -> tuple[str, list]:
     """Same as :func:`_build_where` but for SQLite (``?`` placeholders)."""
     if delete_all:
@@ -71,12 +80,12 @@ def _build_sqlite_where(
     conditions: list[str] = []
     params: list[str] = []
 
-    if before:
-        conditions.append(f"{col} < ?")
-        params.append(_next_day(before))
-    if after:
+    if start:
         conditions.append(f"{col} >= ?")
-        params.append(after)
+        params.append(start)
+    if end:
+        conditions.append(f"{col} < ?")
+        params.append(end)
 
     if not conditions:
         return "", []
@@ -101,8 +110,8 @@ def _confirm(count: int, backend: str, force: bool) -> bool:
 def _clear_postgresql(
     config: dict,
     delete_all: bool,
-    before: Optional[str],
-    after: Optional[str],
+    start: Optional[str],
+    end: Optional[str],
     force: bool,
 ) -> None:
     """Delete rows from PostgreSQL ``news_articles`` + ``news_images`` + ``failed_tasks``."""
@@ -112,7 +121,7 @@ def _clear_postgresql(
     try:
         db.connect()
 
-        where, params = _build_where(delete_all, before, after)
+        where, params = _build_where(delete_all, start, end)
 
         # ── Count ──────────────────────────────────────────────────
         with db.get_conn() as conn:
@@ -189,8 +198,8 @@ def _clear_postgresql(
 def _clear_sqlite(
     config: dict,
     delete_all: bool,
-    before: Optional[str],
-    after: Optional[str],
+    start: Optional[str],
+    end: Optional[str],
     force: bool,
 ) -> None:
     """Clear news data from SQLite files under ``output/db/``."""
@@ -233,7 +242,7 @@ def _clear_sqlite(
         return
 
     # ── Time-range clear: scan each file ───────────────────────────
-    where, params = _build_sqlite_where(delete_all, before, after)
+    where, params = _build_sqlite_where(delete_all, start, end)
 
     total_deleted = 0
     files_removed = 0
@@ -308,13 +317,13 @@ def clear(
         False, "--all",
         help="Delete ALL rows (must be explicitly specified)",
     ),
-    before: Optional[str] = typer.Option(
-        None, "--before",
-        help="Delete records with published_at before this date (YYYY-MM-DD, inclusive)",
+    start: Optional[str] = typer.Option(
+        None, "--start",
+        help="Delete records created_at >= this datetime (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)",
     ),
-    after: Optional[str] = typer.Option(
-        None, "--after",
-        help="Delete records with published_at after this date (YYYY-MM-DD, inclusive)",
+    end: Optional[str] = typer.Option(
+        None, "--end",
+        help="Delete records created_at < this datetime (YYYY-MM-DD or YYYY-MM-DD HH:MM:SS)",
     ),
     force: bool = typer.Option(
         False, "--force", "-f",
@@ -323,40 +332,40 @@ def clear(
 ) -> None:
     """Clear news data from the database.
 
-    Must specify either --all or --before/--after.
+    Must specify either --all or --start/--end (or both).
 
     Examples:
 
         python -m cli db clear --all --force
 
-        python -m cli db clear --before 2026-06-01
+        python -m cli db clear --end "2026-06-01 23:59:59"
 
-        python -m cli db clear --backend postgresql --before 2026-06-01 --after 2026-05-01
+        python -m cli db clear --backend postgresql --start 2026-05-01 --end 2026-06-02
     """
     # ── Validate ───────────────────────────────────────────────────
-    if not delete_all and before is None and after is None:
+    if not delete_all and start is None and end is None:
         typer.echo(
-            "Error: must specify --all or --before/--after.\n"
+            "Error: must specify --all or --start/--end.\n"
             "Try 'python -m cli db clear --help' for usage.",
             err=True,
         )
         raise typer.Exit(code=1)
 
-    if delete_all and (before is not None or after is not None):
+    if delete_all and (start is not None or end is not None):
         typer.echo(
-            "Error: --all and --before/--after are mutually exclusive.",
+            "Error: --all and --start/--end are mutually exclusive.",
             err=True,
         )
         raise typer.Exit(code=1)
 
-    # Validate date format
-    for label, value in [("--before", before), ("--after", after)]:
+    # Validate datetime format
+    for label, value in [("--start", start), ("--end", end)]:
         if value is not None:
             try:
-                datetime.strptime(value, "%Y-%m-%d")
-            except ValueError:
+                _parse_datetime(value)
+            except ValueError as e:
                 typer.echo(
-                    f"Error: {label} must be YYYY-MM-DD format, got: {value}",
+                    f"Error: {label} must be YYYY-MM-DD or YYYY-MM-DD HH:MM:SS format, got: {value}",
                     err=True,
                 )
                 raise typer.Exit(code=1)
@@ -367,13 +376,13 @@ def clear(
     # ── Execute ────────────────────────────────────────────────────
     if backend in ("all", "postgresql"):
         try:
-            _clear_postgresql(config, delete_all, before, after, force)
+            _clear_postgresql(config, delete_all, start, end, force)
         except Exception as e:
             typer.echo(f"PostgreSQL clear failed: {e}", err=True)
             if backend != "all":
                 raise typer.Exit(code=1)
 
     if backend in ("all", "sqlite"):
-        _clear_sqlite(config, delete_all, before, after, force)
+        _clear_sqlite(config, delete_all, start, end, force)
 
     print("[DB] Clear complete.")

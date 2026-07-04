@@ -177,18 +177,51 @@ class JiebaAnalyzer(Analyzer):
 
     # ── Keyword extraction ─────────────────────────────────────────
 
-    def analyze_keywords(self, items: list, topk: int = 5) -> None:
-        """从正文提取关键词，原地修改 item['tags']。
+    # 标签黑名单：页面来源的高频垃圾标签（非记者/人物名）
+    _TAG_BLACKLIST: frozenset[str] = frozenset({
+        "屏蔽外部",   # wallstreetcn 内部标记
+        "许可证",     # thepaper 版权声明
+        "归母",       # eastmoney 财报术语碎片
+        "中证",       # 中证网来源名
+        "中证网",     # 中证网来源名
+    })
 
-        对每个 item 提取 content → TF-IDF（优先）→ TextRank（兜底）。
-        若 parser 阶段已提取到 tags 则跳过，保留原始元数据标签。
+    def analyze_keywords(self, items: list, topk: int = 5) -> None:
+        """从标题+正文提取关键词，与页面原始标签合并，原地修改 item['tags']。
+
+        对每个 item 提取 title + content → TF-IDF（优先）→ TextRank（兜底），
+        再与 parser 阶段提取的原始标签取并集去重，最后过滤垃圾标签。
         兼容 dict 和 NewsItem 两种输入。
         """
         for item in items:
-            if self._get_value(item, "tags"):
-                continue
+            existing_tags = self._get_value(item, "tags") or []
+            title = self._get_value(item, "title") or ""
             content = self._get_value(item, "content") or ""
-            self._set_value(item, "tags", self._extract_keywords(content, topk=topk))
+            text = f"{title} {content}" if title else content
+            jieba_tags = self._extract_keywords(text, topk=topk)
+            # 取并集：页面标签 ∪ Jieba 关键词
+            merged = set(existing_tags) | set(jieba_tags)
+            self._set_value(item, "tags", self._clean_tags(merged))
+
+    # 纯数字/百分号/标点/数字开头量值，不适合作为关键词
+    _JUNK_TOKEN_RE = re.compile(
+        r'^[\d.,%+\-]+$'           # 纯数字、百分号、小数
+        r'|^.{0,1}$'                # 空或单字符
+        r'|^\d+(\.\d+)?[万亿千百]'  # 数字开头的量值（3.5亿、10000亿元 等）
+        r'|^[^\w一-鿿]+$'   # 纯符号（无中文/英文/数字）
+    )
+
+    @classmethod
+    def _filter_junk_tokens(cls, keywords: list[str]) -> list[str]:
+        """过滤纯数字、百分号等无意义 token（仅正则，不含黑名单）。"""
+        return [t for t in keywords if not cls._JUNK_TOKEN_RE.match(t)]
+
+    @classmethod
+    def _clean_tags(cls, tags: set[str]) -> list[str]:
+        """清理标签：启发式规则 + 黑名单过滤，返回列表。"""
+        return [t for t in tags
+                if not cls._JUNK_TOKEN_RE.match(t)
+                and t not in cls._TAG_BLACKLIST]
 
     def _extract_keywords(self, content: str, topk: int = 5) -> list[str]:
         """从单篇 Markdown 正文提取关键词。
@@ -198,22 +231,23 @@ class JiebaAnalyzer(Analyzer):
         text = self._clean_markdown_syntax(content)
         if len(text) < 50:
             return []
-        
+
         # ── TF-IDF (优先) ──────────────────────────────────────────
         try:
             keywords = jieba.analyse.tfidf(
                 text,
                 topK=topk,
                 withWeight=False,
-                allowPOS=('ns', 'nr', 'nt', 'nz'),
             )
             if keywords:
-                return keywords
+                return self._filter_junk_tokens(keywords)
         except Exception:
             pass
 
         # ── TextRank (兜底) ─────────────────────────────────────────
-        return self._analyze_keywords_textrank(content, topk=topk)
+        return self._filter_junk_tokens(
+            self._analyze_keywords_textrank(content, topk=topk),
+        )
 
     def _analyze_keywords_textrank(self, content: str, topk: int = 5) -> list[str]:
         """从 Markdown 正文提取关键词，使用 jieba TextRank + 专有名词过滤。
@@ -234,7 +268,6 @@ class JiebaAnalyzer(Analyzer):
             text,
             topK=topk,
             withWeight=False,
-            allowPOS=('ns', 'nr', 'nt', 'nz'),
         )
         return keywords
 

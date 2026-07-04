@@ -36,7 +36,18 @@ class IfengParser(HtmlParser):
     # ── _preprocess ─────────────────────────────────────────────────
 
     def _preprocess(self, html: str, url: str) -> str:
-        """Remove ifeng-specific template noise and fix lazy images."""
+        """Remove ifeng-specific template noise and fix lazy images.
+
+        先删除 ``<meta name="keywords">``（40+ 个泛化标签每篇几乎相同），
+        再走 lxml DOM 清理流程。
+        """
+        # 移除站点全局 meta keywords 标签，让 Jieba 从正文提取
+        html = re.sub(
+            r'<meta[^>]+name=["\']keywords["\'][^>]*/?>',
+            '',
+            html,
+            flags=re.I,
+        )
         try:
             tree = lxml_html.fromstring(html)
         except Exception:

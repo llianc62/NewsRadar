@@ -1,0 +1,418 @@
+<!--
+  NewsRadar Word Cloud — Jinja2 Component (Floating Physics)
+  Include in a container with: position: relative; overflow: hidden; min-height: 400px;
+  Requires in page head block: Noto Sans SC font (already loaded in market_overview)
+  Backend provides: keywords = [{tag, cnt}, ...] via get_keyword_counts()
+-->
+<style>
+/* ═══════════════════════════════════════════════════════════════════
+   WordCloud Widget — Scoped under .wordcloud-widget
+   Uses parent page :root tokens from app.css
+   ═══════════════════════════════════════════════════════════════════ */
+
+.wordcloud-widget {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: #f8f7f4;
+  font-family: 'DM Sans', 'Noto Sans SC', -apple-system, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.wordcloud-widget canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Header bar ── */
+.wordcloud-widget .wc-header {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  pointer-events: none;
+  z-index: 2;
+}
+.wordcloud-widget .wc-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text, #1a1a1a);
+  letter-spacing: 0.01em;
+}
+.wordcloud-widget .wc-subtitle {
+  font-size: 11px;
+  color: var(--text-muted, #999);
+  font-weight: 400;
+}
+
+/* ── Toast ── */
+.wordcloud-widget .wc-toast {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--accent, #f25f0f);
+  color: #fff;
+  padding: 6px 18px;
+  border-radius: 20px;
+  font-size: 12px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.25s;
+  z-index: 3;
+  white-space: nowrap;
+}
+.wordcloud-widget .wc-toast.show {
+  opacity: 1;
+}
+</style>
+
+<div class="wordcloud-widget">
+  <div class="wc-header">
+    <span class="wc-title">热点关键词</span>
+    <span class="wc-subtitle">移动鼠标探索 · 点击关键词跳转</span>
+  </div>
+  <canvas></canvas>
+  <div class="wc-toast" id="wc-toast"></div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  const widget = document.querySelector('.wordcloud-widget');
+  if (!widget) return;
+
+  const canvas = widget.querySelector('canvas');
+  const ctx = canvas.getContext('2d');
+  const toast = widget.querySelector('#wc-toast');
+
+  // ── Design tokens (from app.css :root) ──
+  const style = getComputedStyle(document.documentElement);
+  const COLOR_ACCENT = style.getPropertyValue('--accent').trim() || '#f25f0f';
+  const COLOR_TEXT = style.getPropertyValue('--text').trim() || '#1a1a1a';
+  const COLOR_BG = style.getPropertyValue('--bg-warm').trim() || '#f8f7f4';
+
+  // ── Keyword data ──
+  // Backend provides: keywords = [{tag, cnt}, ...]
+  const FALLBACK_KEYWORDS = [
+    { tag: '人工智能', cnt: 95 }, { tag: '美联储', cnt: 88 },
+    { tag: '新能源', cnt: 82 }, { tag: 'A股', cnt: 78 },
+    { tag: '半导体', cnt: 75 }, { tag: '房地产', cnt: 70 },
+    { tag: '电动车', cnt: 65 }, { tag: 'GPT-5', cnt: 62 },
+    { tag: '利率', cnt: 58 }, { tag: '光伏', cnt: 55 },
+    { tag: '芯片', cnt: 52 }, { tag: '黄金', cnt: 50 },
+    { tag: '出口', cnt: 48 }, { tag: '大模型', cnt: 46 },
+    { tag: '消费', cnt: 42 }, { tag: '降息', cnt: 40 },
+    { tag: '机器人', cnt: 38 }, { tag: '储能', cnt: 34 },
+    { tag: '通胀', cnt: 30 }, { tag: '医疗', cnt: 28 },
+  ];
+
+  let rawKeywords = [];
+  try {
+    // Jinja2 injects keywords as JavaScript literal via tojson filter
+    const serverData = {{ keywords | tojson }};
+    if (Array.isArray(serverData) && serverData.length > 0) {
+      rawKeywords = serverData;
+    }
+  } catch (e) {
+    // Fallback below
+  }
+  if (rawKeywords.length === 0) {
+    rawKeywords = FALLBACK_KEYWORDS;
+  }
+
+  // ── Normalize & sort ──
+  const maxCnt = Math.max(...rawKeywords.map(k => k.cnt || 0), 1);
+  const minCnt = Math.min(...rawKeywords.map(k => k.cnt || 0), maxCnt);
+
+  const keywords = rawKeywords
+    .map(k => ({ text: k.tag, weight: k.cnt || 0 }))
+    .sort((a, b) => b.weight - a.weight)
+    .slice(0, 40);
+
+  // ── Color helpers (single bright warm gradient) ──
+  function heatColor(w) {
+    const t = maxCnt === minCnt ? 0.5 : (w - minCnt) / (maxCnt - minCnt);
+    const h = 32 - t * 12;        // 32°→20°  (warm gray → bright orange)
+    const sat = 15 + t * 80;      // 15%→95%  (muted → near-max saturation)
+    const lig = 78 - t * 23;      // 78%→55%  (bright → vivid medium)
+    return `hsl(${Math.round(h)},${Math.round(sat)}%,${Math.round(lig)}%)`;
+  }
+
+  // ── Sizing ──
+  const SIZE_MIN = 14;
+  const SIZE_MAX = 48;
+
+  function mapSize(w) {
+    if (maxCnt === minCnt) return (SIZE_MIN + SIZE_MAX) / 2;
+    return SIZE_MIN + ((w - minCnt) / (maxCnt - minCnt)) * (SIZE_MAX - SIZE_MIN);
+  }
+
+  // ── Physics state ──
+  let W = 800, H = 400;
+  let words = [];
+  let mouse = { x: W / 2, y: H / 2, active: false };
+  let hoveredWord = null;
+  let toastTimer = null;
+
+  const FAR = 65;    // repulsion zone radius
+  const NEAR = 18;   // clickable zone (within word radius)
+
+  function initWords() {
+    words = keywords.map(k => {
+      const baseSize = mapSize(k.weight);
+      return {
+        text: k.text,
+        weight: k.weight,
+        x: 60 + Math.random() * (W - 120),
+        y: 60 + Math.random() * (H - 120),
+        vx: (Math.random() - 0.5) * 0.4,
+        vy: (Math.random() - 0.5) * 0.4,
+        size: baseSize,
+        baseSize: baseSize,
+        hovered: false,
+        flash: 0,
+      };
+    });
+  }
+
+  function getWordAt(mx, my) {
+    let best = null, bestDist = Infinity;
+    for (const w of words) {
+      const dx = mx - w.x, dy = my - w.y;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d < w.size * 0.8 && d < bestDist) { best = w; bestDist = d; }
+    }
+    return best;
+  }
+
+  // ── Mouse / Touch ──
+  function updateMouse(e) {
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = e.clientX - rect.left;
+    mouse.y = e.clientY - rect.top;
+    mouse.active = true;
+    hoveredWord = getWordAt(mouse.x, mouse.y);
+    canvas.style.cursor = hoveredWord ? 'pointer' : 'auto';
+  }
+
+  canvas.addEventListener('mousemove', updateMouse);
+  canvas.addEventListener('touchmove', e => {
+    e.preventDefault();
+    updateMouse(e.touches[0]);
+  }, { passive: false });
+
+  canvas.addEventListener('mouseleave', () => {
+    mouse.active = false;
+    hoveredWord = null;
+    canvas.style.cursor = 'auto';
+  });
+  canvas.addEventListener('touchend', () => {
+    mouse.active = false;
+    hoveredWord = null;
+  });
+
+  canvas.addEventListener('click', e => {
+    const w = getWordAt(
+      e.clientX - canvas.getBoundingClientRect().left,
+      e.clientY - canvas.getBoundingClientRect().top
+    );
+    if (w) {
+      w.flash = 1;
+      const url = `/hot-news?keyword=${encodeURIComponent(w.text)}`;
+      showToast(`🔗 ${w.text} → 查看相关新闻`);
+      // Navigate after brief visual feedback
+      setTimeout(() => { window.location.href = url; }, 300);
+    }
+  });
+
+  canvas.addEventListener('dblclick', () => {
+    words.forEach(w => {
+      w.x = 60 + Math.random() * (W - 120);
+      w.y = 60 + Math.random() * (H - 120);
+      w.vx = (Math.random() - 0.5) * 8;
+      w.vy = (Math.random() - 0.5) * 8;
+      w.hovered = false;
+    });
+    showToast('已打散 · 词云重新聚合中');
+  });
+
+  function showToast(msg) {
+    toast.textContent = msg;
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), 2000);
+  }
+
+  // ── Render loop ──
+  function tick() {
+    ctx.clearRect(0, 0, W, H);
+
+    // Background
+    ctx.fillStyle = COLOR_BG;
+    ctx.fillRect(0, 0, W, H);
+
+    // Subtle dot grid
+    ctx.fillStyle = 'rgba(0,0,0,0.025)';
+    const gridSpacing = 36;
+    for (let x = gridSpacing; x < W; x += gridSpacing) {
+      for (let y = gridSpacing; y < H; y += gridSpacing) {
+        ctx.beginPath();
+        ctx.arc(x, y, 0.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // Update & draw words
+    for (const w of words) {
+      w.hovered = (w === hoveredWord);
+
+      if (mouse.active) {
+        const dx = w.x - mouse.x, dy = w.y - mouse.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+
+        if (w.hovered) {
+          // === NEAR ZONE: rapid stop for click ===
+          w.vx *= 0.4;
+          w.vy *= 0.4;
+        } else if (dist < FAR) {
+          // === MID ZONE: gentle slowdown + weak repulsion ===
+          const t = dist / FAR; // 0→1
+          const force = t * 0.9;
+          w.vx += (dx / dist) * force * 0.25;
+          w.vy += (dy / dist) * force * 0.25;
+          w.vx *= 0.98;
+          w.vy *= 0.98;
+        } else {
+          // === FAR ZONE: light repulsion ===
+          const force = Math.min(300 / (dist * dist), 1.5);
+          w.vx += (dx / dist) * force * 0.25;
+          w.vy += (dy / dist) * force * 0.25;
+        }
+      }
+
+      // Boundary bounce (soft)
+      const pad = w.size * 1.2;
+      if (w.x < pad) { w.x = pad; w.vx = Math.abs(w.vx) * 0.3; }
+      if (w.x > W - pad) { w.x = W - pad; w.vx = -Math.abs(w.vx) * 0.3; }
+      if (w.y < pad) { w.y = pad; w.vy = Math.abs(w.vy) * 0.3; }
+      if (w.y > H - pad) { w.y = H - pad; w.vy = -Math.abs(w.vy) * 0.3; }
+
+      // Damping
+      w.vx *= 0.995;
+      w.vy *= 0.995;
+
+      // Drift when idle
+      if (!mouse.active) {
+        if (Math.abs(w.vx) < 0.06) w.vx += (Math.random() - 0.5) * 0.025;
+        if (Math.abs(w.vy) < 0.06) w.vy += (Math.random() - 0.5) * 0.025;
+      }
+
+      // Speed cap
+      const maxSpeed = 3;
+      const speed = Math.sqrt(w.vx * w.vx + w.vy * w.vy);
+      if (speed > maxSpeed) { w.vx *= maxSpeed / speed; w.vy *= maxSpeed / speed; }
+
+      w.x += w.vx;
+      w.y += w.vy;
+
+      // Flash decay
+      if (w.flash > 0) w.flash -= 0.04;
+
+      // Smooth size transition
+      const targetSize = w.hovered ? w.baseSize * 1.18 : w.baseSize;
+      w.size += (targetSize - w.size) * 0.18;
+
+      // ── Render word ──
+      const alpha = w.hovered ? 1 : 0.70 + (w.weight - minCnt) / (maxCnt - minCnt + 1) * 0.30;
+      // Subtle weight hierarchy: size carries the primary visual weight
+      const weightT = (w.weight - minCnt) / (maxCnt - minCnt + 1);
+      const fontWeight = weightT > 0.7 ? 500 : weightT > 0.4 ? 400 : 300;
+      ctx.font = `${fontWeight} ${w.size}px "Noto Sans SC", "Microsoft YaHei", sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      // Text fill — clean rendering, no shadow
+
+      // Hover: ring indicator
+      if (w.hovered) {
+        ctx.beginPath();
+        ctx.arc(w.x, w.y, w.size * 0.7, 0, Math.PI * 2);
+        ctx.strokeStyle = COLOR_ACCENT + '88';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([4, 4]);
+        ctx.lineDashOffset = performance.now() / 200;
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Flash ring
+        if (w.flash > 0) {
+          ctx.beginPath();
+          ctx.arc(w.x, w.y, w.size * 0.7 + (1 - w.flash) * 24, 0, Math.PI * 2);
+          ctx.strokeStyle = `${COLOR_ACCENT}${Math.round(w.flash * 180).toString(16).padStart(2, '0')}`;
+          ctx.lineWidth = 3;
+          ctx.stroke();
+        }
+      }
+
+      // Text fill
+      ctx.fillStyle = heatColor(w.weight).replace('hsl', 'hsla').replace(')', `,${alpha})`);
+      ctx.fillText(w.text, w.x, w.y);
+    }
+
+    // Empty state
+    if (words.length === 0) {
+      ctx.font = '14px "Noto Sans SC", sans-serif';
+      ctx.fillStyle = '#999';
+      ctx.textAlign = 'center';
+      ctx.fillText('暂无关键词数据', W / 2, H / 2);
+    }
+
+    requestAnimationFrame(tick);
+  }
+
+  // ── Resize + Boot ──
+  let booted = false;
+
+  function resize() {
+    const rect = widget.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    if (rect.width < 50 || rect.height < 50) return false;
+    W = rect.width;
+    H = rect.height;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return true;
+  }
+
+  function boot() {
+    if (booted) return;
+    if (!resize()) return; // retry on next call
+    booted = true;
+    initWords();
+    tick();
+  }
+
+  // ResizeObserver for future resizes
+  new ResizeObserver(() => { resize(); }).observe(widget);
+
+  // Boot: DOM ready + rAF for layout
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => requestAnimationFrame(boot));
+  } else {
+    requestAnimationFrame(boot);
+  }
+  // Fallback safety
+  setTimeout(() => { if (!booted) boot(); }, 500);
+  setTimeout(() => { if (!booted) boot(); }, 2000);
+})();
+</script>

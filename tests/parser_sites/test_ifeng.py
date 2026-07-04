@@ -56,6 +56,17 @@ class TestIfengParserPreprocess:
         assert 'index_copyRight_' not in result
         assert '正文内容' in result
 
+    def test_removes_meta_keywords(self):
+        """_preprocess should strip <meta name="keywords"> for Jieba fallback."""
+        html = (
+            '<html><head>'
+            '<meta name="keywords" content="凤凰网,财经,股票,投资,金融,科技">'
+            '</head><body><div id="article"><p>正文内容 here</p></div></body></html>'
+        )
+        parser = IfengParser()
+        result = parser._preprocess(html, "")
+        assert 'name="keywords"' not in result
+
     def test_returns_html_unchanged_when_no_ifeng_noise(self):
         html = '<html><body><div><p>普通内容</p></div></body></html>'
         parser = IfengParser()

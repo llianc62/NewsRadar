@@ -132,7 +132,7 @@ class TestGetHighImpactCount:
         db.get_high_impact_count(date_from="2026-06-19", date_to="2026-06-21")
         sql, _ = capture_sql(mock_cursor)
         assert "CURRENT_DATE" not in sql
-        assert "created_at >= %s::date" in sql
+        assert "COALESCE(crawled_at, created_at) >= %s::date" in sql
 
     def test_no_current_date_with_date_from_only(self, db, mock_cursor):
         """只传 date_from 也禁用 CURRENT_DATE。"""

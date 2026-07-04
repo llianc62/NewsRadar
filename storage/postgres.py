@@ -39,7 +39,7 @@ _timezone_offset: str = "+08:00"
 
 _COLUMNS = """title, source_id, source_name, source_type,
         tier, priority, url, mobile_url, rank,
-        guid, published_at, summary, author,
+        guid, published_at, crawled_at, summary, author,
         content, category, tags,
         crawled_from,
         ranks, heat_score,
@@ -295,20 +295,6 @@ class PostgreSQL:
                     conn.commit()
                     print("[DB] Migration complete: ranks column converted to JSONB.")
 
-                # Migration 005: drop crawled_at column (redundant with updated_at)
-                cur.execute(
-                    """SELECT EXISTS (
-                        SELECT FROM information_schema.columns
-                        WHERE table_name = 'news_articles'
-                          AND column_name = 'crawled_at'
-                    )"""
-                )
-                if cur.fetchone()[0]:
-                    print("[DB] Migrating: dropping crawled_at column...")
-                    cur.execute("""ALTER TABLE news_articles DROP COLUMN crawled_at""")
-                    conn.commit()
-                    print("[DB] Migration complete: crawled_at column dropped.")
-
                 # Migration 006: change hotlist dedup from (source_id, url)
                 # to (url) only, so same article from different source_ids
                 # of the same provider is not duplicated.
@@ -329,6 +315,54 @@ class PostgreSQL:
                     )
                     conn.commit()
                     print("[DB] Migration complete: idx_dedup_hotlist rebuilt on (url).")
+
+                # Migration 007: add crawled_at column for original crawl timestamp
+                cur.execute(
+                    """SELECT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'news_articles'
+                          AND column_name = 'crawled_at'
+                    )"""
+                )
+                if not cur.fetchone()[0]:
+                    print("[DB] Migrating: adding crawled_at column...")
+                    cur.execute(
+                        """ALTER TABLE news_articles
+                           ADD COLUMN crawled_at TIMESTAMPTZ DEFAULT NULL"""
+                    )
+                    conn.commit()
+                    print("[DB] Migration complete: crawled_at column added.")
+
+                # Migration 008: create news_images table if missing
+                # (old schemas may have news_articles but not news_images)
+                cur.execute(
+                    """SELECT EXISTS (
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_schema = 'public'
+                          AND table_name = 'news_images'
+                    )"""
+                )
+                if not cur.fetchone()[0]:
+                    print("[DB] Migrating: creating news_images table...")
+                    cur.execute(
+                        """CREATE TABLE IF NOT EXISTS news_images (
+                            id           BIGSERIAL PRIMARY KEY,
+                            article_id   BIGINT NOT NULL REFERENCES news_articles(id) ON DELETE CASCADE,
+                            image_url    TEXT NOT NULL,
+                            original_url TEXT DEFAULT '',
+                            width        INTEGER DEFAULT NULL,
+                            height       INTEGER DEFAULT NULL,
+                            file_size    INTEGER DEFAULT NULL,
+                            sort_order   SMALLINT DEFAULT 0,
+                            created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                        )"""
+                    )
+                    cur.execute(
+                        """CREATE INDEX IF NOT EXISTS idx_images_article
+                           ON news_images (article_id)"""
+                    )
+                    conn.commit()
+                    print("[DB] Migration complete: news_images table created.")
 
         finally:
             self._pool.putconn(conn)
@@ -474,8 +508,9 @@ class PostgreSQL:
         priority: int,
         crawled_from: str,
     ) -> Tuple:
-        """Convert a NewsItem into a 20-element tuple for batch INSERT."""
-        ts_pub = _to_timestamptz(item.published_at, None)
+        """Convert a NewsItem into a 21-element tuple for batch INSERT."""
+        ts_published = _to_timestamptz(item.published_at, None)
+        ts_crawled = _to_timestamptz(item.crawled_at, None)
 
         return (
             item.title,
@@ -488,7 +523,8 @@ class PostgreSQL:
             item.mobile_url,
             item.rank,
             item.guid,
-            ts_pub,
+            ts_published,
+            ts_crawled,
             item.summary,
             item.author,
             item.content,
@@ -650,12 +686,12 @@ class PostgreSQL:
                     " @@ plainto_tsquery('simple', %s)"
                 )
                 params.append(search)
-        # Date filtering: created_at within [date_from, date_to] inclusive full days
+        # Date filtering: crawled_at within [date_from, date_to] inclusive full days
         if date_from is not None:
-            conditions.append("created_at >= %s::date")
+            conditions.append("COALESCE(crawled_at, created_at) >= %s::date")
             params.append(date_from)
         if date_to is not None:
-            conditions.append("created_at < %s::date + interval '1 day'")
+            conditions.append("COALESCE(crawled_at, created_at) < %s::date + interval '1 day'")
             params.append(date_to)
 
         where = " AND ".join(conditions)
@@ -732,10 +768,10 @@ class PostgreSQL:
                 )
                 params.append(search)
         if date_from is not None:
-            conditions.append("created_at >= %s::date")
+            conditions.append("COALESCE(crawled_at, created_at) >= %s::date")
             params.append(date_from)
         if date_to is not None:
-            conditions.append("created_at < %s::date + interval '1 day'")
+            conditions.append("COALESCE(crawled_at, created_at) < %s::date + interval '1 day'")
             params.append(date_to)
 
         where = " AND ".join(conditions)
@@ -786,10 +822,10 @@ class PostgreSQL:
                 )
                 params.append(search)
         if date_from is not None:
-            conditions.append("created_at >= %s::date")
+            conditions.append("COALESCE(crawled_at, created_at) >= %s::date")
             params.append(date_from)
         if date_to is not None:
-            conditions.append("created_at < %s::date + interval '1 day'")
+            conditions.append("COALESCE(crawled_at, created_at) < %s::date + interval '1 day'")
             params.append(date_to)
 
         where = " AND ".join(conditions)
@@ -843,10 +879,10 @@ class PostgreSQL:
                 )
                 params.append(search)
         if date_from is not None:
-            conditions.append("created_at >= %s::date")
+            conditions.append("COALESCE(crawled_at, created_at) >= %s::date")
             params.append(date_from)
         if date_to is not None:
-            conditions.append("created_at < %s::date + interval '1 day'")
+            conditions.append("COALESCE(crawled_at, created_at) < %s::date + interval '1 day'")
             params.append(date_to)
 
         where = " AND ".join(conditions)
@@ -903,14 +939,14 @@ class PostgreSQL:
                 params.append(search)
         # Use date parameters instead of hardcoded CURRENT_DATE
         if date_from is not None:
-            conditions.append("created_at >= %s::date")
+            conditions.append("COALESCE(crawled_at, created_at) >= %s::date")
             params.append(date_from)
         if date_to is not None:
-            conditions.append("created_at < %s::date + interval '1 day'")
+            conditions.append("COALESCE(crawled_at, created_at) < %s::date + interval '1 day'")
             params.append(date_to)
         # Fall back to today when no date params given (backward compatible)
         if date_from is None and date_to is None:
-            conditions.append("created_at >= CURRENT_DATE")
+            conditions.append("COALESCE(crawled_at, created_at) >= CURRENT_DATE")
 
         where = " AND ".join(conditions)
 
@@ -923,7 +959,7 @@ class PostgreSQL:
                 return cur.fetchone()[0]
 
     def get_latest_cloud_sync_date(self):
-        """Return the latest ``updated_at`` timestamp for cloud-synced
+        """Return the latest ``created_at`` timestamp for cloud-synced
         records, or None if no cloud records exist.
 
         Used by :meth:`Crawler.sync_from_cloud` to decide which cloud
@@ -932,7 +968,7 @@ class PostgreSQL:
         with self.get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """SELECT MAX(updated_at)
+                    """SELECT MAX(created_at)
                        FROM news_articles
                        WHERE crawled_from = 'cloud'"""
                 )
@@ -964,10 +1000,10 @@ class PostgreSQL:
         conditions = ["(confidence IS NULL OR confidence >= 20)"]
         params: list = []
         if date_from:
-            conditions.append("created_at >= %s::date")
+            conditions.append("COALESCE(crawled_at, created_at) >= %s::date")
             params.append(date_from)
         if date_to:
-            conditions.append("created_at < %s::date + interval '1 day'")
+            conditions.append("COALESCE(crawled_at, created_at) < %s::date + interval '1 day'")
             params.append(date_to)
         if search is not None:
             if _contains_cjk(search):
@@ -994,8 +1030,8 @@ class PostgreSQL:
                          COUNT(*) FILTER (WHERE tier = 3) AS t3_count,
                          COUNT(*) FILTER (WHERE tier = 4) AS t4_count,
                          COUNT(*) AS total_count,
-                         COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE
-                                          AND created_at < CURRENT_DATE + interval '1 day')
+                         COUNT(*) FILTER (WHERE COALESCE(crawled_at, created_at) >= CURRENT_DATE
+                                          AND COALESCE(crawled_at, created_at) < CURRENT_DATE + interval '1 day')
                            AS today_count
                        FROM news_articles{where_clause}""",
                     params,

@@ -610,6 +610,11 @@ class Crawler:
             return False
 
         item["content"] = result["markdown"]
+        # 用 parser 从 HTML 提取的 title 覆盖 RSS/hotlist 的原始 title。
+        # RSS feed 可能因编码问题产生乱码标题（无 charset header 时
+        # requests 默认按 Latin-1 解码），HTML 页面提取的标题更可靠。
+        if result.get("title"):
+            item["title"] = result["title"]
         item["author"] = result.get("author", "")
         item["published_at"] = result.get("published_at", "")
         item["summary"] = result.get("summary", "")
@@ -1399,6 +1404,7 @@ class Crawler:
                 heat_score=row.get("heat_score") or 0,
                 guid=row.get("guid", ""),
                 published_at=row.get("published_at") or format_datetime_now(),
+                crawled_at=row.get("created_at", ""),
                 summary=row.get("summary", ""),
                 content=row.get("content", ""),
                 author=row.get("author", ""),

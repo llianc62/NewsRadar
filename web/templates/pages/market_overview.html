@@ -1,19 +1,51 @@
 {% extends "base.html" %}
 {% block title %}NewsRadar · 市场概览{% endblock %}
 
+{% block head %}
+<!-- Word Cloud: Noto Sans SC for Canvas text rendering -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+{% endblock %}
+
 {% block content %}
 <div class="app-main">
 <div class="page-simple">
 
 <!-- Index Cards Row -->
-<div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px;">
+<div style="display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 16px;">
   {% for card in index_cards %}
-  <div style="background: var(--surface); border-radius: var(--radius); border: 1px solid var(--border); padding: 16px 20px;">
-    <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">{{ card['name'] }}</div>
-    <div style="font-family: 'JetBrains Mono', monospace; font-size: 19px; font-weight: 700; color: var(--text);">{{ card['value'] }}</div>
+  {% set is_up = card['change'] is not none and card['change'] > 0 %}
+  {% set is_down = card['change'] is not none and card['change'] < 0 %}
+  <div style="
+    background: var(--surface);
+    border-radius: var(--radius);
+    border: 1px solid var(--border);
+    padding: 16px 20px;
+    transition: all 0.2s ease;
+    cursor: default;
+    position: relative;
+    overflow: hidden;
+  "
+  onmouseenter="this.style.transform='translateY(-2px)';this.style.boxShadow='0 4px 16px rgba(0,0,0,0.06)';this.style.borderColor='var(--border)';"
+  onmouseleave="this.style.transform='';this.style.boxShadow='';this.style.borderColor='';"
+  >
+    <!-- Subtle top accent stripe -->
+    <div style="
+      position: absolute; top: 0; left: 0; right: 0; height: 3px;
+      background: {{ '#2d7a3e' if is_down else '#c93a3a' if is_up else 'var(--accent)' }};
+      border-radius: 3px 3px 0 0;
+    "></div>
+    <div style="font-size: 11px; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; letter-spacing: 0.02em; text-transform: uppercase;">{{ card['name'] }}</div>
+    <div style="font-family: 'JetBrains Mono', monospace; font-size: 20px; font-weight: 600; color: var(--text); line-height: 1.2;">{{ card['value'] }}</div>
     {% if card['change'] is not none %}
-    <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; margin-top: 4px; color: var({{ '--red' if card['change'] > 0 else '--green' }});">
-      {{ '+' if card['change'] > 0 else '' }}{{ card['change'] }}%
+    <div style="
+      font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 600;
+      margin-top: 6px; display: flex; align-items: center; gap: 2px;
+      color: {{ '#2d7a3e' if is_down else '#c93a3a' if is_up else 'var(--text-muted)' }};
+    ">
+      <span style="font-size: 10px;">{{ '▼' if is_down else '▲' if is_up else '' }}</span>
+      {{ '+' if is_up else '' }}{{ card['change'] }}%
     </div>
     {% endif %}
   </div>
@@ -22,21 +54,37 @@
 
 <!-- Bottom: Charts + Hot Sources -->
 <div style="display: flex; gap: 16px; flex: 1; min-height: 0;">
-  <!-- Charts Area (placeholder) -->
-  <div style="flex: 2; background: var(--surface); border-radius: var(--radius); border: 1px solid var(--border); padding: 24px; display: flex; align-items: center; justify-content: center;">
-    <div style="text-align: center; color: var(--text-muted);">
-      <div style="font-size: 48px; margin-bottom: 8px;">📈</div>
-      <div style="font-size: 14px;">图表区 — 后续集成 ECharts</div>
-    </div>
+  <!-- Charts Area: 3D Word Cloud -->
+  <div style="flex: 2; background: var(--surface); border-radius: var(--radius); border: 1px solid var(--border); overflow: hidden; position: relative; min-height: 400px;">
+    {% include "components/wordcloud.html" %}
   </div>
 
   <!-- Hot Sources Sidebar -->
-  <div style="flex: 1; background: var(--surface); border-radius: var(--radius); border: 1px solid var(--border); padding: 16px;">
-    <div style="font-size: 13px; font-weight: 600; margin-bottom: 12px; color: var(--text);">热门来源</div>
+  <div style="flex: 1; background: var(--surface); border-radius: var(--radius); border: 1px solid var(--border); padding: 18px 20px; overflow-y: auto;">
+    <div style="font-size: 13px; font-weight: 600; margin-bottom: 14px; color: var(--text); display: flex; align-items: center; gap: 6px;">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+      热门来源
+    </div>
     {% for source in hot_sources %}
-    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border-light); font-size: 13px;">
-      <span style="color: var(--text);">{{ source['name'] }}</span>
-      <span style="font-family: 'JetBrains Mono', monospace; color: var(--text-muted);">{{ source['count'] }} 篇</span>
+    <div style="
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 9px 10px; border-radius: var(--radius-sm);
+      transition: background 0.15s ease; cursor: default;
+      font-size: 13px;
+    "
+    onmouseenter="this.style.background='var(--bg-warm)'"
+    onmouseleave="this.style.background=''"
+    >
+      <div style="display: flex; align-items: center; gap: 10px;">
+        <span style="
+          font-family: 'JetBrains Mono', monospace;
+          font-size: 10px; font-weight: 600;
+          color: {{ '#f25f0f' if loop.index == 1 else '#e6a817' if loop.index == 2 else '#c9a87c' if loop.index == 3 else 'var(--text-muted)' }};
+          min-width: 14px; text-align: right;
+        ">{{ loop.index }}</span>
+        <span style="color: var(--text); font-weight: 500;">{{ source['name'] }}</span>
+      </div>
+      <span style="font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 500; color: var(--text-muted);">{{ source['count'] }} 篇</span>
     </div>
     {% endfor %}
   </div>

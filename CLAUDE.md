@@ -62,7 +62,7 @@ python -m cli grab-one "https://example.com" --output-style markdown
 python -m cli grab-one "https://example.com" --output-style postgresql --images
 
 # Database maintenance
-python -m cli db clear --before 2026-06-01 --force
+python -m cli db clear --start "2026-07-02" --end "2026-07-04" --force
 python -m cli db clear --all --force
 
 ```

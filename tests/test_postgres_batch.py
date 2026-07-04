@@ -39,7 +39,7 @@ class TestBuildRow:
             priority=5,
             crawled_from="local",
         )
-        assert len(row) == 20
+        assert len(row) == 21
 
     def test_field_positions(self):
         """Verify key field positions in the tuple."""
@@ -53,24 +53,24 @@ class TestBuildRow:
         assert row[5] == 10                 # priority
         assert row[6] == item.url           # url
         assert row[8] == 1                  # rank
-        assert row[14] == "tech"            # category
-        assert row[15] == ["AI", "ML"]      # tags
-        assert row[16] == "local"           # crawled_from
-        assert row[17] == '[[1, 20]]'       # ranks (jsonb → json.dumps)
+        assert row[15] == "tech"            # category
+        assert row[16] == ["AI", "ML"]      # tags
+        assert row[17] == "local"           # crawled_from
+        assert row[18] == '[[1, 20]]'       # ranks (jsonb → json.dumps)
 
     def test_none_category_becomes_none(self):
         row = PostgreSQL._build_row(
             _make_test_item(category=None),
             "src1", 4, 0, "local",
         )
-        assert row[14] is None
+        assert row[15] is None
 
     def test_empty_tags_becomes_empty_list(self):
         row = PostgreSQL._build_row(
             _make_test_item(tags=None),
             "src1", 4, 0, "local",
         )
-        assert row[15] == []
+        assert row[16] == []
 
     def test_none_published_at(self):
         row = PostgreSQL._build_row(

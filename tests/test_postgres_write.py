@@ -100,7 +100,7 @@ class TestSaveNewsData:
             mock_batch.return_value = (1, 0)
             db.save_news_data(nd, crawled_from="cloud")
             rows = mock_batch.call_args[0][2]
-            assert rows[0][16] == "cloud"  # crawled_from (index 16)
+            assert rows[0][17] == "cloud"  # crawled_from (index 17)
 
     def test_mixed_types_in_one_batch(self, db):
         """混合 hotlist + rss + manual + fallback 各行其道。"""

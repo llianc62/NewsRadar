@@ -1,0 +1,606 @@
+<!--
+  NewsRadar 3D Word Cloud — Jinja2 Component
+  Include in a container with: position: relative; overflow: hidden; min-height: 400px;
+  Requires in page head block: Noto Sans SC font + Three.js importmap
+-->
+<style>
+/* ═══════════════════════════════════════════════════════════════════
+   WordCloud Widget — Scoped under .wordcloud-widget
+   Uses parent page :root tokens from app.css
+   ═══════════════════════════════════════════════════════════════════ */
+
+.wordcloud-widget {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: #f8f7f4;
+  font-family: 'DM Sans', 'Noto Sans SC', -apple-system, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* ── Three.js Canvas Layer ── */
+.wordcloud-widget .wc-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  cursor: grab;
+}
+.wordcloud-widget .wc-canvas:active { cursor: grabbing; }
+.wordcloud-widget .wc-canvas.pointer { cursor: pointer; }
+
+/* ── Subtle Vignette ── */
+.wordcloud-widget .wc-vignette {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at center, transparent 58%, rgba(248,247,244,0.45) 100%),
+    radial-gradient(ellipse at 30% 20%, rgba(242,95,15,0.015) 0%, transparent 50%),
+    radial-gradient(ellipse at 70% 80%, rgba(59,130,246,0.01) 0%, transparent 50%);
+}
+
+/* ── Control Panel (right side, vertical) ── */
+.wordcloud-widget .wc-controls {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wordcloud-widget .wc-ctrl-btn {
+  width: 32px; height: 32px;
+  border-radius: var(--radius, 10px);
+  border: 1px solid var(--border-light, #f0f0f0);
+  background: var(--bg-surface, #ffffff);
+  color: var(--text-muted, #999999);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--duration-fast, 150ms) var(--ease-out-expo);
+  box-shadow: var(--shadow-xs, 0 1px 2px rgba(0,0,0,0.03));
+  position: relative;
+}
+.wordcloud-widget .wc-ctrl-btn:hover {
+  background: var(--bg-hover, #fafafa);
+  border-color: var(--accent, #f25f0f);
+  color: var(--accent, #f25f0f);
+  box-shadow: var(--shadow, 0 4px 12px rgba(0,0,0,0.04));
+}
+.wordcloud-widget .wc-ctrl-btn.active {
+  background: var(--accent, #f25f0f);
+  border-color: var(--accent, #f25f0f);
+  color: #fff;
+  box-shadow: 0 2px 12px var(--accent-glow, rgba(242,95,15,0.12));
+}
+.wordcloud-widget .wc-ctrl-btn svg { width: 14px; height: 14px; }
+
+/* Tooltip on hover */
+.wordcloud-widget .wc-ctrl-tooltip {
+  position: absolute;
+  right: 40px;
+  background: var(--bg-surface, #ffffff);
+  border: 1px solid var(--border, #e5e5e5);
+  color: var(--text, #1a1a1a);
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm, 6px);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(6px);
+  transition: all var(--duration-fast, 150ms) var(--ease-out-expo);
+  box-shadow: var(--shadow, 0 4px 12px rgba(0,0,0,0.04));
+}
+.wordcloud-widget .wc-ctrl-btn:hover .wc-ctrl-tooltip { opacity: 1; transform: translateX(0); }
+
+/* ── Word Info Tooltip (follows cursor globally) ── */
+.wordcloud-widget .wc-tooltip {
+  position: fixed;
+  z-index: 9999;
+  pointer-events: none;
+  opacity: 0;
+  padding: 6px 14px;
+  border-radius: var(--radius, 10px);
+  background: var(--bg-surface, #ffffff);
+  border: 1px solid var(--border, #e5e5e5);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text, #1a1a1a);
+  box-shadow: var(--shadow-md, 0 8px 24px rgba(0,0,0,0.06));
+  transform: translate(-50%, -140%);
+  transition: opacity var(--duration-fast, 150ms) ease;
+}
+.wordcloud-widget .wc-tooltip.visible { opacity: 1; }
+
+/* ── Responsive ── */
+@media (max-width: 768px) {
+  .wordcloud-widget .wc-controls { right: 4px; gap: 4px; }
+  .wordcloud-widget .wc-ctrl-btn { width: 28px; height: 28px; }
+  .wordcloud-widget .wc-ctrl-btn svg { width: 12px; height: 12px; }
+}
+
+/* ── Reduced Motion ── */
+@media (prefers-reduced-motion: reduce) {
+  .wordcloud-widget .wc-ctrl-btn,
+  .wordcloud-widget .wc-tooltip { transition: none; }
+}
+</style>
+
+<div class="wordcloud-widget" id="wordcloud-widget">
+  <canvas class="wc-canvas" id="wc-canvas"></canvas>
+  <div class="wc-vignette"></div>
+
+  <div class="wc-controls">
+    <button class="wc-ctrl-btn active" id="wc-btn-auto-rotate" title="自动旋转" aria-label="自动旋转">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a10 10 0 0 1 7.07 17.07"/><path d="M19 20l-2-6-6 2"/></svg>
+      <span class="wc-ctrl-tooltip">自动旋转</span>
+    </button>
+    <button class="wc-ctrl-btn" id="wc-btn-speed-up" title="加速旋转" aria-label="加速旋转">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+      <span class="wc-ctrl-tooltip">加速旋转</span>
+    </button>
+    <button class="wc-ctrl-btn" id="wc-btn-speed-down" title="减速旋转" aria-label="减速旋转">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="8 12 12 8 16 12"/><line x1="12" y1="16" x2="12" y2="8"/></svg>
+      <span class="wc-ctrl-tooltip">减速旋转</span>
+    </button>
+    <button class="wc-ctrl-btn" id="wc-btn-reset" title="重置视角" aria-label="重置视角">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"/><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>
+      <span class="wc-ctrl-tooltip">重置视角</span>
+    </button>
+  </div>
+
+  <div class="wc-tooltip" id="wc-tooltip">
+    <span id="wc-tooltip-word"></span>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ── Keywords from server (today's top tags) ──
+const RAW_KEYWORDS = {{ keywords | tojson }};
+const SERVER_KEYWORDS = (RAW_KEYWORDS || []).map(k => ({ text: k.tag, weight: k.cnt }));
+
+// ── Fallback (empty state) ──
+const FALLBACK_KEYWORDS = [
+  { text: '暂无热点', weight: 50 },
+];
+
+// ── Normalize weights to visual range (non-linear for contrast) ──
+function normalizeKeywords(keywords) {
+  if (keywords.length === 0) return FALLBACK_KEYWORDS;
+  const weights = keywords.map(k => k.weight);
+  const minW = Math.min(...weights);
+  const maxW = Math.max(...weights);
+  if (maxW === minW) return keywords.map(k => ({ ...k, weight: 50 }));
+  // Linear normalize → then apply power curve to amplify differences
+  return keywords.map(k => {
+    const linear = (k.weight - minW) / (maxW - minW); // 0..1
+    const boosted = Math.pow(linear, 1.8); // steeper at low end, top stays top
+    return { ...k, weight: 5 + boosted * 93 };
+  });
+}
+
+const KEYWORDS = normalizeKeywords(SERVER_KEYWORDS.length > 0 ? SERVER_KEYWORDS : FALLBACK_KEYWORDS);
+
+// ── Color: rank-based gradient — vibrant accent → deep navy
+//   Top words pop with warm accent tones; lower words fade gracefully into
+//   readable dark-slate, avoiding muddy browns.
+function heatColor(rank, total) {
+  const t = rank / Math.max(total - 1, 1); // 0=top .. 1=bottom
+  if (rank < 5) {
+    // Top 5: vibrant warm red → accent orange (high saturation, luminous)
+    const r = rank / Math.max(4, 1);
+    const stops = [
+      { h: 10, s: 92, l: 54 },  // rank 0: vivid coral-red
+      { h: 17, s: 90, l: 50 },  // rank 2: warm red-orange
+      { h: 22, s: 88, l: 47 },  // rank 4: deep accent orange
+    ];
+    let lo = stops[0], hi = stops[stops.length - 1];
+    let tLo = 0, tHi = 1;
+    for (let i = 0; i < stops.length - 1; i++) {
+      const loFrac = i / (stops.length - 1), hiFrac = (i + 1) / (stops.length - 1);
+      if (r <= hiFrac) { hi = stops[i + 1]; lo = stops[i]; tHi = hiFrac; tLo = loFrac; break; }
+    }
+    const rr = (r - tLo) / (tHi - tLo);
+    return { h: lo.h + (hi.h - lo.h) * rr, s: lo.s + (hi.s - lo.s) * rr, l: lo.l + (hi.l - lo.l) * rr };
+  }
+  // Rank 5+: warm amber → deep navy-slate (clean, modern, readable)
+  const u = Math.max(0, (t - 5 / Math.max(total - 1, 1)) / (1 - 5 / Math.max(total - 1, 1)));
+  const stops = [
+    { h: 26, s: 82, l: 48 },  // u=0.00: warm amber
+    { h: 30, s: 60, l: 43 },  // u=0.30: muted bronze
+    { h: 34, s: 35, l: 38 },  // u=0.60: warm slate
+    { h: 220, s: 8, l: 32 },  // u=1.00: cool deep navy-gray
+  ];
+  const bp = [0, 0.30, 0.60, 1.0];
+  let lo = stops[0], hi = stops[stops.length - 1];
+  let tLo = 0, tHi = 1;
+  for (let i = 0; i < bp.length - 1; i++) {
+    if (u <= bp[i + 1]) { hi = stops[i + 1]; lo = stops[i]; tHi = bp[i + 1]; tLo = bp[i]; break; }
+  }
+  const rr = (u - tLo) / (tHi - tLo);
+  return { h: lo.h + (hi.h - lo.h) * rr, s: lo.s + (hi.s - lo.s) * rr, l: lo.l + (hi.l - lo.l) * rr };
+}
+
+// ── State ──
+const widget = document.getElementById('wordcloud-widget');
+const canvas = document.getElementById('wc-canvas');
+let autoRotate = true;
+let rotationSpeed = 0.3;
+let targetRotationY = 0, targetRotationX = 0;
+let sphereRadius = 5.5;
+let wordSprites = [];
+let raycaster, mouse;
+let hoveredWord = null, focusedWord = null;
+let cameraTarget = new THREE.Vector3(0, 0, 0);
+let cameraTargetSmooth = new THREE.Vector3(0, 0, 0);
+
+// ── Scene Setup ──
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setClearColor(0xf8f7f4, 1);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, 2, 0.5, 50);
+camera.position.set(0, 0.5, 12);
+camera.lookAt(0, 0, 0);
+
+raycaster = new THREE.Raycaster();
+raycaster.params.Points.threshold = 0.8;
+mouse = new THREE.Vector2();
+
+// ── Lighting ──
+scene.add(new THREE.AmbientLight(0xfffaf5, 3.2));
+const pl1 = new THREE.PointLight(0xf25f0f, 16, 25, 1.5);
+pl1.position.set(10, 5, 10); scene.add(pl1);
+const pl2 = new THREE.PointLight(0xe6a817, 10, 20, 1.5);
+pl2.position.set(-8, -3, -5); scene.add(pl2);
+const pl3 = new THREE.PointLight(0xf0f4ff, 22, 24, 1.5);
+pl3.position.set(0, 8, -8); scene.add(pl3);
+
+// ── Particles ──
+(function() {
+  const geo = new THREE.BufferGeometry();
+  const N = 500;
+  const pos = new Float32Array(N * 3);
+  const col = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(2 * Math.random() - 1);
+    const r = 16 + Math.random() * 20;
+    pos[i*3] = r * Math.sin(ph) * Math.cos(th);
+    pos[i*3+1] = r * Math.sin(ph) * Math.sin(th);
+    pos[i*3+2] = r * Math.cos(ph);
+    const c = new THREE.Color().setHSL(0.08 + Math.random() * 0.08, 0.4, 0.55 + Math.random() * 0.2);
+    col[i*3] = c.r; col[i*3+1] = c.g; col[i*3+2] = c.b;
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const mat = new THREE.PointsMaterial({ size: 0.018, vertexColors: true, blending: THREE.NormalBlending, depthWrite: false, transparent: true, opacity: 0.4 });
+  const pts = new THREE.Points(geo, mat);
+  pts.name = 'particles';
+  scene.add(pts);
+})();
+
+// ── Word Group ──
+const wordGroup = new THREE.Group();
+wordGroup.name = 'wordGroup';
+scene.add(wordGroup);
+
+// ── Create Word Sprite ──
+function createWordSprite(text, weight, rank, total) {
+  const t = (weight - 8) / 92;
+  const fontSize = 28 + t * 72;
+  // Vary font-weight by rank: top words bold, mid medium, small words regular
+  const fontWeight = rank < 5 ? 700 : rank < 15 ? 500 : 400;
+  const c2d = document.createElement('canvas');
+  const ctx = c2d.getContext('2d');
+  ctx.font = `${fontWeight} ${fontSize}px "Noto Sans SC", -apple-system, sans-serif`;
+  const tw = ctx.measureText(text).width;
+  const th = fontSize * 1.3;
+  const pad = fontSize * 0.6;
+  c2d.width = tw + pad * 2;
+  c2d.height = th + pad * 1.2;
+  ctx.font = `${fontWeight} ${fontSize}px "Noto Sans SC", -apple-system, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  const x = c2d.width/2, y = c2d.height/2;
+  const c = heatColor(rank, total);
+  // Softer, more refined glow — only for top-tier words
+  const glowAlpha = rank < 5 ? 0.35 : rank < 10 ? 0.18 : 0;
+  ctx.shadowColor = `hsla(${c.h}, ${c.s}%, ${c.l+20}%, ${glowAlpha})`;
+  ctx.shadowBlur = rank < 5 ? fontSize * 0.25 : 0;
+  ctx.fillStyle = `hsla(${c.h}, ${c.s}%, ${c.l+12}%, 0.92)`;
+  ctx.fillText(text, x, y);
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = `hsl(${c.h}, ${c.s}%, ${c.l}%)`;
+  ctx.fillText(text, x, y);
+  const tex = new THREE.CanvasTexture(c2d);
+  tex.minFilter = THREE.LinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, blending: THREE.NormalBlending, depthWrite: true, depthTest: true, transparent: true }));
+  const aspect = c2d.width / c2d.height;
+  const bs = 1.2 + t * 2.5;
+  sprite.scale.set(bs * aspect, bs, 1);
+  sprite.userData = { word: text, weight, baseScale: bs, aspect, isWord: true };
+  return sprite;
+}
+
+// ── Fibonacci Sphere ──
+function fibonacciSphere(n, r) {
+  const pts = [];
+  const phi = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < n; i++) {
+    const y = 1 - (i/(n-1))*2;
+    const ry = Math.sqrt(1 - y*y);
+    const th = phi * i;
+    pts.push({ x: Math.cos(th)*ry*r, y: y*r, z: Math.sin(th)*ry*r });
+  }
+  return pts;
+}
+
+// ── Build ──
+function buildWordCloud(keywords) {
+  while (wordGroup.children.length > 0) {
+    const c = wordGroup.children[0];
+    if (c.material && c.material.map) c.material.map.dispose();
+    if (c.material) c.material.dispose();
+    wordGroup.remove(c);
+  }
+  wordSprites = [];
+  const positions = fibonacciSphere(keywords.length, sphereRadius);
+  keywords.forEach((kw, i) => {
+    const s = createWordSprite(kw.text, kw.weight, i, keywords.length);
+    s.position.set(positions[i].x, positions[i].y, positions[i].z);
+    wordGroup.add(s);
+    wordSprites.push(s);
+  });
+}
+
+// ── Helpers ──
+function getCanvasNDC(event) {
+  const rect = canvas.getBoundingClientRect();
+  mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+}
+
+function highlightWord(sprite) {
+  sprite.material.opacity = 1;
+  const s = sprite.userData.baseScale;
+  sprite.scale.set(s * sprite.userData.aspect * 1.18, s * 1.18, 1);
+  sprite.material.emissive = new THREE.Color(0x331100);
+  sprite.material.emissiveIntensity = 0.3;
+}
+
+function resetWordStyle(sprite) {
+  sprite.material.opacity = 0.95;
+  const s = sprite.userData.baseScale;
+  sprite.scale.set(s * sprite.userData.aspect, s, 1);
+  sprite.material.emissive = new THREE.Color(0x000000);
+  sprite.material.emissiveIntensity = 0;
+}
+
+// ── Hover ──
+function updateHover(event) {
+  getCanvasNDC(event);
+  raycaster.setFromCamera(mouse, camera);
+  const intersects = raycaster.intersectObjects(wordSprites);
+  const tooltip = document.getElementById('wc-tooltip');
+  const tw = document.getElementById('wc-tooltip-word');
+  if (intersects.length > 0) {
+    const obj = intersects[0].object;
+    if (obj.userData && obj.userData.isWord) {
+      if (hoveredWord !== obj) {
+        if (hoveredWord) resetWordStyle(hoveredWord);
+        hoveredWord = obj;
+        highlightWord(obj);
+        canvas.classList.add('pointer');
+      }
+      tw.textContent = obj.userData.word;
+      tooltip.classList.add('visible');
+      tooltip.style.left = event.clientX + 'px';
+      tooltip.style.top = event.clientY + 'px';
+      return;
+    }
+  }
+  if (hoveredWord) { resetWordStyle(hoveredWord); hoveredWord = null; canvas.classList.remove('pointer'); }
+  tooltip.classList.remove('visible');
+}
+
+// ── Click focus ──
+function onClick(event) {
+  getCanvasNDC(event);
+  raycaster.setFromCamera(mouse, camera);
+  const intersects = raycaster.intersectObjects(wordSprites);
+  if (intersects.length > 0) {
+    const obj = intersects[0].object;
+    if (obj.userData && obj.userData.isWord) {
+      if (focusedWord && focusedWord !== obj) resetWordStyle(focusedWord);
+      if (focusedWord === obj) { resetWordStyle(obj); focusedWord = null; cameraTarget.set(0,0,0); }
+      else { focusedWord = obj; highlightWord(obj); const wp = new THREE.Vector3(); obj.getWorldPosition(wp); cameraTarget.copy(wp).multiplyScalar(0.5); }
+    }
+  } else {
+    if (focusedWord) { resetWordStyle(focusedWord); focusedWord = null; }
+    cameraTarget.set(0,0,0);
+  }
+}
+
+// ── Depth Opacity ──
+function updateDepthOpacity() {
+  const cp = camera.position.clone();
+  wordSprites.forEach(s => {
+    if (s === focusedWord || s === hoveredWord) return;
+    const wp = new THREE.Vector3(); s.getWorldPosition(wp);
+    const dp = wp.clone().normalize().dot(cp.clone().normalize());
+    s.material.opacity = Math.max(0.18, THREE.MathUtils.lerp(0.22, 0.92, (dp+1)/2));
+  });
+}
+
+// ── Drag ──
+let isDragging = false;
+let prevMouse = { x:0, y:0 };
+let dragVelocityX = 0, dragVelocityY = 0;
+
+canvas.addEventListener('pointerdown', (e) => {
+  isDragging = true;
+  prevMouse.x = e.clientX; prevMouse.y = e.clientY;
+  dragVelocityX = 0; dragVelocityY = 0;
+});
+
+window.addEventListener('pointermove', (e) => {
+  updateHover(e);
+  if (isDragging) {
+    const dx = e.clientX - prevMouse.x, dy = e.clientY - prevMouse.y;
+    targetRotationY += dx * 0.005;
+    targetRotationX += dy * 0.005;
+    dragVelocityX = dx * 0.005; dragVelocityY = dy * 0.005;
+    prevMouse.x = e.clientX; prevMouse.y = e.clientY;
+  }
+});
+
+window.addEventListener('pointerup', (e) => {
+  if (Math.abs(e.clientX - prevMouse.x) < 3 && Math.abs(e.clientY - prevMouse.y) < 3) onClick(e);
+  isDragging = false;
+});
+
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  camera.position.z += e.deltaY * 0.01;
+  camera.position.z = THREE.MathUtils.clamp(camera.position.z, 6, 20);
+}, { passive: false });
+
+// Touch
+canvas.addEventListener('touchstart', (e) => {
+  if (e.touches.length === 1) {
+    isDragging = true;
+    prevMouse.x = e.touches[0].clientX; prevMouse.y = e.touches[0].clientY;
+    dragVelocityX = 0; dragVelocityY = 0;
+  }
+}, { passive: false });
+canvas.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  if (e.touches.length === 1 && isDragging) {
+    const dx = e.touches[0].clientX - prevMouse.x, dy = e.touches[0].clientY - prevMouse.y;
+    targetRotationY += dx * 0.005; targetRotationX += dy * 0.005;
+    dragVelocityX = dx * 0.005; dragVelocityY = dy * 0.005;
+    prevMouse.x = e.touches[0].clientX; prevMouse.y = e.touches[0].clientY;
+  }
+}, { passive: false });
+canvas.addEventListener('touchend', () => { isDragging = false; });
+
+// ── Controls ──
+document.getElementById('wc-btn-auto-rotate').addEventListener('click', function() {
+  autoRotate = !autoRotate;
+  this.classList.toggle('active', autoRotate);
+});
+document.getElementById('wc-btn-speed-up').addEventListener('click', () => { rotationSpeed = Math.min(3.0, rotationSpeed * 1.3); });
+document.getElementById('wc-btn-speed-down').addEventListener('click', () => { rotationSpeed = Math.max(0.05, rotationSpeed * 0.7); });
+document.getElementById('wc-btn-reset').addEventListener('click', () => {
+  targetRotationX = 0; targetRotationY = 0;
+  dragVelocityX = 0; dragVelocityY = 0;
+  cameraTarget.set(0,0,0);
+  camera.position.set(0, 0.5, 12);
+  if (focusedWord) { resetWordStyle(focusedWord); focusedWord = null; }
+});
+
+// ── Keyboard (only when mouse is over widget) ──
+widget.addEventListener('pointerenter', () => { widget._hasFocus = true; });
+widget.addEventListener('pointerleave', () => { widget._hasFocus = false; });
+window.addEventListener('keydown', (e) => {
+  if (!widget._hasFocus) return;
+  switch (e.key.toLowerCase()) {
+    case 'r':
+      autoRotate = !autoRotate;
+      document.getElementById('wc-btn-auto-rotate').classList.toggle('active', autoRotate);
+      break;
+    case 'f':
+      targetRotationX = 0; targetRotationY = 0; dragVelocityX = 0; dragVelocityY = 0;
+      cameraTarget.set(0,0,0); camera.position.set(0, 0.5, 12);
+      if (focusedWord) { resetWordStyle(focusedWord); focusedWord = null; }
+      break;
+    case 'escape':
+      if (focusedWord) { resetWordStyle(focusedWord); focusedWord = null; cameraTarget.set(0,0,0); }
+      break;
+  }
+});
+
+// ── Resize (container-based) ──
+function resize() {
+  const w = widget.clientWidth;
+  const h = widget.clientHeight;
+  if (w === 0 || h === 0) return;
+  renderer.setSize(w, h);
+  camera.aspect = w / Math.max(h, 1);
+  camera.updateProjectionMatrix();
+}
+const resizeObserver = new ResizeObserver(() => resize());
+resizeObserver.observe(widget);
+resize();
+
+// ── Animation ──
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.1);
+  if (autoRotate && !isDragging) {
+    targetRotationY += rotationSpeed * 0.2 * dt;
+    targetRotationX += rotationSpeed * 0.05 * dt * Math.sin(Date.now() * 0.0005);
+  }
+  if (!isDragging && !autoRotate) {
+    targetRotationY += dragVelocityX; targetRotationX += dragVelocityY;
+    dragVelocityX *= 0.95; dragVelocityY *= 0.95;
+    if (Math.abs(dragVelocityX) < 0.0001) dragVelocityX = 0;
+    if (Math.abs(dragVelocityY) < 0.0001) dragVelocityY = 0;
+  } else if (autoRotate) { dragVelocityX *= 0.9; dragVelocityY *= 0.9; }
+  wordGroup.rotation.y += (targetRotationY - wordGroup.rotation.y) * 3 * dt;
+  wordGroup.rotation.x += (targetRotationX - wordGroup.rotation.x) * 3 * dt;
+  cameraTargetSmooth.lerp(cameraTarget, 2 * dt);
+  camera.lookAt(cameraTargetSmooth);
+  const pts = scene.getObjectByName('particles');
+  if (pts) { pts.rotation.y += 0.01*dt; pts.rotation.x += 0.003*dt; }
+  updateDepthOpacity();
+  if (!isDragging && !focusedWord) camera.position.y = 0.5 + Math.sin(Date.now()*0.0003)*0.25;
+  renderer.render(scene, camera);
+}
+
+// ── Reduced Motion ──
+const mq = window.matchMedia('(prefers-reduced-motion: reduce)');
+if (mq.matches) { autoRotate = false; rotationSpeed = 0.05; document.getElementById('wc-btn-auto-rotate').classList.remove('active'); }
+mq.addEventListener('change', (e) => {
+  if (e.matches) { autoRotate = false; rotationSpeed = 0.05; document.getElementById('wc-btn-auto-rotate').classList.remove('active'); }
+});
+
+// ── Bootstrap ──
+buildWordCloud(KEYWORDS);
+
+// Initial focus: rotate sphere so top 1 keyword faces camera (screen center)
+if (wordSprites.length > 0) {
+  focusedWord = wordSprites[0];
+  highlightWord(focusedWord);
+  // Compute rotation to bring the word to the +z side (facing camera)
+  const wp = wordSprites[0].position; // local position within wordGroup
+  const rotY = -Math.atan2(wp.x, wp.z);
+  const xzLen = Math.sqrt(wp.x * wp.x + wp.z * wp.z);
+  const rotX = Math.atan2(wp.y, xzLen);
+  wordGroup.rotation.y = targetRotationY = rotY;
+  wordGroup.rotation.x = targetRotationX = rotX;
+  cameraTarget.set(0, 0, 0);
+  // Auto-rotate off initially so user sees the focused word
+  autoRotate = false;
+  document.getElementById('wc-btn-auto-rotate').classList.remove('active');
+}
+
+animate();
+</script>
