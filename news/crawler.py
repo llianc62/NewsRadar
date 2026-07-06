@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import threading
 import time
@@ -54,6 +55,16 @@ class StorageTarget(Enum):
 MAX_IMAGE_PROCESSOR_WORKERS = 20  # Limit for concurrent image downloads
 
 _WAF_DOMAINS: frozenset[str] = frozenset({"xueqiu.com", "huxiu.com", "juejin.cn"})
+
+# User-Agent pool for Playwright — rotated per request to reduce fingerprinting
+_PLAYWRIGHT_USER_AGENTS: list[str] = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+]
 
 
 class Crawler:
@@ -482,7 +493,9 @@ class Crawler:
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
+                    "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage",
+                    "--disable-gpu",
                     "--disable-features=IsolateOrigins,site-per-process",
                 ],
             ))
@@ -514,16 +527,33 @@ class Crawler:
 
         def _do():
             try:
+                user_agent = random.choice(_PLAYWRIGHT_USER_AGENTS)
                 context = browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (X11; Linux x86_64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/149.0.0.0 Safari/537.36"
-                    ),
+                    user_agent=user_agent,
                     viewport={"width": 1920, "height": 1080},
                     locale="zh-CN",
                 )
                 page = context.new_page()
+
+                # ── Request interception ────────────────────────────
+                # Block resource types that are irrelevant for content
+                # extraction: fonts, video/audio, websockets,
+                # stylesheets (rendered DOM still works), and manifests.
+                # Images are deliberately NOT blocked — we need them
+                # for article enrichment.
+                _BLOCKED_RESOURCE_TYPES: set[str] = {
+                    "font", "media", "websocket", "stylesheet", "manifest",
+                }
+
+                def _handle_route(route):
+                    rtype = route.request.resource_type
+                    if rtype in _BLOCKED_RESOURCE_TYPES:
+                        route.abort()
+                    else:
+                        route.continue_()
+
+                page.route("**/*", _handle_route)
+
                 page.add_init_script("""
                     Object.defineProperty(navigator, 'webdriver', {
                         get: () => undefined,
@@ -538,14 +568,6 @@ class Crawler:
                 try:
                     page.goto(url, wait_until="domcontentloaded",
                               timeout=timeout * 1_000)
-                    # Wait for post-WAF-challenge reloads to settle
-                    # (e.g. juejin.cn / xueqiu.com load content
-                    # dynamically after JS challenge).
-                    # Some sites (huxiu.com, etc.) have persistent
-                    # analytics/ads connections that prevent networkidle
-                    # from ever firing — don't fail the whole request,
-                    # page.content() is already available after
-                    # domcontentloaded for those sites.
                     try:
                         page.wait_for_load_state(
                             "networkidle",
@@ -565,11 +587,23 @@ class Crawler:
             html, error = executor.submit(_do).result()
             if html is not None:
                 return html, None
-            # Retry on timeout — WAF challenges can take longer under load
-            if "Timeout" in (error or "") and attempt == 0:
+
+            err_lower = (error or "").lower()
+
+            # Timeout — WAF challenges can take longer under load
+            if "timeout" in err_lower and attempt == 0:
                 print(f"[Crawler] Playwright timeout for {url}, retrying...")
                 continue
-            return None, error
+
+            # Navigation blocked — WAF / CAPTCHA / access denied
+            if any(kw in err_lower for kw in ("blocked", "captcha", "access denied", "403", "cloudflare")):
+                return None, f"blocked: {error}"
+
+            # DNS / connection error — site may be down
+            if any(kw in err_lower for kw in ("dns", "enetunreach", "econnrefused", "econnreset", "etimedout")):
+                return None, f"network: {error}"
+
+            return None, f"playwright: {error}"
         return None, "Playwright: max retries exceeded"
 
     def _download_and_parse(self, item: Dict[str, Any]) -> bool:
