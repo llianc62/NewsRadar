@@ -863,3 +863,194 @@ def _build_page_numbers(current: int, total: int) -> list:
         if p not in pages:
             pages.append(p)
     return pages
+
+
+def register_agent_routes(app, config: dict, db):
+    """注册 Agent 子系统的所有路由和 WebSocket 端点。
+
+    在 create_app() 之后调用，仅当 config 中有 llm 段时才注册。
+    """
+    from fastapi import WebSocket, WebSocketDisconnect, Response
+    from fastapi.responses import HTMLResponse
+    from agent.types import LlmConfig
+    from agent.agent import Agent
+    import asyncio
+    import json as _json
+
+    # ── WebSocket 连接池（取代 SSE）──
+    _ws_clients: dict[int, WebSocket] = {}
+
+    # ── Cookie-based session helper ──
+    SESSION_COOKIE = "newsradar_session"
+
+    def _get_session_id(request) -> int | None:
+        """从 cookie 读取 session_id。"""
+        raw = request.cookies.get(SESSION_COOKIE)
+        if raw and raw.isdigit():
+            return int(raw)
+        return None
+
+    # ── REST: 聊天页面 ──
+    @app.get("/agent", response_class=HTMLResponse)
+    async def agent_page(request: Request):
+        """Agent 聊天页面。"""
+        return HTMLResponse(render_template(
+            "pages/agent_chat.html",
+            active_page="agent",
+        ))
+
+    # ── REST: 会话列表 ──
+    @app.get("/api/agent/sessions")
+    async def list_sessions(request: Request, page: int = 1, page_size: int = 20):
+        offset = (page - 1) * page_size
+        sessions = db.get_agent_sessions(limit=page_size, offset=offset)
+        return {"sessions": sessions}
+
+    # ── REST: 新建会话 ──
+    @app.post("/api/agent/sessions")
+    async def create_session(response: Response):
+        session_id = db.create_agent_session()
+        response.set_cookie(
+            key=SESSION_COOKIE,
+            value=str(session_id),
+            path="/",
+            httponly=True,
+            samesite="lax",
+        )
+        return {"id": session_id, "title": "新会话"}
+
+    # ── REST: 删除会话 ──
+    @app.delete("/api/agent/sessions/{session_id}")
+    async def delete_session(session_id: int):
+        deleted = db.delete_agent_session(session_id)
+        if not deleted:
+            return JSONResponse({"ok": False, "error": "会话不存在"}, status_code=404)
+        return {"ok": True}
+
+    # ── REST: 消息列表 ──
+    @app.get("/api/agent/sessions/{session_id}/messages")
+    async def get_messages(session_id: int, limit: int = 50):
+        messages = db.get_agent_messages(session_id, limit=limit)
+        return {"messages": messages}
+
+    # ── WebSocket: 统一实时通道 ──
+    @app.websocket("/api/ws")
+    async def websocket_endpoint(ws: WebSocket):
+        await ws.accept()
+        client_id = id(ws)
+        _ws_clients[client_id] = ws
+
+        # 当前模型选择（默认 quick）
+        current_model = config.get("agent", {}).get("default_model", "quick")
+        # 当前正在运行的生成任务（用于 stop）
+        current_task: asyncio.Task | None = None
+
+        try:
+            while True:
+                raw = await ws.receive_text()
+                try:
+                    data = _json.loads(raw)
+                except _json.JSONDecodeError:
+                    await ws.send_json({"type": "error", "message": "无效的 JSON"})
+                    continue
+
+                msg_type = data.get("type", "")
+
+                if msg_type == "chat":
+                    message = (data.get("message") or "").strip()
+                    if not message:
+                        continue
+
+                    session_id = data.get("session_id", 0)
+                    if "model" in data:
+                        current_model = data["model"]
+
+                    # 选择 LLM 配置
+                    llm_cfg_dict = config.get("llm", {}).get(current_model)
+                    if llm_cfg_dict is None:
+                        llm_cfg_dict = config.get("llm", {}).get("quick")
+                    if llm_cfg_dict is None:
+                        await ws.send_json({"type": "error", "message": "LLM 未配置"})
+                        continue
+
+                    llm_cfg = LlmConfig(**llm_cfg_dict)
+                    agent = Agent(llm_cfg)
+
+                    # 保存用户消息
+                    try:
+                        db.save_agent_message(session_id, "user", message)
+                    except Exception:
+                        pass  # 非关键路径
+
+                    # 流式生成
+                    full_reply = ""
+                    async def generate():
+                        nonlocal full_reply
+                        try:
+                            async for token in agent.chat_stream(message):
+                                full_reply += token
+                                await ws.send_json({"type": "token", "content": token})
+                        except asyncio.CancelledError:
+                            # stop 被触发
+                            await ws.send_json({"type": "done", "session_id": session_id, "full_reply": full_reply, "stopped": True})
+                            return
+                        except Exception as e:
+                            await ws.send_json({"type": "error", "message": str(e)[:500]})
+                            return
+                        # 保存 AI 回复
+                        try:
+                            db.save_agent_message(session_id, "assistant", full_reply)
+                        except Exception:
+                            pass
+                        await ws.send_json({"type": "done", "session_id": session_id, "full_reply": full_reply})
+
+                    current_task = asyncio.create_task(generate())
+
+                elif msg_type == "stop":
+                    if current_task and not current_task.done():
+                        current_task.cancel()
+                        try:
+                            await current_task
+                        except asyncio.CancelledError:
+                            pass
+                    current_task = None
+
+        except WebSocketDisconnect:
+            if current_task and not current_task.done():
+                current_task.cancel()
+        finally:
+            _ws_clients.pop(client_id, None)
+
+    # ── 扩展通知推送：在原 SSE 推送基础上同时推送 WS ──
+    import web.app as web_app_module
+    _original_push_sse = web_app_module._push_sse_event
+
+    def _push_to_ws_clients(data: dict) -> None:
+        """将通知推送到所有 WebSocket 客户端。"""
+        disconnected = []
+        for cid, ws in list(_ws_clients.items()):
+            try:
+                # 必须在事件循环中调用 send_json
+                loop = asyncio.get_running_loop()
+                if loop.is_running():
+                    loop.create_task(
+                        ws.send_json({
+                            "type": "notification",
+                            "notification": data.get("notification", data),
+                        })
+                    )
+            except Exception:
+                disconnected.append(cid)
+        for cid in disconnected:
+            _ws_clients.pop(cid, None)
+
+    def _combined_push(data: dict) -> None:
+        """同时推送到 SSE 和 WS 客户端。"""
+        # 保留原有 SSE 推送（向后兼容）
+        _original_push_sse(data)
+        # 额外推送 WS
+        _push_to_ws_clients(data)
+
+    web_app_module._push_sse_event = _combined_push
+
+    print("[Agent] Routes registered — WebSocket at /api/ws")
