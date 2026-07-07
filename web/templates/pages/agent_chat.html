@@ -1,0 +1,283 @@
+{% extends "base.html" %}
+{% block title %}AI 助手 - NewsRadar{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="/static/css/agent_chat.css">
+{% endblock %}
+{% block content %}
+<main class="agent-main">
+  <div class="chat-container">
+    <div class="chat-header">
+      <div class="chat-header-left">
+        <h2 class="chat-title">AI 助手</h2>
+        <span class="chat-model-badge" id="model-badge">quick</span>
+      </div>
+      <div class="chat-header-right">
+        <label class="model-switch">
+          <span class="model-label">模型:</span>
+          <select id="model-select" class="model-select">
+            <option value="quick" selected>Quick (快速)</option>
+            <option value="deep">Deep (深度)</option>
+          </select>
+        </label>
+      </div>
+    </div>
+
+    <div class="chat-messages" id="chat-messages">
+      <div class="chat-empty">
+        <div class="chat-empty-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+        </div>
+        <p>开始和 AI 对话吧</p>
+      </div>
+    </div>
+
+    <div class="chat-input-area">
+      <div class="chat-input-row">
+        <textarea
+          id="chat-input"
+          class="chat-input"
+          placeholder="输入消息，Enter 发送，Shift+Enter 换行..."
+          rows="1"
+        ></textarea>
+        <button id="send-btn" class="send-btn" title="发送">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+        </button>
+        <button id="stop-btn" class="stop-btn hidden" title="停止生成">
+          <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+(function() {
+  'use strict';
+
+  var messagesEl = document.getElementById('chat-messages');
+  var inputEl = document.getElementById('chat-input');
+  var sendBtn = document.getElementById('send-btn');
+  var stopBtn = document.getElementById('stop-btn');
+  var modelSelect = document.getElementById('model-select');
+  var modelBadge = document.getElementById('model-badge');
+  var currentModel = 'quick';
+  var sessionId = null;
+  var ws = null;
+  var isGenerating = false;
+
+  // ── WebSocket 连接 ──
+  function connectWS() {
+    var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var url = protocol + '//' + location.host + '/api/ws';
+    ws = new WebSocket(url);
+
+    ws.onopen = function() {
+      console.log('[WS] connected');
+    };
+
+    ws.onmessage = function(e) {
+      var data = JSON.parse(e.data);
+      handleMessage(data);
+    };
+
+    ws.onclose = function() {
+      console.log('[WS] disconnected, reconnecting in 3s...');
+      setTimeout(connectWS, 3000);
+    };
+
+    ws.onerror = function(err) {
+      console.error('[WS] error', err);
+    };
+  }
+
+  function handleMessage(data) {
+    switch (data.type) {
+      case 'token':
+        appendToken(data.content);
+        break;
+      case 'done':
+        finishMessage(data);
+        break;
+      case 'error':
+        showError(data.message);
+        break;
+      case 'notification':
+        showNotification(data.notification);
+        break;
+    }
+  }
+
+  // ── 消息渲染 ──
+  var currentBubble = null;
+
+  function appendToken(token) {
+    if (!currentBubble) {
+      // 隐藏空状态
+      var empty = messagesEl.querySelector('.chat-empty');
+      if (empty) empty.remove();
+      // 创建新气泡
+      currentBubble = document.createElement('div');
+      currentBubble.className = 'chat-bubble assistant';
+      currentBubble.innerHTML = '<div class="bubble-content"></div>';
+      messagesEl.appendChild(currentBubble);
+    }
+    var content = currentBubble.querySelector('.bubble-content');
+    content.textContent += token;
+    // 简单 Markdown 渲染
+    content.innerHTML = marked.parse(content.textContent);
+    scrollToBottom();
+  }
+
+  function finishMessage(data) {
+    if (data.stopped) {
+      // 用户手动停止，不追加额外内容
+    }
+    currentBubble = null;
+    setGenerating(false);
+  }
+
+  function showError(msg) {
+    var el = document.createElement('div');
+    el.className = 'chat-bubble error';
+    el.innerHTML = '<div class="bubble-content">⚠️ ' + escapeHtml(msg) + '</div>';
+    messagesEl.appendChild(el);
+    currentBubble = null;
+    setGenerating(false);
+    scrollToBottom();
+  }
+
+  function showNotification(notif) {
+    // 使用 base.html 中的 showAppToast 函数
+    if (typeof window.showAppToast === 'function') {
+      var isTask = notif.category === 'crawl' || notif.category === 'sync';
+      window.showAppToast(
+        notif.title,
+        notif.summary || (notif.status === 'completed' ? '任务完成' : '任务失败'),
+        notif.status === 'completed' ? 'done' : 'fail'
+      );
+    }
+  }
+
+  function addUserMessage(text) {
+    var empty = messagesEl.querySelector('.chat-empty');
+    if (empty) empty.remove();
+    var el = document.createElement('div');
+    el.className = 'chat-bubble user';
+    el.innerHTML = '<div class="bubble-content">' + escapeHtml(text) + '</div>';
+    messagesEl.appendChild(el);
+    scrollToBottom();
+  }
+
+  // ── 发送消息 ──
+  function sendMessage() {
+    var text = inputEl.value.trim();
+    if (!text || isGenerating) return;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      showError('连接未就绪，请稍后重试');
+      return;
+    }
+
+    // 确保有 session
+    if (!sessionId) {
+      createSession().then(function() {
+        doSend(text);
+      });
+    } else {
+      doSend(text);
+    }
+  }
+
+  function doSend(text) {
+    addUserMessage(text);
+    inputEl.value = '';
+    inputEl.style.height = 'auto';
+    setGenerating(true);
+
+    ws.send(JSON.stringify({
+      type: 'chat',
+      session_id: sessionId,
+      message: text,
+      model: currentModel,
+    }));
+  }
+
+  function stopGeneration() {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'stop' }));
+    }
+    setGenerating(false);
+  }
+
+  function setGenerating(generating) {
+    isGenerating = generating;
+    sendBtn.classList.toggle('hidden', generating);
+    stopBtn.classList.toggle('hidden', !generating);
+    inputEl.disabled = generating;
+  }
+
+  // ── Session 管理 ──
+  async function createSession() {
+    var resp = await fetch('/api/agent/sessions', { method: 'POST' });
+    var data = await resp.json();
+    sessionId = data.id;
+    return sessionId;
+  }
+
+  // ── 初始化 ──
+  async function init() {
+    // 尝试获取已有 session
+    try {
+      var resp = await fetch('/api/agent/sessions?page=1&page_size=1');
+      var data = await resp.json();
+      if (data.sessions && data.sessions.length > 0) {
+        sessionId = data.sessions[0].id;
+      } else {
+        await createSession();
+      }
+    } catch (e) {
+      await createSession();
+    }
+
+    connectWS();
+  }
+
+  // ── 辅助函数 ──
+  function escapeHtml(str) {
+    var div = document.createElement('div');
+    div.appendChild(document.createTextNode(str));
+    return div.innerHTML;
+  }
+
+  function scrollToBottom() {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  // ── 事件绑定 ──
+  sendBtn.addEventListener('click', sendMessage);
+  stopBtn.addEventListener('click', stopGeneration);
+
+  inputEl.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+
+  // 自动调整 textarea 高度
+  inputEl.addEventListener('input', function() {
+    this.style.height = 'auto';
+    this.style.height = Math.min(this.scrollHeight, 150) + 'px';
+  });
+
+  modelSelect.addEventListener('change', function() {
+    currentModel = this.value;
+    modelBadge.textContent = currentModel;
+    modelBadge.className = 'chat-model-badge ' + currentModel;
+  });
+
+  // ── 启动 ──
+  init();
+})();
+</script>
+{% endblock %}
