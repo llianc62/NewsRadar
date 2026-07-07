@@ -880,15 +880,7 @@ def register_agent_routes(app, config: dict, db):
     # ── WebSocket 连接池（取代 SSE）──
     _ws_clients: dict[int, WebSocket] = {}
 
-    # ── Cookie-based session helper ──
     SESSION_COOKIE = "newsradar_session"
-
-    def _get_session_id(request) -> int | None:
-        """从 cookie 读取 session_id。"""
-        raw = request.cookies.get(SESSION_COOKIE)
-        if raw and raw.isdigit():
-            return int(raw)
-        return None
 
     # ── REST: 聊天页面 ──
     @app.get("/agent", response_class=HTMLResponse)
@@ -962,6 +954,9 @@ def register_agent_routes(app, config: dict, db):
                         continue
 
                     session_id = data.get("session_id", 0)
+                    if not isinstance(session_id, int) or session_id < 1:
+                        await ws.send_json({"type": "error", "message": "session_id 必须为正整数"})
+                        continue
                     if "model" in data:
                         current_model = data["model"]
 
@@ -995,6 +990,8 @@ def register_agent_routes(app, config: dict, db):
                             await ws.send_json({"type": "done", "session_id": session_id, "full_reply": full_reply, "stopped": True})
                             return
                         except Exception as e:
+                            import traceback
+                            traceback.print_exc()
                             await ws.send_json({"type": "error", "message": str(e)[:500]})
                             return
                         # 保存 AI 回复
@@ -1027,18 +1024,21 @@ def register_agent_routes(app, config: dict, db):
 
     def _push_to_ws_clients(data: dict) -> None:
         """将通知推送到所有 WebSocket 客户端。"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return  # called from thread pool, skip WS push (SSE still works)
+        if not loop.is_running():
+            return
         disconnected = []
         for cid, ws in list(_ws_clients.items()):
             try:
-                # 必须在事件循环中调用 send_json
-                loop = asyncio.get_running_loop()
-                if loop.is_running():
-                    loop.create_task(
-                        ws.send_json({
-                            "type": "notification",
-                            "notification": data.get("notification", data),
-                        })
-                    )
+                loop.create_task(
+                    ws.send_json({
+                        "type": "notification",
+                        "notification": data.get("notification", data),
+                    })
+                )
             except Exception:
                 disconnected.append(cid)
         for cid in disconnected:
