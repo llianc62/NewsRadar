@@ -13,28 +13,29 @@ crawler:
     timeout: 30
     url: "https://newsnow.busiyi.world/api/s"
     sources:
-      # ── T1 主流财经 ──
+      # ═══ T1 主流财经 (80-90) ═══
       - id: "wallstreetcn-hot"
         name: "华尔街见闻"
         tier: 1
-        priority: 85
-      - id: "wallstreetcn-news"
-        name: "华尔街见闻"
-        tier: 1
-        priority: 80
+        priority: 87
       - id: "cls-hot"
         name: "财联社"
         tier: 1
-        priority: 85
+        priority: 87
       - id: "cls-depth"
         name: "财联社"
         tier: 1
-        priority: 80
+        priority: 83
+      - id: "wallstreetcn-news"
+        name: "华尔街见闻"
+        tier: 1
+        priority: 82
       - id: "fastbull-news"
         name: "法布财经"
         tier: 1
-        priority: 80
-      # ── T2 综合新闻 ──
+        priority: 82
+
+      # ═══ T2 综合新闻 (60-79) ═══
       - id: "thepaper"
         name: "澎湃新闻"
         tier: 2
@@ -46,21 +47,23 @@ crawler:
       - id: "cankaoxiaoxi"
         name: "参考新闻"
         tier: 2
-        priority: 75
+        priority: 73
       - id: "kaopu"
         name: "靠谱新闻"
         tier: 2
-        priority: 75
+        priority: 72
       - id: "ifeng"
         name: "凤凰网"
         tier: 2
-        priority: 70
-      # ── T3 垂直深度 ──
+        priority: 72
+
+      # ═══ T3 垂直深度 (40-59) ═══
       - id: "juejin"
         name: "稀土掘金"
         tier: 3
-        priority: 35
-      # ── T4 内容资讯 ──
+        priority: 55
+
+      # ═══ T4 内容资讯 (20-39) ═══
       - id: "sspai"
         name: "少数派"
         tier: 4
@@ -74,62 +77,12 @@ crawler:
     enabled: true
     timeout: 30
     sources:
-      # ═══ 官方媒体 ═══
-      - id: "xinhua-politics"
-        name: "新华社·时政"
-        url: "http://www.xinhuanet.com/politics/news_politics.xml"
-        tier: 2
-        priority: 88
-        enabled: false  # feed 已停止更新 (lastBuildDate: 2022-12-14)
-        max_age_days: 1
-      - id: "xinhua-finance"
-        name: "新华社·财经"
-        url: "http://www.xinhuanet.com/fortune/news_fortune.xml"
-        tier: 1
-        priority: 85
-        enabled: false  # feed 已停止更新 (lastBuildDate: 2022-12-14)
-        max_age_days: 1
-      - id: "xinhua-world"
-        name: "新华社·国际"
-        url: "http://www.xinhuanet.com/world/news_world.xml"
-        tier: 2
-        priority: 78
-        enabled: false  # feed 已停止更新 (lastBuildDate: 2022-12-14)
-        max_age_days: 1
-      - id: "people"
-        name: "人民日报"
-        url: "https://rsshub.rssforever.com/people"
-        tier: 2
-        priority: 80
-        enabled: true
-        max_age_days: 1
-      - id: "huanqiu"
-        name: "环球时报"
-        url: "https://rsshub.rssforever.com/huanqiu/news"
-        tier: 2
-        priority: 75
-        enabled: true
-        max_age_days: 1
-      # ═══ 宏观经济/政策 ═══
-      - id: "yicai-news"
-        name: "第一财经"
-        url: "https://rsshub.rssforever.com/yicai/news"
-        tier: 1
-        priority: 85
-        enabled: true
-        max_age_days: 1
-      - id: "gelonghui-hot"
-        name: "格隆汇"
-        url: "https://rsshub.rssforever.com/gelonghui/hot-article"
-        tier: 2
-        priority: 80
-        enabled: true
-        max_age_days: 1
+      # ═══ T1 主流财经 (80-90) ═══
       - id: "csrc-news"
         name: "证监会"
         url: "https://rsshub.rssforever.com/gov/csrc/news"
         tier: 1
-        priority: 88
+        priority: 89
         enabled: true
         max_age_days: 0
       - id: "ndrc"
@@ -139,137 +92,187 @@ crawler:
         priority: 86
         enabled: true
         max_age_days: 0
-      - id: "samrdprc"
-        name: "市场监管总局"
-        url: "https://rsshub.rssforever.com/samrdprc/news/xfpzh/xfpgnzh"
-        tier: 3
-        priority: 55
+      - id: "yicai-news"
+        name: "第一财经"
+        url: "https://rsshub.rssforever.com/yicai/news"
+        tier: 1
+        priority: 85
         enabled: true
-        max_age_days: 0
-      # ═══ 市场快讯 ═══
-      - id: "jin10"
-        name: "金十数据"
-        url: "https://rsshub.rssforever.com/jin10"
-        tier: 2
-        priority: 88
-        enabled: false
         max_age_days: 1
-      # ═══ 金融资讯 ═══
-      - id: "stcn-hot"
-        name: "证券时报"
-        url: "https://rsshub.rssforever.com/stcn/article/rank/yw"
-        tier: 2
+      - id: "xinhua-finance"
+        name: "新华社·财经"
+        url: "http://www.xinhuanet.com/fortune/news_fortune.xml"
+        tier: 1
         priority: 82
+        enabled: false          # feed 已停止更新
+        max_age_days: 1
+
+      # ═══ T2 综合新闻 (60-79) ═══
+      - id: "people"
+        name: "人民日报"
+        url: "https://rsshub.rssforever.com/people"
+        tier: 2
+        priority: 77
         enabled: true
         max_age_days: 1
-      - id: "jiemian-finance"
-        name: "界面财经"
-        url: "https://rsshub.rssforever.com/jiemian/lists/1"
+      - id: "huanqiu"
+        name: "环球时报"
+        url: "https://rsshub.rssforever.com/huanqiu/news"
         tier: 2
-        priority: 62
+        priority: 76
         enabled: true
-        max_age_days: 1
-      - id: "xueqiu-hot"
-        name: "雪球"
-        url: "https://xueqiu.com/hots/topic/rss"
-        tier: 2
-        priority: 70
-        enabled: true
-        max_age_days: 1
-      # ═══ 股票信息 ═══
-      - id: "eastmoney-stock"
-        name: "东方财富"
-        url: "https://rss.eastmoney.com/rss_stock.xml"
-        tier: 2
-        priority: 78
-        enabled: true
-        max_age_days: 1
-      - id: "eastmoney-partener"
-        name: "东方财富"
-        url: "https://rss.eastmoney.com/rss_partener.xml"
-        tier: 2
-        priority: 72
-        enabled: true
-        max_age_days: 1
-      # ═══ 国际/世界格局 ═══
-      - id: "bloomberg"
-        name: "彭博社"
-        url: "https://rsshub.rssforever.com/bloomberg"
-        tier: 2
-        priority: 80
-        enabled: false
-        max_age_days: 1
-      - id: "bbc-world"
-        name: "BBC国际"
-        url: "https://rsshub.rssforever.com/bbc/world"
-        tier: 2
-        priority: 74
-        enabled: false
         max_age_days: 1
       - id: "cctv-world"
         name: "央视国际"
         url: "https://rsshub.rssforever.com/cctv/world"
         tier: 2
-        priority: 80
+        priority: 75
         enabled: true
         max_age_days: 1
       - id: "guancha"
         name: "观察者网"
         url: "https://rsshub.rssforever.com/guancha/headline"
         tier: 2
-        priority: 75
+        priority: 74
         enabled: true
         max_age_days: 1
-      - id: "aljazeera-en"
-        name: "半岛电视台"
-        url: "https://rsshub.rssforever.com/aljazeera/english"
-        tier: 3
-        priority: 56
+      - id: "stcn-hot"
+        name: "证券时报"
+        url: "https://rsshub.rssforever.com/stcn/article/rank/yw"
+        tier: 2
+        priority: 73
+        enabled: true
+        max_age_days: 1
+      - id: "xinhua-politics"
+        name: "新华社·时政"
+        url: "http://www.xinhuanet.com/politics/news_politics.xml"
+        tier: 2
+        priority: 72
+        enabled: false          # feed 已停止更新
+        max_age_days: 1
+      - id: "xinhua-world"
+        name: "新华社·国际"
+        url: "http://www.xinhuanet.com/world/news_world.xml"
+        tier: 2
+        priority: 72
+        enabled: false          # feed 已停止更新
+        max_age_days: 1
+      - id: "bloomberg"
+        name: "彭博社"
+        url: "https://rsshub.rssforever.com/bloomberg"
+        tier: 2
+        priority: 70
+        enabled: false
+        max_age_days: 1
+      - id: "bbc-world"
+        name: "BBC国际"
+        url: "https://rsshub.rssforever.com/bbc/world"
+        tier: 2
+        priority: 70
         enabled: false
         max_age_days: 1
       - id: "yahoo-finance"
         name: "雅虎财经"
         url: "https://finance.yahoo.com/news/rssindex"
         tier: 2
-        priority: 75
+        priority: 68
         enabled: false
         max_age_days: 1
-      # ═══ 科技创投 ═══
+      - id: "nea"
+        name: "国家能源局"
+        url: "https://rsshub.rssforever.com/gov/nea/sjzz/ghs"
+        tier: 2
+        priority: 65
+        enabled: true
+        max_age_days: 0
+      - id: "samrdprc"
+        name: "市场监管总局"
+        url: "https://rsshub.rssforever.com/samrdprc/news/xfpzh/xfpgnzh"
+        tier: 2
+        priority: 64
+        enabled: true
+        max_age_days: 0
+      - id: "chinacdc"
+        name: "疾控中心"
+        url: "https://rsshub.rssforever.com/chinacdc/zxyw"
+        tier: 2
+        priority: 63
+        enabled: true
+        max_age_days: 0
+
+      # ═══ T3 垂直深度 (40-59) ═══
+      - id: "gelonghui-hot"
+        name: "格隆汇"
+        url: "https://rsshub.rssforever.com/gelonghui/hot-article"
+        tier: 3
+        priority: 56
+        enabled: true
+        max_age_days: 1
       - id: "36kr-news"
         name: "36氪"
         url: "https://rsshub.rssforever.com/36kr/news/latest"
         tier: 3
-        priority: 65
-        enabled: true
-        max_age_days: 1
-      - id: "ifanr"
-        name: "爱范儿"
-        url: "https://www.ifanr.com/feed"
-        tier: 4
-        priority: 58
+        priority: 55
         enabled: true
         max_age_days: 1
       - id: "huxiu"
         name: "虎嗅"
         url: "https://rss.huxiu.com/"
         tier: 3
-        priority: 72
+        priority: 54
         enabled: true
         max_age_days: 1
-      - id: "nea"
-        name: "国家能源局"
-        url: "https://rsshub.rssforever.com/gov/nea/sjzz/ghs"
+      - id: "xueqiu-hot"
+        name: "雪球"
+        url: "https://xueqiu.com/hots/topic/rss"
         tier: 3
-        priority: 65
+        priority: 53
         enabled: true
-        max_age_days: 0
-      - id: "chinacdc"
-        name: "疾控中心"
-        url: "https://rsshub.rssforever.com/chinacdc/zxyw"
+        max_age_days: 1
+      - id: "eastmoney-stock"
+        name: "东方财富"
+        url: "https://rss.eastmoney.com/rss_stock.xml"
+        tier: 3
+        priority: 52
+        enabled: true
+        max_age_days: 1
+      - id: "eastmoney-partener"
+        name: "东方财富"
+        url: "https://rss.eastmoney.com/rss_partener.xml"
+        tier: 3
+        priority: 50
+        enabled: true
+        max_age_days: 1
+      - id: "jiemian-finance"
+        name: "界面财经"
+        url: "https://rsshub.rssforever.com/jiemian/lists/1"
+        tier: 3
+        priority: 48
+        enabled: true
+        max_age_days: 1
+      - id: "jin10"
+        name: "金十数据"
+        url: "https://rsshub.rssforever.com/jin10"
+        tier: 3
+        priority: 47
+        enabled: false
+        max_age_days: 1
+      - id: "aljazeera-en"
+        name: "半岛电视台"
+        url: "https://rsshub.rssforever.com/aljazeera/english"
+        tier: 3
+        priority: 44
+        enabled: false
+        max_age_days: 1
+
+      # ═══ T4 内容资讯 (20-39) ═══
+      - id: "ifanr"
+        name: "爱范儿"
+        url: "https://www.ifanr.com/feed"
         tier: 4
-        priority: 40
+        priority: 35
         enabled: true
-        max_age_days: 0
+        max_age_days: 1
 
 notification:
   frequency_words: "frequency_words.txt"
