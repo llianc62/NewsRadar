@@ -481,6 +481,12 @@ class PostgreSQL:
 
     def save_agent_message(self, session_id: int, role: str, content: str) -> int:
         """保存一条消息，返回 message_id。同时更新会话的 message_count 和 updated_at。"""
+        if role not in ("user", "assistant"):
+            raise ValueError(f"role must be 'user' or 'assistant', got {role!r}")
+        if not content or not content.strip():
+            raise ValueError("content must not be empty")
+        if session_id < 1:
+            raise ValueError(f"session_id must be positive, got {session_id}")
         conn = self._pool.getconn()
         try:
             with conn.cursor() as cur:
@@ -498,11 +504,13 @@ class PostgreSQL:
                     (session_id,),
                 )
                 # 如果是首条用户消息，更新标题
+                # 使用默认标题作为哨兵，确保即使首条消息是 assistant 也能触发
                 if role == "user":
                     cur.execute(
                         """UPDATE agent_sessions
                            SET title = LEFT(%s, 30)
-                           WHERE id = %s AND message_count = 1""",
+                           WHERE id = %s
+                             AND title = '新会话'""",
                         (content, session_id),
                     )
             conn.commit()
