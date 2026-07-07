@@ -21,6 +21,8 @@ dependencies = [
     "lxml>=6.0",
     "markdownify>=1.0",
     "playwright>=1.61.0",
+    "langchain-anthropic>=0.3",
+    "langchain-openai>=0.3",
 ]
 
 [tool.hatch.build.targets.wheel]
