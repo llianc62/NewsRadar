@@ -188,6 +188,7 @@ class PostgreSQL:
 
         # Always run migrations (idempotent)
         self._run_migrations()
+        self._init_agent_schema()
 
     def _run_migrations(self) -> None:
         """Idempotent schema migrations."""
@@ -364,6 +365,148 @@ class PostgreSQL:
                     conn.commit()
                     print("[DB] Migration complete: news_images table created.")
 
+        finally:
+            self._pool.putconn(conn)
+
+    def _init_agent_schema(self) -> None:
+        """初始化 agent 子系统所需的所有表（幂等）。"""
+        conn = self._pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS agent_sessions (
+                        id SERIAL PRIMARY KEY,
+                        title TEXT NOT NULL DEFAULT '新会话',
+                        message_count INTEGER DEFAULT 0,
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ DEFAULT NOW()
+                    );
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS agent_messages (
+                        id SERIAL PRIMARY KEY,
+                        session_id INTEGER NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
+                        role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+                        content TEXT NOT NULL,
+                        created_at TIMESTAMPTZ DEFAULT NOW()
+                    );
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_agent_messages_session
+                        ON agent_messages(session_id, created_at);
+                """)
+            conn.commit()
+            print("[DB] Agent schema initialized")
+        finally:
+            self._pool.putconn(conn)
+
+    def create_agent_session(self, title: str = "新会话") -> int:
+        """创建新会话，返回 session_id。"""
+        conn = self._pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO agent_sessions (title) VALUES (%s) RETURNING id",
+                    (title,),
+                )
+                session_id = cur.fetchone()[0]
+            conn.commit()
+            return session_id
+        finally:
+            self._pool.putconn(conn)
+
+    def get_agent_sessions(self, limit: int = 20, offset: int = 0) -> list[dict]:
+        """获取会话列表（按 updated_at 倒序）。"""
+        conn = self._pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT id, title, message_count, created_at, updated_at
+                       FROM agent_sessions
+                       ORDER BY updated_at DESC
+                       LIMIT %s OFFSET %s""",
+                    (limit, offset),
+                )
+                rows = cur.fetchall()
+                return [
+                    {
+                        "id": r[0], "title": r[1], "message_count": r[2],
+                        "created_at": r[3].isoformat() if r[3] else None,
+                        "updated_at": r[4].isoformat() if r[4] else None,
+                    }
+                    for r in rows
+                ]
+        finally:
+            self._pool.putconn(conn)
+
+    def delete_agent_session(self, session_id: int) -> bool:
+        """删除会话及其消息（CASCADE）。返回是否成功删除。"""
+        conn = self._pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM agent_sessions WHERE id = %s",
+                    (session_id,),
+                )
+                deleted = cur.rowcount > 0
+            conn.commit()
+            return deleted
+        finally:
+            self._pool.putconn(conn)
+
+    def get_agent_messages(self, session_id: int, limit: int = 50) -> list[dict]:
+        """获取某会话的消息列表（按时间正序）。"""
+        conn = self._pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT id, session_id, role, content, created_at
+                       FROM agent_messages
+                       WHERE session_id = %s
+                       ORDER BY created_at ASC
+                       LIMIT %s""",
+                    (session_id, limit),
+                )
+                rows = cur.fetchall()
+                return [
+                    {
+                        "id": r[0], "session_id": r[1], "role": r[2],
+                        "content": r[3],
+                        "created_at": r[4].isoformat() if r[4] else None,
+                    }
+                    for r in rows
+                ]
+        finally:
+            self._pool.putconn(conn)
+
+    def save_agent_message(self, session_id: int, role: str, content: str) -> int:
+        """保存一条消息，返回 message_id。同时更新会话的 message_count 和 updated_at。"""
+        conn = self._pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO agent_messages (session_id, role, content)
+                       VALUES (%s, %s, %s) RETURNING id""",
+                    (session_id, role, content),
+                )
+                msg_id = cur.fetchone()[0]
+                cur.execute(
+                    """UPDATE agent_sessions
+                       SET message_count = message_count + 1,
+                           updated_at = NOW()
+                       WHERE id = %s""",
+                    (session_id,),
+                )
+                # 如果是首条用户消息，更新标题
+                if role == "user":
+                    cur.execute(
+                        """UPDATE agent_sessions
+                           SET title = LEFT(%s, 30)
+                           WHERE id = %s AND message_count = 1""",
+                        (content, session_id),
+                    )
+            conn.commit()
+            return msg_id
         finally:
             self._pool.putconn(conn)
 

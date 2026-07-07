@@ -115,7 +115,11 @@ class TestInitSchema:
         executes = [str(c[0][0]) for c in mock_cursor.execute.call_args_list if c[0]]
         ddl_calls = [s for s in executes if "CREATE TABLE" in s]
         # Schema DDL is skipped, but migration 008 may create news_images
-        assert len(ddl_calls) == 1 and "news_images" in ddl_calls[0]
+        # and _init_agent_schema() creates agent_sessions + agent_messages
+        assert len(ddl_calls) == 3
+        assert any("news_images" in s for s in ddl_calls)
+        assert any("agent_sessions" in s for s in ddl_calls)
+        assert any("agent_messages" in s for s in ddl_calls)
 
 
 class TestRunMigrations:
