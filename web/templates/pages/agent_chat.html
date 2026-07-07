@@ -4,19 +4,20 @@
 <link rel="stylesheet" href="/static/css/agent_chat.css">
 {% endblock %}
 {% block content %}
-<main class="agent-main">
+<div class="app-main">
   <div class="chat-container">
     <div class="chat-header">
       <div class="chat-header-left">
-        <h2 class="chat-title">AI 助手</h2>
-        <span class="chat-model-badge" id="model-badge">quick</span>
+        <div class="section-header-line"></div>
+        <h1 class="chat-title">AI 助手</h1>
+        <span class="chat-model-badge quick" id="model-badge">quick</span>
       </div>
       <div class="chat-header-right">
         <label class="model-switch">
-          <span class="model-label">模型:</span>
+          <span class="model-label">模型</span>
           <select id="model-select" class="model-select">
-            <option value="quick" selected>Quick (快速)</option>
-            <option value="deep">Deep (深度)</option>
+            <option value="quick" selected>Quick 快速</option>
+            <option value="deep">Deep 深度</option>
           </select>
         </label>
       </div>
@@ -48,7 +49,7 @@
       </div>
     </div>
   </div>
-</main>
+</div>
 
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script>
@@ -113,10 +114,8 @@
 
   function appendToken(token) {
     if (!currentBubble) {
-      // 隐藏空状态
       var empty = messagesEl.querySelector('.chat-empty');
       if (empty) empty.remove();
-      // 创建新气泡
       currentBubble = document.createElement('div');
       currentBubble.className = 'chat-bubble assistant';
       currentBubble.innerHTML = '<div class="bubble-content"></div>';
@@ -149,7 +148,6 @@
   }
 
   function showNotification(notif) {
-    // 使用 base.html 中的 showAppToast 函数
     if (typeof window.showAppToast === 'function') {
       window.showAppToast(
         notif.title,
@@ -178,7 +176,6 @@
       return;
     }
 
-    // 确保有 session
     if (!sessionId) {
       createSession().then(function() {
         doSend(text);
@@ -226,7 +223,6 @@
 
   // ── 初始化 ──
   async function init() {
-    // 尝试获取已有 session
     try {
       var resp = await fetch('/api/agent/sessions?page=1&page_size=1');
       var data = await resp.json();
@@ -264,7 +260,6 @@
     }
   });
 
-  // 自动调整 textarea 高度
   inputEl.addEventListener('input', function() {
     this.style.height = 'auto';
     this.style.height = Math.min(this.scrollHeight, 150) + 'px';
