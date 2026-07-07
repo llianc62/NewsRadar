@@ -123,15 +123,16 @@
       messagesEl.appendChild(currentBubble);
     }
     var content = currentBubble.querySelector('.bubble-content');
+    // 流式渲染期间仅用 textContent，避免 XSS 和性能问题
     content.textContent += token;
-    // 简单 Markdown 渲染
-    content.innerHTML = marked.parse(content.textContent);
     scrollToBottom();
   }
 
   function finishMessage(data) {
-    if (data.stopped) {
-      // 用户手动停止，不追加额外内容
+    if (currentBubble && !data.stopped) {
+      var content = currentBubble.querySelector('.bubble-content');
+      // 只在完成时做一次 Markdown 渲染
+      content.innerHTML = marked.parse(content.textContent);
     }
     currentBubble = null;
     setGenerating(false);
@@ -150,7 +151,6 @@
   function showNotification(notif) {
     // 使用 base.html 中的 showAppToast 函数
     if (typeof window.showAppToast === 'function') {
-      var isTask = notif.category === 'crawl' || notif.category === 'sync';
       window.showAppToast(
         notif.title,
         notif.summary || (notif.status === 'completed' ? '任务完成' : '任务失败'),
