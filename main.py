@@ -236,6 +236,13 @@ class NewsRadarDaemon:
         s3_config = self.config.get("storage", {}).get("resource", {})
         crawler = Crawler(self.config, pg_db=self.db)
         app = create_app(self.db, s3_config, queues=queues, crawler=crawler)
+
+        # 条件注册 Agent 路由（仅当配置了 LLM 时）
+        if self.config.get("llm"):
+            from web.app import register_agent_routes
+            register_agent_routes(app, self.config, self.db)
+            print("[Daemon] Agent routes registered.")
+
         web_task = asyncio.create_task(self._serve_web(app), name="web")
 
         # 4. Launch Workers (wait for signal → execute job → loop)

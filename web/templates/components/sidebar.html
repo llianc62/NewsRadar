@@ -36,6 +36,16 @@
     {% endfor %}
   </nav>
 
+  <!-- AI 助手 -->
+  <div class="sidebar-divider"></div>
+  <div class="sidebar-section">
+    <div class="sidebar-section-label">AI 助手</div>
+    <a href="/agent" class="nav-item{% if active_page == 'agent' %} active{% endif %}">
+      <span class="nav-icon">{{ icon_svg('compass')|safe }}</span>
+      <span class="nav-label">AI 对话</span>
+    </a>
+  </div>
+
   <!-- Toggle -->
   <div class="sidebar-toggle">
     <button class="sidebar-toggle-btn" title="收起侧栏" onclick="document.querySelector('.app-sidebar').classList.toggle('expanded')">

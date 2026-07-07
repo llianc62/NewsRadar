@@ -167,7 +167,7 @@
           if (!shownIds[n.id] && (n.status === 'completed' || n.status === 'failed')) {
             shownIds[n.id] = true;
             var path = window.location.pathname;
-            if (path.indexOf('/hot-news') === 0 || path.indexOf('/news/') === 0) {
+            if (path.indexOf('/hot-news') === 0 || path.indexOf('/news/') === 0 || path.indexOf('/agent') === 0) {
               showToast(n);
             }
           }
@@ -248,7 +248,7 @@
 
   // ── Initialization ──
   var path = window.location.pathname;
-  if (path.indexOf('/hot-news') === 0 || path.indexOf('/news/') === 0) {
+  if (path.indexOf('/hot-news') === 0 || path.indexOf('/news/') === 0 || path.indexOf('/agent') === 0) {
     // Create toast container if not present
     if (!document.getElementById('toast-container')) {
       var tc = document.createElement('div');
@@ -298,7 +298,7 @@
         .then(function(d) { updateBadge(d.count || 0); });
 
       // 如果不在 hot-news 或 news detail 页面，不弹 toast
-      if (path.indexOf('/hot-news') !== 0 && path.indexOf('/news/') !== 0) return;
+      if (path.indexOf('/hot-news') !== 0 && path.indexOf('/news/') !== 0 && path.indexOf('/agent') !== 0) return;
 
       // 仅 crawl/sync 任务触发时弹 toast；article fetch 由 update 事件处理
       if (notif.category === 'crawl' || notif.category === 'sync') {
@@ -320,7 +320,7 @@
         .then(function(r) { return r.json(); })
         .then(function(d) { updateBadge(d.count || 0); });
 
-      if (path.indexOf('/hot-news') !== 0 && path.indexOf('/news/') !== 0) return;
+      if (path.indexOf('/hot-news') !== 0 && path.indexOf('/news/') !== 0 && path.indexOf('/agent') !== 0) return;
 
       // 任务状态变更 — toast
       var kind, sub;
