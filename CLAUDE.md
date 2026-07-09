@@ -11,6 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - [crawler.md](docs/crawler.md) — 爬取管线 + 内容富化 + 失败重试
 - [web.md](docs/web.md) — FastAPI 前端 + 通知系统
 - [daemon.md](docs/daemon.md) — 后台调度 + 启动序列
+- [agent.md](docs/agent.md) → [agent/](docs/agent/) — AI Agent 子系统（分模块设计文档）
 
 历史开发记录在 `docs/superpowers/`（plans + specs），不主动加载。
 

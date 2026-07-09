@@ -9,9 +9,3 @@ class LlmConfig:
     api_key: str
     base_url: str = ""
     temperature: float = 0.7
-
-
-@dataclass
-class Turn:
-    user: str
-    assistant: str

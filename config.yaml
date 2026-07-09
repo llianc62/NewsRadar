@@ -340,14 +340,14 @@ web:
 llm:
   deep:
     protocol: anthropic
-    model: claude-sonnet-5
-    base_url: ""
+    model: deepseek-v4-pro
+    base_url: "https://api.deepseek.com/anthropic"
     api_key: ""
     temperature: 0.7
   quick:
     protocol: openai
-    model: qwen-plus
-    base_url: ""
+    model: deepseek-v4-flash
+    base_url: "https://api.deepseek.com"
     api_key: ""
     temperature: 0.3
 

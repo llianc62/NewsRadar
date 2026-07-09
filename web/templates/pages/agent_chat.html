@@ -1,51 +1,69 @@
 {% extends "base.html" %}
 {% block title %}AI 助手 - NewsRadar{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="/static/css/agent_chat.css">
+<link rel="stylesheet" href="/static/css/agent_chat.css?v=2">
 {% endblock %}
 {% block content %}
 <div class="app-main">
   <div class="chat-container">
-    <div class="chat-header">
+    <header class="chat-header">
       <div class="chat-header-left">
         <div class="section-header-line"></div>
-        <h1 class="chat-title">AI 助手</h1>
-        <span class="chat-model-badge quick" id="model-badge">quick</span>
+        <div>
+          <h1 class="chat-title">AI 助手</h1>
+          <div class="chat-subtitle">基于新闻数据的智能问答</div>
+        </div>
       </div>
       <div class="chat-header-right">
-        <label class="model-switch">
-          <span class="model-label">模型</span>
-          <select id="model-select" class="model-select">
-            <option value="quick" selected>Quick 快速</option>
-            <option value="deep">Deep 深度</option>
-          </select>
-        </label>
+        <div class="model-segmented" role="tablist" aria-label="模型选择">
+          <button class="model-seg active" data-model="quick" role="tab" aria-selected="true">
+            <span class="dot"></span>Quick 快速
+          </button>
+          <button class="model-seg" data-model="deep" role="tab" aria-selected="false">
+            <span class="dot"></span>Deep 深度
+          </button>
+        </div>
       </div>
-    </div>
+    </header>
 
     <div class="chat-messages" id="chat-messages">
-      <div class="chat-empty">
-        <div class="chat-empty-icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+      <div class="chat-empty" id="chat-empty">
+        <div class="chat-empty-avatar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z"/><path d="M19 14l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7.7-2z"/></svg>
         </div>
-        <p>开始和 AI 对话吧</p>
+        <div class="chat-empty-title">有什么想了解的？</div>
+        <div class="chat-empty-desc">问我任何关于市场热点、个股动态或行业趋势的问题，我会基于 NewsRadar 的新闻数据为你分析。</div>
+        <div class="chat-suggestions">
+          <button class="chat-suggestion" data-prompt="今天市场有什么热点？">今天市场有什么热点？</button>
+          <button class="chat-suggestion" data-prompt="帮我分析一下当前的舆论情绪">帮我分析一下当前的舆论情绪</button>
+          <button class="chat-suggestion" data-prompt="最近有哪些值得关注的个股动态？">最近有哪些值得关注的个股动态？</button>
+        </div>
       </div>
     </div>
 
-    <div class="chat-input-area">
-      <div class="chat-input-row">
-        <textarea
-          id="chat-input"
-          class="chat-input"
-          placeholder="输入消息，Enter 发送，Shift+Enter 换行..."
-          rows="1"
-        ></textarea>
-        <button id="send-btn" class="send-btn" title="发送">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
-        </button>
-        <button id="stop-btn" class="stop-btn hidden" title="停止生成">
-          <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
-        </button>
+    <div class="chat-composer">
+      <div class="composer-shell" id="composer-shell">
+        <div class="composer-input-row">
+          <textarea
+            id="chat-input"
+            class="chat-input"
+            placeholder="输入消息，向 AI 助手提问…"
+            rows="1"
+          ></textarea>
+          <div class="composer-actions">
+            <button id="send-btn" class="send-btn" title="发送 (Enter)" aria-label="发送" disabled>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
+            </button>
+            <button id="stop-btn" class="stop-btn hidden" title="停止生成" aria-label="停止生成">
+              <svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="composer-footer">
+          <div class="composer-hint">
+            <kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -56,16 +74,20 @@
 (function() {
   'use strict';
 
+  var SPARKLE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z"/><path d="M19 14l.7 2 2 .7-2 .7-.7 2-.7-2-2-.7 2-.7.7-2z"/></svg>';
+  var USER_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 4-6 8-6s8 2 8 6"/></svg>';
+
   var messagesEl = document.getElementById('chat-messages');
   var inputEl = document.getElementById('chat-input');
   var sendBtn = document.getElementById('send-btn');
   var stopBtn = document.getElementById('stop-btn');
-  var modelSelect = document.getElementById('model-select');
-  var modelBadge = document.getElementById('model-badge');
+  var modelSegs = document.querySelectorAll('.model-seg');
+  var suggestions = document.querySelectorAll('.chat-suggestion');
   var currentModel = 'quick';
   var sessionId = null;
   var ws = null;
   var isGenerating = false;
+  var currentBubble = null;
 
   // ── WebSocket 连接 ──
   function connectWS() {
@@ -73,76 +95,94 @@
     var url = protocol + '//' + location.host + '/api/ws';
     ws = new WebSocket(url);
 
-    ws.onopen = function() {
-      console.log('[WS] connected');
-    };
-
+    ws.onopen = function() { console.log('[WS] connected'); };
     ws.onmessage = function(e) {
-      var data = JSON.parse(e.data);
-      handleMessage(data);
+      try { handleMessage(JSON.parse(e.data)); }
+      catch (err) { console.error('[WS] parse error', err); }
     };
-
     ws.onclose = function() {
       console.log('[WS] disconnected, reconnecting in 3s...');
       setTimeout(connectWS, 3000);
     };
-
-    ws.onerror = function(err) {
-      console.error('[WS] error', err);
-    };
+    ws.onerror = function(err) { console.error('[WS] error', err); };
   }
 
   function handleMessage(data) {
     switch (data.type) {
-      case 'token':
-        appendToken(data.content);
-        break;
-      case 'done':
-        finishMessage(data);
-        break;
-      case 'error':
-        showError(data.message);
-        break;
-      case 'notification':
-        showNotification(data.notification);
-        break;
+      case 'token': appendToken(data.content); break;
+      case 'done':  finishMessage(data); break;
+      case 'error': showError(data.message); break;
+      case 'notification': showNotification(data.notification); break;
     }
   }
 
   // ── 消息渲染 ──
-  var currentBubble = null;
+  function ensureBubble() {
+    if (currentBubble) return currentBubble;
+    var empty = document.getElementById('chat-empty');
+    if (empty) empty.remove();
+    currentBubble = document.createElement('div');
+    currentBubble.className = 'chat-bubble assistant';
+    currentBubble.innerHTML =
+      '<div class="bubble-avatar">' + SPARKLE_SVG + '</div>' +
+      '<div class="bubble-content"></div>';
+    messagesEl.appendChild(currentBubble);
+    return currentBubble;
+  }
+
+  function showTyping() {
+    var empty = document.getElementById('chat-empty');
+    if (empty) empty.remove();
+    currentBubble = document.createElement('div');
+    currentBubble.className = 'chat-bubble assistant';
+    currentBubble.innerHTML =
+      '<div class="bubble-avatar">' + SPARKLE_SVG + '</div>' +
+      '<div class="bubble-content"><div class="typing-dots"><span></span><span></span><span></span></div></div>';
+    messagesEl.appendChild(currentBubble);
+    scrollToBottom();
+  }
 
   function appendToken(token) {
-    if (!currentBubble) {
-      var empty = messagesEl.querySelector('.chat-empty');
-      if (empty) empty.remove();
-      currentBubble = document.createElement('div');
-      currentBubble.className = 'chat-bubble assistant';
-      currentBubble.innerHTML = '<div class="bubble-content"></div>';
-      messagesEl.appendChild(currentBubble);
-    }
-    var content = currentBubble.querySelector('.bubble-content');
-    // 流式渲染期间仅用 textContent，避免 XSS 和性能问题
+    var bubble = ensureBubble();
+    var content = bubble.querySelector('.bubble-content');
+    // 流式渲染期间：清掉 typing 占位，仅用 textContent 累加，避免 XSS 与性能问题
+    if (content.querySelector('.typing-dots')) content.innerHTML = '';
     content.textContent += token;
     scrollToBottom();
   }
 
   function finishMessage(data) {
-    if (currentBubble && !data.stopped) {
+    if (currentBubble) {
       var content = currentBubble.querySelector('.bubble-content');
-      // 只在完成时做一次 Markdown 渲染
-      content.innerHTML = marked.parse(content.textContent);
+      if (content.querySelector('.typing-dots')) {
+        // 没有收到任何 token
+        currentBubble.remove();
+      } else {
+        // 完成时（含被停止）做一次 Markdown 渲染，marked 能优雅处理不完整内容
+        try {
+          content.innerHTML = marked.parse(content.textContent);
+        } catch (e) {
+          /* marked 加载失败时保留纯文本 */
+        }
+      }
     }
     currentBubble = null;
     setGenerating(false);
   }
 
   function showError(msg) {
+    // 移除仍在 typing 的占位气泡
+    if (currentBubble && currentBubble.querySelector('.typing-dots')) {
+      currentBubble.remove();
+    }
+    currentBubble = null;
+
+    var empty = document.getElementById('chat-empty');
+    if (empty) empty.remove();
     var el = document.createElement('div');
     el.className = 'chat-bubble error';
     el.innerHTML = '<div class="bubble-content">⚠️ ' + escapeHtml(msg) + '</div>';
     messagesEl.appendChild(el);
-    currentBubble = null;
     setGenerating(false);
     scrollToBottom();
   }
@@ -158,11 +198,13 @@
   }
 
   function addUserMessage(text) {
-    var empty = messagesEl.querySelector('.chat-empty');
+    var empty = document.getElementById('chat-empty');
     if (empty) empty.remove();
     var el = document.createElement('div');
     el.className = 'chat-bubble user';
-    el.innerHTML = '<div class="bubble-content">' + escapeHtml(text) + '</div>';
+    el.innerHTML =
+      '<div class="bubble-avatar">' + USER_SVG + '</div>' +
+      '<div class="bubble-content">' + escapeHtml(text) + '</div>';
     messagesEl.appendChild(el);
     scrollToBottom();
   }
@@ -177,9 +219,7 @@
     }
 
     if (!sessionId) {
-      createSession().then(function() {
-        doSend(text);
-      });
+      createSession().then(function() { doSend(text); });
     } else {
       doSend(text);
     }
@@ -189,7 +229,9 @@
     addUserMessage(text);
     inputEl.value = '';
     inputEl.style.height = 'auto';
+    updateSendState();
     setGenerating(true);
+    showTyping();
 
     ws.send(JSON.stringify({
       type: 'chat',
@@ -211,6 +253,11 @@
     sendBtn.classList.toggle('hidden', generating);
     stopBtn.classList.toggle('hidden', !generating);
     inputEl.disabled = generating;
+    if (!generating) updateSendState();
+  }
+
+  function updateSendState() {
+    sendBtn.disabled = isGenerating || inputEl.value.trim() === '';
   }
 
   // ── Session 管理 ──
@@ -234,7 +281,6 @@
     } catch (e) {
       await createSession();
     }
-
     connectWS();
   }
 
@@ -262,13 +308,29 @@
 
   inputEl.addEventListener('input', function() {
     this.style.height = 'auto';
-    this.style.height = Math.min(this.scrollHeight, 150) + 'px';
+    this.style.height = Math.min(this.scrollHeight, 160) + 'px';
+    updateSendState();
   });
 
-  modelSelect.addEventListener('change', function() {
-    currentModel = this.value;
-    modelBadge.textContent = currentModel;
-    modelBadge.className = 'chat-model-badge ' + currentModel;
+  modelSegs.forEach(function(seg) {
+    seg.addEventListener('click', function() {
+      if (isGenerating) return;
+      modelSegs.forEach(function(s) {
+        s.classList.remove('active');
+        s.setAttribute('aria-selected', 'false');
+      });
+      seg.classList.add('active');
+      seg.setAttribute('aria-selected', 'true');
+      currentModel = seg.dataset.model;
+    });
+  });
+
+  suggestions.forEach(function(chip) {
+    chip.addEventListener('click', function() {
+      inputEl.value = chip.dataset.prompt;
+      inputEl.focus();
+      inputEl.dispatchEvent(new Event('input'));
+    });
   });
 
   // ── 启动 ──

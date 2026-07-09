@@ -31,7 +31,8 @@ class TestAgent:
 
     @pytest.fixture
     def agent(self, mock_llm):
-        with patch("agent.agent.build_llm", return_value=mock_llm):
+        with patch("agent.agent.create_llm_client") as m:
+            m.return_value.get_llm.return_value = mock_llm
             cfg = LlmConfig(protocol="openai", model="gpt-4", api_key="sk-xxx")
             return Agent(cfg)
 

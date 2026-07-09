@@ -164,6 +164,37 @@ a { color: inherit; text-decoration: none; }
 }
 .app-sidebar.expanded .sidebar-toggle-label { opacity: 1; width: auto; margin-left: 10px; }
 
+/* ── Sidebar: labeled section (e.g. AI 助手) ── */
+.sidebar-divider {
+  height: 1px;
+  margin: 10px 14px 4px;
+  background: var(--border-light);
+  flex-shrink: 0;
+}
+.sidebar-section {
+  padding: 4px 8px 4px;
+  flex-shrink: 0;
+}
+.sidebar-section-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 6px 16px 6px;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateX(-4px);
+  transition: opacity var(--duration-normal) var(--ease-out-expo),
+              transform var(--duration-normal) var(--ease-out-expo);
+  transition-delay: 0s;
+}
+.app-sidebar.expanded .sidebar-section-label {
+  opacity: 1;
+  transform: translateX(0);
+  transition-delay: 0.08s;
+}
+
 /* ═══════════════════════════════════════════
    MAIN
    ═══════════════════════════════════════════ */
