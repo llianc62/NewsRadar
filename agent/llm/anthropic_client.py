@@ -1,24 +1,66 @@
 from __future__ import annotations
 
-from langchain_anthropic import ChatAnthropic
-from langchain_core.language_models import BaseChatModel
+from collections.abc import AsyncIterator
+from typing import Any
 
-from .base_client import BaseLLMClient
+from .base_client import BaseClient, ChatResult
 
 
-class AnthropicClient(BaseLLMClient):
-    """Anthropic Messages API 协议客户端。
+class AnthropicClient(BaseClient):
+    """Anthropic API 的 Client。"""
 
-    未来扩展点：extended thinking 的 thinking/effort 门控、prompt caching、
-    归一化（开 thinking 后 content 会变成 list[dict]）都在这里加。
-    """
+    def __init__(self, api_key: str, base_url: str = ""):
+        from anthropic import Anthropic
 
-    def get_llm(self) -> BaseChatModel:
-        kwargs = {
-            "model": self.cfg.model,
-            "api_key": self.cfg.api_key,
-            "temperature": self.cfg.temperature,
-        }
-        if self.cfg.base_url:
-            kwargs["base_url"] = self.cfg.base_url
-        return ChatAnthropic(**kwargs)
+        self._client = Anthropic(api_key=api_key, base_url=base_url or None)
+
+    async def chat(
+        self,
+        model: str,
+        messages: list[dict],
+        temperature: float = 0.7,
+        top_p: float = 1.0,
+        **kwargs: Any,
+    ) -> ChatResult:
+        # 拆出 system 消息（Anthropic API 单独传）
+        system = None
+        filtered_messages = messages
+        if messages and messages[0].get("role") == "system":
+            system = messages[0]["content"]
+            filtered_messages = messages[1:]
+
+        msg = self._client.messages.create(
+            model=model,
+            messages=filtered_messages,
+            system=system,
+            max_tokens=kwargs.pop("max_tokens", 4096),
+            temperature=temperature,
+            **kwargs,
+        )
+        content = msg.content[0].text if msg.content else ""
+        return ChatResult(content=content)
+
+    async def chat_stream(
+        self,
+        model: str,
+        messages: list[dict],
+        temperature: float = 0.7,
+        top_p: float = 1.0,
+        **kwargs: Any,
+    ) -> AsyncIterator[str]:
+        system = None
+        filtered_messages = messages
+        if messages and messages[0].get("role") == "system":
+            system = messages[0]["content"]
+            filtered_messages = messages[1:]
+
+        with self._client.messages.stream(
+            model=model,
+            messages=filtered_messages,
+            system=system,
+            max_tokens=kwargs.pop("max_tokens", 4096),
+            temperature=temperature,
+            **kwargs,
+        ) as stream:
+            for text in stream.text_stream:
+                yield text

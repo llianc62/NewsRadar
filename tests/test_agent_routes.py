@@ -9,20 +9,18 @@ from fastapi.testclient import TestClient
 def config_with_llm():
     """LLM config fixture for agent routes registration."""
     return {
-        "llm": {
+        "models": {
             "deep": {
                 "protocol": "anthropic",
                 "model": "claude-sonnet-5",
                 "api_key": "test-key",
                 "base_url": "",
-                "temperature": 0.7,
             },
             "quick": {
                 "protocol": "openai",
                 "model": "qwen-plus",
                 "api_key": "test-key",
                 "base_url": "",
-                "temperature": 0.3,
             },
         },
         "agent": {
@@ -41,12 +39,14 @@ def agent_client(db, config_with_llm, mock_cursor):
     Uses the mock PostgreSQL fixture from conftest_db.py so that
     agent CRUD methods (create_agent_session, get_agent_sessions, etc.)
     operate on MagicMock objects instead of a real database.
+
+    ``agent_config`` is stored on ``app.state`` so the WebSocket handler
+    can resolve model config at runtime.
     """
-    from web.app import create_app, register_agent_routes
+    from web.app import create_app
 
     s3_config = {}
-    app = create_app(db, s3_config)
-    register_agent_routes(app, config_with_llm, db)
+    app = create_app(db, s3_config, agent_config=config_with_llm)
 
     # Default: create_agent_session returns session id 1
     mock_cursor.fetchone.return_value = [1]

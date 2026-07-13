@@ -116,10 +116,11 @@ class TestInitSchema:
         ddl_calls = [s for s in executes if "CREATE TABLE" in s]
         # Schema DDL is skipped, but migration 008 may create news_images
         # and _init_agent_schema() creates agent_sessions + agent_messages
-        assert len(ddl_calls) == 3
+        assert len(ddl_calls) == 4
         assert any("news_images" in s for s in ddl_calls)
         assert any("agent_sessions" in s for s in ddl_calls)
         assert any("agent_messages" in s for s in ddl_calls)
+        assert any("agent_memories" in s for s in ddl_calls)
 
 
 class TestRunMigrations:

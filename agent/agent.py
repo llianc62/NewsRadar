@@ -1,23 +1,124 @@
+"""DefaultAgent — 模块化 Agent 基座。"""
+
 from __future__ import annotations
+
 from collections.abc import AsyncIterator
-from agent.types import LlmConfig
-from agent.llm import create_llm_client
+from typing import TYPE_CHECKING
+
+from .executor import DirectExecutor, Executor
+from .hub import ModelHub
+from .memory import MemoryModule, NullMemory
+from .models import AgentResult, Context
+
+if TYPE_CHECKING:
+    from .tools import Registry
 
 
-class Agent:
-    """Phase 0：默认（无角色）agent，直调 LLM，支持流式。"""
+class DefaultAgent:
+    """模块化 Agent 基座。
 
-    def __init__(self, llm_cfg: LlmConfig):
-        self.llm = create_llm_client(llm_cfg).get_llm()
+    config 接收总配置文件（config.yaml）中关于模型配置的子项 dict
+    （即 config["models"]），直接传递给 ModelHub。
+    config 是必传参数。
 
-    async def chat_stream(self, message: str) -> AsyncIterator[str]:
-        """流式调 LLM，逐 token yield。"""
-        async for chunk in self.llm.astream(message):
-            content = chunk.content
-            if content:
-                yield content
+    使用方式:
+        # 最小构造——只传必填参数
+        agent = DefaultAgent(
+            config={
+                "default": {"protocol": "openai", "model": "gpt-4o-mini", "api_key": "..."},
+            },
+        )
 
-    async def chat(self, message: str) -> str:
-        """非流式版本，兼容简单场景。"""
-        response = await self.llm.ainvoke(message)
-        return response.content
+        # 带工具调用
+        agent = DefaultAgent(
+            config={...},
+            executor=ReActExecutor(),
+            tools=tool_registry,
+        )
+    """
+
+    def __init__(
+        self,
+        config: dict,
+        executor: Executor | None = None,
+        memory: MemoryModule | None = None,
+        system_prompt: str = "",
+        tools: Registry | None = None,  # Phase 3
+        running_mode: str = "normal",
+        approval_callback=None,
+    ):
+        if running_mode not in ("strict", "normal", "loose"):
+            raise ValueError(f"Invalid running_mode: {running_mode}")
+        self._running_mode = running_mode
+        self._approval_callback = approval_callback
+        self.brain = ModelHub(config=config)
+        self.executor = executor or DirectExecutor(approval_callback=approval_callback)
+        self.memory = memory or NullMemory()
+        self.tools = tools
+        self.system_prompt = system_prompt
+
+    @property
+    def running_mode(self) -> str:
+        return self._running_mode
+
+    @running_mode.setter
+    def running_mode(self, value: str):
+        if value not in ("strict", "normal", "loose"):
+            raise ValueError(f"Invalid running_mode: {value}")
+        self._running_mode = value
+
+    # ── public API ──────────────────────────────────────────────
+
+    async def chat(
+        self,
+        user_input: str,
+        session_id: str = "",
+        model_name: str = "",
+    ) -> AgentResult:
+        """执行一次完整的 Agent 调用（非流式）。"""
+        ctx = Context(
+            user_input=user_input,
+            session_id=session_id,
+            system_prompt=self.system_prompt,
+            model_name=model_name or "default",
+            running_mode=self._running_mode,
+        )
+
+        result_text = await self.executor.run(
+            ctx=ctx,
+            brain=self.brain,
+            memory=self.memory,
+            tools=self.tools,
+        )
+
+        return AgentResult(
+            content=result_text,
+            model_used=ctx.model_used,
+            total_tokens=ctx.total_tokens,
+            tool_calls=ctx.tool_calls,
+            tool_results=ctx.tool_results,
+            step_count=ctx.step_count,
+        )
+
+    async def chat_stream(
+        self,
+        user_input: str,
+        session_id: str = "",
+        model_name: str = "",
+    ) -> AsyncIterator[str]:
+        """流式版本——逐 token 返回 LLM 输出。"""
+        ctx = Context(
+            user_input=user_input,
+            session_id=session_id,
+            system_prompt=self.system_prompt,
+            model_name=model_name or "default",
+            running_mode=self._running_mode,
+        )
+
+        async for token in self.executor.run_stream(
+            ctx=ctx,
+            brain=self.brain,
+            memory=self.memory,
+            tools=self.tools,
+        ):
+            yield token

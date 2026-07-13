@@ -1,5 +1,12 @@
-"""LLM client layer - 每协议一个 client 类 + 工厂。"""
-from .base_client import BaseLLMClient
-from .factory import create_llm_client
+"""LLM Client implementations — per-protocol clients sharing a common ABC."""
 
-__all__ = ["BaseLLMClient", "create_llm_client"]
+from .anthropic_client import AnthropicClient
+from .base_client import BaseClient, ChatResult
+from .openai_client import OpenAIClient
+
+__all__ = [
+    "BaseClient",
+    "ChatResult",
+    "OpenAIClient",
+    "AnthropicClient",
+]

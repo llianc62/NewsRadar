@@ -6,16 +6,6 @@ from unittest.mock import MagicMock, patch
 from web.app import create_app
 
 
-@pytest.fixture(autouse=True)
-def _reset_notification_state():
-    """Reset module-level notification state before each test."""
-    import web.app as app_module
-    app_module._refetch_tasks.clear()
-    app_module._notifications.clear()
-    app_module._notification_counter = 0
-    yield
-
-
 @pytest.fixture
 def client():
     """Create a TestClient with a mock database."""
@@ -33,18 +23,30 @@ def client():
     return TestClient(app)
 
 
+def _seed_notification(ns, id_, **kw):
+    """Insert a raw notification dict into the notification state's internal list."""
+    entry = {
+        "id": id_,
+        "article_id": kw.get("article_id", 1),
+        "title": kw.get("title", "Test"),
+        "status": kw.get("status", "completed"),
+        "error_message": kw.get("error_message", ""),
+        "is_read": kw.get("is_read", False),
+        "created_at": kw.get("created_at", 1700000000.0),
+        "scope": kw.get("scope", "news"),
+    }
+    with ns._lock:
+        ns._notifications.append(entry)
+        ns._counter = max(ns._counter, id_)
+
+
 class TestListNotifications:
     def test_returns_all_notifications_including_read(self, client):
         """GET /api/notifications returns all notifications, not just unread."""
-        import web.app as app_module
-        app_module._notifications.append({
-            "id": 1, "article_id": 1, "title": "Unread", "status": "completed",
-            "error_message": "", "is_read": False, "created_at": 1700000000.0,
-        })
-        app_module._notifications.append({
-            "id": 2, "article_id": 2, "title": "Read", "status": "completed",
-            "error_message": "", "is_read": True, "created_at": 1700000001.0,
-        })
+        ns = client.app.state.notification_state
+        _seed_notification(ns, 1, article_id=1, title="Unread", is_read=False)
+        _seed_notification(ns, 2, article_id=2, title="Read", is_read=True)
+
         response = client.get("/api/notifications")
         assert response.status_code == 200
         data = response.json()
@@ -56,28 +58,14 @@ class TestListNotifications:
 class TestMarkNotificationRead:
     def test_mark_single_notification_as_read(self, client):
         """POST /api/notifications/{id}/read marks the notification as read."""
-        import web.app as app_module
-        # Seed a notification directly
-        app_module._notifications.append({
-            "id": 1,
-            "article_id": 1,
-            "title": "Test Article",
-            "status": "completed",
-            "error_message": "",
-            "is_read": False,
-            "created_at": 1700000000.0,
-        })
-        notif_id = 1
+        ns = client.app.state.notification_state
+        _seed_notification(ns, 1, article_id=1, title="Test Article", is_read=False)
 
-        response = client.post(f"/api/notifications/{notif_id}/read")
+        response = client.post("/api/notifications/1/read")
         assert response.status_code == 200
         assert response.json() == {"ok": True}
 
-        # Verify is_read flipped in the in-memory list
-        notif = next(
-            (n for n in app_module._notifications if n["id"] == notif_id),
-            None,
-        )
+        notif = next((n for n in ns._notifications if n["id"] == 1), None)
         assert notif is not None
         assert notif["is_read"] is True
 
@@ -90,15 +78,10 @@ class TestMarkNotificationRead:
 class TestUnreadCount:
     def test_unread_count_endpoint(self, client):
         """GET /api/notifications/unread-count returns exact unread count."""
-        import web.app as app_module
-        app_module._notifications.append({
-            "id": 1, "article_id": 1, "title": "Unread", "status": "completed",
-            "error_message": "", "is_read": False, "created_at": 1700000000.0,
-        })
-        app_module._notifications.append({
-            "id": 2, "article_id": 2, "title": "Read", "status": "completed",
-            "error_message": "", "is_read": True, "created_at": 1700000001.0,
-        })
+        ns = client.app.state.notification_state
+        _seed_notification(ns, 1, article_id=1, title="Unread", is_read=False)
+        _seed_notification(ns, 2, article_id=2, title="Read", is_read=True)
+
         response = client.get("/api/notifications/unread-count")
         assert response.status_code == 200
         assert response.json() == {"count": 1}

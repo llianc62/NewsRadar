@@ -31,16 +31,6 @@ def mock_db():
     return db
 
 
-@pytest.fixture(autouse=True)
-def _reset_refetch_state():
-    """Reset module-level refetch state before each test."""
-    import web.app as app_module
-    app_module._refetch_tasks.clear()
-    app_module._notifications.clear()
-    app_module._notification_counter = 0
-    yield
-
-
 @pytest.fixture
 def client(mock_db):
     """Create test client with mock db."""
@@ -74,12 +64,10 @@ class TestDeleteEndpoint:
         assert resp.status_code == 404
         data = resp.json()
         assert data["ok"] is False
-        # delete_news must not be called when the article doesn't exist
         mock_db.delete_news.assert_not_called()
 
     def test_delete_returns_404_when_delete_affects_no_rows(self, client, mock_db):
         """Should return 404 if the article vanished between GET and DELETE."""
-        # Article exists for the existence check, but delete_news reports 0 rows
         mock_db.delete_news.return_value = False
         resp = client.delete("/api/news/1")
         assert resp.status_code == 404
@@ -87,17 +75,18 @@ class TestDeleteEndpoint:
 
     def test_delete_clears_lingering_refetch_task(self, client, mock_db):
         """A pending refetch task for the deleted article should be dropped."""
-        import web.app as app_module
-        # Simulate a pending refetch task for this article
-        app_module._refetch_tasks[1] = {
+        # Seed a pending task in the background runner
+        runner = client.app.state.background_runner
+        runner._tasks["refetch-1"] = {
+            "task_id": "refetch-1",
             "article_id": 1, "title": "测试",
             "status": "pending", "created_at": "2026-06-18T00:00:00",
         }
-        assert 1 in app_module._refetch_tasks
+        assert "refetch-1" in runner._tasks
 
         client.delete("/api/news/1")
 
-        assert 1 not in app_module._refetch_tasks
+        assert "refetch-1" not in runner._tasks
 
     def test_delete_passes_correct_id_to_db(self, client, mock_db):
         """The article_id from the path must reach delete_news unchanged."""

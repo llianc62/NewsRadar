@@ -4,7 +4,6 @@ import pytest
 from fastapi.testclient import TestClient
 from web.app import create_app
 
-# We'll use a mock crawler and mock db for testing
 from unittest.mock import MagicMock, patch
 
 
@@ -34,16 +33,6 @@ def mock_crawler():
 
     c.enrich_content.side_effect = delayed_enrich
     return c
-
-
-@pytest.fixture(autouse=True)
-def _reset_refetch_state():
-    """Reset module-level refetch state before each test."""
-    import web.app as app_module
-    app_module._refetch_tasks.clear()
-    app_module._notifications.clear()
-    app_module._notification_counter = 0
-    yield
 
 
 @pytest.fixture

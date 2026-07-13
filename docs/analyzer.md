@@ -79,12 +79,8 @@ title + content → clean_markdown_syntax() → jieba.lcut() → 逐词评分 �
 
 ### 两层策略
 
-1. **TF-IDF**（优先）：使用从数据库文章构建的自定义 IDF 语料（`data/jieba_idf.txt`），自动压低"公司/企业/项目"等通用词
-2. **TextRank**（兜底）：IDF 语料不可用时回退，词性过滤 `ns/nr/nt/nz`（地名/人名/机构名/专名）
-
-### IDF 语料构建
-
-`_ensure_idf_corpus()` — 文件不存在时自动从 DB 最新 2000 篇文章构建。统计文档频率 → 计算 IDF → 写入 `data/jieba_idf.txt`。
+1. **TF-IDF**（优先）：使用 jieba 内置 IDF 模型，自动压低通用词权重
+2. **TextRank**（兜底）：TF-IDF 提取失败时回退，基于图排序算法
 
 ### 集成点
 

@@ -235,13 +235,22 @@ class NewsRadarDaemon:
         }
         s3_config = self.config.get("storage", {}).get("resource", {})
         crawler = Crawler(self.config, pg_db=self.db)
-        app = create_app(self.db, s3_config, queues=queues, crawler=crawler)
 
-        # 条件注册 Agent 路由（仅当配置了 LLM 时）
-        if self.config.get("llm"):
-            from web.app import register_agent_routes
-            register_agent_routes(app, self.config, self.db)
-            print("[Daemon] Agent routes registered.")
+        # 条件构建 Agent（仅当配置了 models 时）
+        agent = None
+        if self.config.get("models"):
+            from agent.factory import create_agent
+
+            agent = await create_agent(
+                self.config["models"],
+                system_prompt="你是 NewsRadar 新闻助手，可以查询新闻、天气，以及使用其他工具。",
+                register_mcp=True,
+            )
+            print("[Daemon] Agent built (with ReActExecutor + tools).")
+
+        # 创建 Web 应用（含条件注册 Agent 路由）
+        app = create_app(self.db, s3_config, queues=queues, crawler=crawler,
+                          agent_config=self.config, agent_instance=agent)
 
         web_task = asyncio.create_task(self._serve_web(app), name="web")
 

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}AI 助手 - NewsRadar{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="/static/css/agent_chat.css?v=2">
+<link rel="stylesheet" href="/static/css/agent_chat.css?v=3">
 {% endblock %}
 {% block content %}
 <div class="app-main">
@@ -15,13 +15,26 @@
         </div>
       </div>
       <div class="chat-header-right">
-        <div class="model-segmented" role="tablist" aria-label="模型选择">
-          <button class="model-seg active" data-model="quick" role="tab" aria-selected="true">
-            <span class="dot"></span>Quick 快速
-          </button>
-          <button class="model-seg" data-model="deep" role="tab" aria-selected="false">
-            <span class="dot"></span>Deep 深度
-          </button>
+        <div class="chat-header-controls">
+          <div class="mode-segmented" role="tablist" aria-label="运行模式">
+            <button class="mode-seg active" data-mode="strict" role="tab" aria-selected="true">
+              <span class="mode-icon">🔒</span>Strict
+            </button>
+            <button class="mode-seg" data-mode="normal" role="tab" aria-selected="false">
+              <span class="mode-icon">⚡</span>Normal
+            </button>
+            <button class="mode-seg" data-mode="loose" role="tab" aria-selected="false">
+              <span class="mode-icon">🔄</span>Loose
+            </button>
+          </div>
+          <div class="model-segmented" role="tablist" aria-label="模型选择">
+            <button class="model-seg active" data-model="quick" role="tab" aria-selected="true">
+              <span class="dot"></span>Quick 快速
+            </button>
+            <button class="model-seg" data-model="deep" role="tab" aria-selected="false">
+              <span class="dot"></span>Deep 深度
+            </button>
+          </div>
         </div>
       </div>
     </header>
@@ -69,6 +82,33 @@
   </div>
 </div>
 
+<!-- ── Tool Approval Dialog ── -->
+<div class="approval-overlay hidden" id="approval-overlay">
+  <div class="approval-dialog">
+    <div class="approval-header">
+      <span class="approval-badge" id="approval-badge">Level 3</span>
+      <span class="approval-title">工具调用需要授权</span>
+    </div>
+    <div class="approval-body">
+      <div class="approval-field">
+        <label>工具</label>
+        <code id="approval-tool-name">—</code>
+      </div>
+      <div class="approval-field">
+        <label>参数</label>
+        <pre id="approval-tool-args">—</pre>
+      </div>
+    </div>
+    <div class="approval-reason-row">
+      <textarea id="approval-reason" class="approval-reason" placeholder="拒绝理由（可选）" rows="2"></textarea>
+    </div>
+    <div class="approval-actions">
+      <button id="approval-reject-btn" class="approval-btn reject">拒绝</button>
+      <button id="approval-approve-btn" class="approval-btn approve">批准</button>
+    </div>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script>
 (function() {
@@ -84,10 +124,13 @@
   var modelSegs = document.querySelectorAll('.model-seg');
   var suggestions = document.querySelectorAll('.chat-suggestion');
   var currentModel = 'quick';
+  var currentMode = 'strict';
   var sessionId = null;
   var ws = null;
   var isGenerating = false;
   var currentBubble = null;
+  var pendingRequestId = null;
+  var pendingResolve = null;
 
   // ── WebSocket 连接 ──
   function connectWS() {
@@ -112,7 +155,7 @@
       case 'token': appendToken(data.content); break;
       case 'done':  finishMessage(data); break;
       case 'error': showError(data.message); break;
-      case 'notification': showNotification(data.notification); break;
+      case 'tool_approval_request': showApprovalDialog(data); break;
     }
   }
 
@@ -187,16 +230,6 @@
     scrollToBottom();
   }
 
-  function showNotification(notif) {
-    if (typeof window.showAppToast === 'function') {
-      window.showAppToast(
-        notif.title,
-        notif.summary || (notif.status === 'completed' ? '任务完成' : '任务失败'),
-        notif.status === 'completed' ? 'done' : 'fail'
-      );
-    }
-  }
-
   function addUserMessage(text) {
     var empty = document.getElementById('chat-empty');
     if (empty) empty.remove();
@@ -238,6 +271,7 @@
       session_id: sessionId,
       message: text,
       model: currentModel,
+      running_mode: currentMode,
     }));
   }
 
@@ -331,6 +365,85 @@
       inputEl.focus();
       inputEl.dispatchEvent(new Event('input'));
     });
+  });
+
+  // ── 运行模式切换 ──
+  var modeSegs = document.querySelectorAll('.mode-seg');
+  modeSegs.forEach(function(seg) {
+    seg.addEventListener('click', function() {
+      if (isGenerating) return;
+      modeSegs.forEach(function(s) {
+        s.classList.remove('active');
+        s.setAttribute('aria-selected', 'false');
+      });
+      seg.classList.add('active');
+      seg.setAttribute('aria-selected', 'true');
+      currentMode = seg.dataset.mode;
+    });
+  });
+
+  // ── 工具授权弹窗 ──
+  var approvalOverlay = document.getElementById('approval-overlay');
+  var approvalToolName = document.getElementById('approval-tool-name');
+  var approvalToolArgs = document.getElementById('approval-tool-args');
+  var approvalBadge = document.getElementById('approval-badge');
+  var approvalReason = document.getElementById('approval-reason');
+  var approveBtn = document.getElementById('approval-approve-btn');
+  var rejectBtn = document.getElementById('approval-reject-btn');
+
+  function showApprovalDialog(data) {
+    pendingRequestId = data.request_id;
+    approvalToolName.textContent = data.tool.name || '—';
+    approvalToolArgs.textContent = JSON.stringify(data.args, null, 2) || '—';
+    var level = data.tool.level || 0;
+    if (level >= 3) {
+      approvalBadge.textContent = 'Level ' + level;
+      approvalBadge.style.background = '#fdf0f0';
+      approvalBadge.style.color = '#c93a3a';
+    } else if (level >= 2) {
+      approvalBadge.textContent = 'Level ' + level;
+      approvalBadge.style.background = '#fff5f0';
+      approvalBadge.style.color = '#f25f0f';
+    } else {
+      approvalBadge.textContent = 'Level ' + level;
+      approvalBadge.style.background = '#f0faf4';
+      approvalBadge.style.color = '#1a8a4a';
+    }
+    approvalReason.value = '';
+    approvalOverlay.classList.remove('hidden');
+  }
+
+  function hideApprovalDialog() {
+    approvalOverlay.classList.add('hidden');
+    pendingRequestId = null;
+  }
+
+  approveBtn.addEventListener('click', function() {
+    if (!pendingRequestId || !ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({
+      type: 'tool_approval_response',
+      request_id: pendingRequestId,
+      approved: true,
+    }));
+    hideApprovalDialog();
+  });
+
+  rejectBtn.addEventListener('click', function() {
+    if (!pendingRequestId || !ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({
+      type: 'tool_approval_response',
+      request_id: pendingRequestId,
+      approved: false,
+      reason: approvalReason.value.trim() || '用户拒绝',
+    }));
+    hideApprovalDialog();
+  });
+
+  // 点击遮罩层等同于拒绝
+  approvalOverlay.addEventListener('click', function(e) {
+    if (e.target === approvalOverlay) {
+      rejectBtn.click();
+    }
   });
 
   // ── 启动 ──

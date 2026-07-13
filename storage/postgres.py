@@ -395,6 +395,29 @@ class PostgreSQL:
                     CREATE INDEX IF NOT EXISTS idx_agent_messages_session
                         ON agent_messages(session_id, created_at);
                 """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS agent_memories (
+                        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        session_id  TEXT NOT NULL,
+                        agent_name  TEXT NOT NULL DEFAULT '',
+                        memory_type TEXT NOT NULL DEFAULT 'summary',
+                        content     TEXT NOT NULL,
+                        created_at  TIMESTAMPTZ DEFAULT now(),
+                        updated_at  TIMESTAMPTZ DEFAULT now()
+                    );
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_memories_session
+                        ON agent_memories (session_id, created_at DESC);
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_memories_search
+                        ON agent_memories USING GIN (to_tsvector('english', content));
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_memories_search_trgm
+                        ON agent_memories USING GIN (content gin_trgm_ops);
+                """)
             conn.commit()
             print("[DB] Agent schema initialized")
         finally:

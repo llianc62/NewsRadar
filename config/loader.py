@@ -188,28 +188,26 @@ def _load_analyzer_config(raw: Dict) -> Dict:
     }
 
 
-def _load_llm_instance(cfg: dict, env_prefix: str, required: bool) -> dict | None:
-    """加载单个 LLM 实例配置。fail-fast 校验。"""
-    if not cfg and not required:
-        return None
-    if not cfg:
-        raise ValueError(f"LLM '{env_prefix.lower()}' 未配置")
+def _load_models_config(raw: Dict) -> dict:
+    """加载 models 配置段 — key 为别名，value 为 {protocol, model, api_key, base_url}。"""
+    models_raw = raw.get("models", {})
+    if not models_raw:
+        raise ValueError("models 段未配置，至少需要一个模型")
 
-    protocol = cfg.get("protocol", "openai")
-    if protocol not in ("openai", "anthropic"):
-        raise ValueError(f"不支持的 LLM 协议: {protocol!r}")
+    result = {}
+    for name, cfg in models_raw.items():
+        protocol = cfg.get("protocol", "openai")
+        if protocol not in ("openai", "anthropic"):
+            raise ValueError(f"不支持的 LLM 协议: {protocol!r}")
 
-    api_key = _get_env_str(f"{env_prefix}_API_KEY") or cfg.get("api_key", "")
-    if not api_key:
-        raise ValueError(f"LLM api_key 未配置（设 {env_prefix}_API_KEY env 或 config.yaml）")
-
-    return {
-        "protocol": protocol,
-        "model": _get_env_str(f"{env_prefix}_MODEL") or cfg.get("model", ""),
-        "base_url": _get_env_str(f"{env_prefix}_BASE_URL") or cfg.get("base_url", ""),
-        "api_key": api_key,
-        "temperature": cfg.get("temperature", 0.7),
-    }
+        env_prefix = f"MODELS_{name.upper()}"
+        result[name] = {
+            "protocol": protocol,
+            "model": _get_env_str(f"{env_prefix}_MODEL") or cfg.get("model", ""),
+            "base_url": _get_env_str(f"{env_prefix}_BASE_URL") or cfg.get("base_url", ""),
+            "api_key": _get_env_str(f"{env_prefix}_API_KEY") or cfg.get("api_key", ""),
+        }
+    return result
 
 
 def _load_agent_config(raw: dict) -> dict:
@@ -254,10 +252,7 @@ def load_config(path: str = "config.yaml") -> Dict[str, Any]:
         "postgresql": _load_postgresql_config(raw),
         "web": _load_web_config(raw),
         "analyzer": _load_analyzer_config(raw),
-        "llm": {
-            "deep": _load_llm_instance(raw.get("llm", {}).get("deep", {}), "LLM_DEEP", required=True),
-            "quick": _load_llm_instance(raw.get("llm", {}).get("quick", {}), "LLM_QUICK", required=False),
-        },
+        "models": _load_models_config(raw),
         "agent": _load_agent_config(raw),
     }
 
