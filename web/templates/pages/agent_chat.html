@@ -1,10 +1,22 @@
 {% extends "base.html" %}
 {% block title %}AI 助手 - NewsRadar{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="/static/css/agent_chat.css?v=3">
+<link rel="stylesheet" href="/static/css/agent_chat.css?v=6">
 {% endblock %}
 {% block content %}
 <div class="app-main">
+  <!-- ── 左侧：会话历史 ── -->
+  <aside class="session-sidebar" id="session-sidebar">
+    <header class="session-sidebar-header">
+      <h3>会话</h3>
+      <button id="new-session-btn" class="session-new-btn" title="新对话">+</button>
+    </header>
+    <div class="session-list" id="session-list">
+      <!-- JS 动态渲染 -->
+    </div>
+  </aside>
+
+  <!-- ── 中间：聊天画布 ── -->
   <div class="chat-container">
     <header class="chat-header">
       <div class="chat-header-left">
@@ -25,14 +37,6 @@
             </button>
             <button class="mode-seg" data-mode="loose" role="tab" aria-selected="false">
               <span class="mode-icon">🔄</span>Loose
-            </button>
-          </div>
-          <div class="model-segmented" role="tablist" aria-label="模型选择">
-            <button class="model-seg active" data-model="quick" role="tab" aria-selected="true">
-              <span class="dot"></span>Quick 快速
-            </button>
-            <button class="model-seg" data-model="deep" role="tab" aria-selected="false">
-              <span class="dot"></span>Deep 深度
             </button>
           </div>
         </div>
@@ -76,10 +80,30 @@
           <div class="composer-hint">
             <kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行
           </div>
+          <select id="model-select" class="model-select" aria-label="模型选择">
+            <option value="default">Default</option>
+            <option value="quick">Quick</option>
+            <option value="deep">Deep</option>
+          </select>
         </div>
       </div>
     </div>
   </div>
+
+  <!-- ── 右侧：智能体列表 ── -->
+  <aside class="agent-sidebar" id="agent-sidebar">
+    <header class="agent-sidebar-header">
+      <div class="section-header-line"></div>
+      <div>
+        <h2 class="agent-sidebar-title">智能体</h2>
+        <div class="agent-sidebar-subtitle">选一个角色对话</div>
+      </div>
+    </header>
+    <div class="agent-list" id="agent-list"></div>
+    <footer class="agent-sidebar-footer">
+      <span class="agent-hint" id="agent-hint">默认助手 · 或勾选角色</span>
+    </footer>
+  </aside>
 </div>
 
 <!-- ── Tool Approval Dialog ── -->
@@ -121,21 +145,28 @@
   var inputEl = document.getElementById('chat-input');
   var sendBtn = document.getElementById('send-btn');
   var stopBtn = document.getElementById('stop-btn');
-  var modelSegs = document.querySelectorAll('.model-seg');
+  var modelSelect = document.getElementById('model-select');
   var suggestions = document.querySelectorAll('.chat-suggestion');
   var currentModel = 'quick';
   var currentMode = 'strict';
+  var selectedPersonas = [];          // 选中的角色名（空 = 默认助手；>=2 = 团队会诊）
+  var currentAgentId = '';           // 当前选中的智能体 ID
   var sessionId = null;
   var ws = null;
   var isGenerating = false;
   var currentBubble = null;
   var pendingRequestId = null;
+
+  var agentListEl = document.getElementById('agent-list');
   var pendingResolve = null;
 
   // ── WebSocket 连接 ──
   function connectWS() {
     var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     var url = protocol + '//' + location.host + '/api/ws';
+    if (currentAgentId) {
+      url += '?agent_id=' + encodeURIComponent(currentAgentId);
+    }
     ws = new WebSocket(url);
 
     ws.onopen = function() { console.log('[WS] connected'); };
@@ -156,7 +187,49 @@
       case 'done':  finishMessage(data); break;
       case 'error': showError(data.message); break;
       case 'tool_approval_request': showApprovalDialog(data); break;
+      case 'team_thinking': showTeamThinking(data.personas || []); break;
+      case 'signals': renderSignals(data.signals || []); break;
     }
+  }
+
+  // ── 团队会诊：阶段状态 + 信号 chips ──
+  function showTeamThinking(personas) {
+    var bubble = ensureBubble();
+    var content = bubble.querySelector('.bubble-content');
+    content.innerHTML = '<div class="team-thinking">'
+      + '<div class="typing-dots"><span></span><span></span><span></span></div>'
+      + '<span class="team-thinking-label">团队分析中（' + personas.length
+      + ' 个角色）…</span></div>';
+    scrollToBottom();
+  }
+
+  function stanceClass(stance) {
+    if (stance === '看多') return 'bull';
+    if (stance === '看空') return 'bear';
+    return 'neutral';
+  }
+
+  function renderSignals(signals) {
+    var bubble = ensureBubble();
+    var content = bubble.querySelector('.bubble-content');
+    content.innerHTML = '';
+    if (signals.length) {
+      var chips = document.createElement('div');
+      chips.className = 'signal-chips';
+      signals.forEach(function(s) {
+        var chip = document.createElement('span');
+        chip.className = 'signal-chip stance-' + stanceClass(s.stance);
+        var label = (s.display_name || s.persona || '?') + ' · ' + (s.stance || '?');
+        if (s.confidence) label += ' ' + s.confidence;
+        chip.textContent = label;
+        chips.appendChild(chip);
+      });
+      content.appendChild(chips);
+    }
+    var reply = document.createElement('div');
+    reply.className = 'reply-text';
+    content.appendChild(reply);
+    scrollToBottom();
   }
 
   // ── 消息渲染 ──
@@ -188,16 +261,28 @@
   function appendToken(token) {
     var bubble = ensureBubble();
     var content = bubble.querySelector('.bubble-content');
-    // 流式渲染期间：清掉 typing 占位，仅用 textContent 累加，避免 XSS 与性能问题
-    if (content.querySelector('.typing-dots')) content.innerHTML = '';
-    content.textContent += token;
+    var reply = content.querySelector('.reply-text');
+    if (reply) {
+      // 团队模式：tokens 追加到信号 chips 下的回复容器
+      reply.textContent += token;
+    } else {
+      // 流式渲染期间：清掉 typing 占位，仅用 textContent 累加，避免 XSS 与性能问题
+      if (content.querySelector('.typing-dots')) content.innerHTML = '';
+      content.textContent += token;
+    }
     scrollToBottom();
   }
 
   function finishMessage(data) {
     if (currentBubble) {
       var content = currentBubble.querySelector('.bubble-content');
-      if (content.querySelector('.typing-dots')) {
+      var reply = content.querySelector('.reply-text');
+      if (reply) {
+        // 团队模式：保留信号 chips，仅对回复文本做 Markdown 渲染
+        try {
+          reply.innerHTML = marked.parse(reply.textContent);
+        } catch (e) { /* marked 加载失败时保留纯文本 */ }
+      } else if (content.querySelector('.typing-dots')) {
         // 没有收到任何 token
         currentBubble.remove();
       } else {
@@ -272,6 +357,7 @@
       message: text,
       model: currentModel,
       running_mode: currentMode,
+      persona: selectedPersonas,
     }));
   }
 
@@ -299,7 +385,164 @@
     var resp = await fetch('/api/agent/sessions', { method: 'POST' });
     var data = await resp.json();
     sessionId = data.id;
+    loadSessions();
     return sessionId;
+  }
+
+  async function loadSessions() {
+    try {
+      var resp = await fetch('/api/agent/sessions?page=1&page_size=50');
+      var data = await resp.json();
+      var el = document.getElementById('session-list');
+      el.innerHTML = '';
+      if (data.sessions) {
+        data.sessions.forEach(function(s) {
+          var item = document.createElement('div');
+          item.className = 'session-list-item' + (s.id === sessionId ? ' active' : '');
+          item.textContent = s.title || '新会话';
+          item.dataset.sid = s.id;
+          item.addEventListener('click', function() { switchSession(s.id); });
+          el.appendChild(item);
+        });
+      }
+    } catch (e) {
+      console.error('[sessions] load error', e);
+    }
+  }
+
+  function switchSession(sid) {
+    if (sid === sessionId) return;
+    sessionId = sid;
+    // 高亮当前会话
+    document.querySelectorAll('.session-list-item').forEach(function(item) {
+      item.classList.toggle('active', item.dataset.sid === sid);
+    });
+    // 清空聊天并加载历史
+    messagesEl.innerHTML = '';
+    var empty = document.createElement('div');
+    empty.className = 'chat-empty';
+    empty.id = 'chat-empty';
+    empty.innerHTML = '<div class="chat-empty-avatar">' + SPARKLE_SVG + '</div>'
+      + '<div class="chat-empty-title">会话已切换</div>'
+      + '<div class="chat-empty-desc">开始新对话</div>';
+    messagesEl.appendChild(empty);
+    currentBubble = null;
+    // 异步加载历史消息
+    loadMessages(sid);
+  }
+
+  async function loadMessages(sid) {
+    try {
+      var resp = await fetch('/api/agent/sessions/' + sid + '/messages');
+      var data = await resp.json();
+      var empty = document.getElementById('chat-empty');
+      if (data.messages && data.messages.length > 0) {
+        if (empty) empty.remove();
+        data.messages.forEach(function(m) {
+          var el = document.createElement('div');
+          if (m.role === 'user') {
+            el.className = 'chat-bubble user';
+            el.innerHTML =
+              '<div class="bubble-avatar">' + USER_SVG + '</div>' +
+              '<div class="bubble-content">' + escapeHtml(m.content) + '</div>';
+          } else {
+            el.className = 'chat-bubble assistant';
+            var contentHtml = m.content;
+            try {
+              contentHtml = marked.parse(m.content);
+            } catch (e) { /* 保留纯文本 */ }
+            el.innerHTML =
+              '<div class="bubble-avatar">' + SPARKLE_SVG + '</div>' +
+              '<div class="bubble-content">' + contentHtml + '</div>';
+          }
+          messagesEl.appendChild(el);
+        });
+        scrollToBottom();
+      }
+    } catch (e) {
+      console.error('[messages] load error', e);
+    }
+  }
+
+  // ── 智能体列表（从 /api/agents 加载） ──
+  function agentCardHtml(id, name, desc, selected) {
+    return '<button class="agent-card' + (selected ? ' active' : '') + '"'
+      + ' data-agent-id="' + escapeHtml(id) + '"'
+      + ' role="checkbox" aria-checked="' + (selected ? 'true' : 'false') + '">'
+      + '<div class="agent-card-name">' + escapeHtml(name) + '</div>'
+      + '<div class="agent-card-desc">' + escapeHtml(desc || '') + '</div>'
+      + '</button>';
+  }
+
+  function refreshAgentCardStates() {
+    agentListEl.querySelectorAll('.agent-card').forEach(function(c) {
+      var aid = c.dataset.agentId;
+      var on = (!aid && selectedPersonas.length === 0)
+        || (aid && selectedPersonas.indexOf(aid) >= 0);
+      c.classList.toggle('active', on);
+      c.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+  }
+
+  function updateAgentHint() {
+    var hint = document.getElementById('agent-hint');
+    if (!hint) return;
+    if (selectedPersonas.length === 0) {
+      hint.textContent = '默认助手 · 或勾选角色';
+    } else if (selectedPersonas.length === 1) {
+      hint.textContent = '单角色对话';
+    } else {
+      hint.textContent = '团队会诊 · ' + selectedPersonas.length + ' 个角色';
+    }
+  }
+
+  async function loadAgents() {
+    var data;
+    try {
+      var resp = await fetch('/api/agents');
+      data = await resp.json();
+    } catch (e) {
+      return;  // 接口不可用，保持面板为空
+    }
+    if (!data || !data.agents || !data.agents.length) return;
+
+    // 默认助手卡（data-agent-id="" -> 走默认 agent；选中态 = 未选任何角色）
+    var html = agentCardHtml('', '默认助手', '通用 NewsRadar 助手', true);
+
+    data.agents.forEach(function(a) {
+      html += agentCardHtml(a.id, a.name, a.description, false);
+    });
+
+    agentListEl.innerHTML = html;
+    refreshAgentCardStates();
+    updateAgentHint();
+
+    // 多选切换：点角色卡 toggle；点默认助手清空全部
+    agentListEl.querySelectorAll('.agent-card').forEach(function(card) {
+      card.addEventListener('click', function() {
+        if (isGenerating) return;
+        var aid = card.dataset.agentId;
+        if (!aid) {
+          selectedPersonas = [];
+        } else {
+          var idx = selectedPersonas.indexOf(aid);
+          if (idx >= 0) selectedPersonas.splice(idx, 1);
+          else selectedPersonas.push(aid);
+        }
+        refreshAgentCardStates();
+        updateAgentHint();
+      });
+    });
+  }
+
+  function switchAgent(agentId) {
+    currentAgentId = agentId;
+    // 重新连接 WebSocket 以传递 agent_id
+    if (ws) {
+      ws.onclose = null;  // 避免触发重连逻辑
+      ws.close();
+    }
+    connectWS();
   }
 
   // ── 初始化 ──
@@ -315,6 +558,8 @@
     } catch (e) {
       await createSession();
     }
+    loadSessions();   // 加载会话列表
+    loadAgents();     // 加载智能体列表
     connectWS();
   }
 
@@ -346,17 +591,11 @@
     updateSendState();
   });
 
-  modelSegs.forEach(function(seg) {
-    seg.addEventListener('click', function() {
-      if (isGenerating) return;
-      modelSegs.forEach(function(s) {
-        s.classList.remove('active');
-        s.setAttribute('aria-selected', 'false');
-      });
-      seg.classList.add('active');
-      seg.setAttribute('aria-selected', 'true');
-      currentModel = seg.dataset.model;
-    });
+  // ── 模型选择下拉 ──
+  modelSelect.value = 'quick';
+  modelSelect.addEventListener('change', function() {
+    if (isGenerating) return;
+    currentModel = modelSelect.value;
   });
 
   suggestions.forEach(function(chip) {
@@ -379,6 +618,34 @@
       seg.classList.add('active');
       seg.setAttribute('aria-selected', 'true');
       currentMode = seg.dataset.mode;
+    });
+  });
+
+  // ── 新建会话 ──
+  document.getElementById('new-session-btn').addEventListener('click', async function() {
+    if (isGenerating) return;
+    await createSession();
+    messagesEl.innerHTML = '';
+    var empty = document.createElement('div');
+    empty.className = 'chat-empty';
+    empty.id = 'chat-empty';
+    empty.innerHTML = '<div class="chat-empty-avatar">' + SPARKLE_SVG + '</div>'
+      + '<div class="chat-empty-title">有什么想了解的？</div>'
+      + '<div class="chat-empty-desc">问我任何关于市场热点、个股动态或行业趋势的问题，我会基于 NewsRadar 的新闻数据为你分析。</div>'
+      + '<div class="chat-suggestions">'
+      + '<button class="chat-suggestion" data-prompt="今天市场有什么热点？">今天市场有什么热点？</button>'
+      + '<button class="chat-suggestion" data-prompt="帮我分析一下当前的舆论情绪">帮我分析一下当前的舆论情绪</button>'
+      + '<button class="chat-suggestion" data-prompt="最近有哪些值得关注的个股动态？">最近有哪些值得关注的个股动态？</button>'
+      + '</div>';
+    messagesEl.appendChild(empty);
+    currentBubble = null;
+    // 重新绑定建议按钮
+    document.querySelectorAll('.chat-suggestion').forEach(function(chip) {
+      chip.addEventListener('click', function() {
+        inputEl.value = chip.dataset.prompt;
+        inputEl.focus();
+        inputEl.dispatchEvent(new Event('input'));
+      });
     });
   });
 

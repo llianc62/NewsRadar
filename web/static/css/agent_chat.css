@@ -1,11 +1,17 @@
 /* ═══════════════════════════════════════════════════════════════════
    Agent Chat — NewsRadar v8 editorial design system (light theme)
-   Every var() carries a light fallback so the UI can never render dark.
+   Three-column layout: session sidebar | chat canvas | agent sidebar
    ═══════════════════════════════════════════════════════════════════ */
 
-/* ── Layout ── 嵌入 .app-main，占满侧栏右侧空间 */
+/* ── Three-column layout ── */
+.app-main {
+  display: grid;
+  grid-template-columns: 240px 1fr 200px;
+  height: 100%;
+}
+
+/* ── Layout ── 聊天画布占满中间列 */
 .chat-container {
-  flex: 1;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -47,52 +53,6 @@
   color: var(--text-muted, #999);
   margin-top: 2px;
   white-space: nowrap;
-}
-
-/* model segmented control — 取代裸 <select> */
-.model-segmented {
-  display: inline-flex;
-  align-items: center;
-  background: var(--bg-warm, #f5f5f5);
-  border: 1px solid var(--border, #e5e5e5);
-  border-radius: var(--radius, 10px);
-  padding: 3px;
-  gap: 2px;
-  flex-shrink: 0;
-}
-
-.model-seg {
-  border: none;
-  background: transparent;
-  color: var(--text-secondary, #666);
-  font-family: inherit;
-  font-size: 12.5px;
-  font-weight: 500;
-  padding: 6px 14px;
-  border-radius: 7px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  transition: color var(--duration-fast, 150ms) var(--ease-out-expo, cubic-bezier(0.16, 1, 0.3, 1)),
-              background var(--duration-fast, 150ms) var(--ease-out-expo, cubic-bezier(0.16, 1, 0.3, 1)),
-              box-shadow var(--duration-fast, 150ms) var(--ease-out-expo, cubic-bezier(0.16, 1, 0.3, 1));
-}
-
-.model-seg:hover { color: var(--text, #1a1a1a); }
-
-.model-seg.active {
-  background: var(--surface, #ffffff);
-  color: var(--accent, #f25f0f);
-  box-shadow: var(--shadow-xs, 0 1px 2px rgba(0, 0, 0, 0.03));
-}
-
-.model-seg .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  opacity: 0.65;
 }
 
 /* ── Messages ── */
@@ -508,6 +468,32 @@
 .mode-seg[data-mode="normal"].active  { color: var(--accent, #f25f0f); }
 .mode-seg[data-mode="loose"].active   { color: #1a8a4a; }
 
+/* ── Model select dropdown (in composer footer) ── */
+.model-select {
+  border: 1px solid var(--border, #e5e5e5);
+  border-radius: 6px;
+  padding: 4px 28px 4px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  font-weight: 500;
+  background: var(--surface, #ffffff);
+  color: var(--text-secondary, #666);
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg width='10' height='6' viewBox='0 0 10 6' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23999' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  transition: border-color var(--duration-fast, 150ms) var(--ease-out-expo, cubic-bezier(0.16, 1, 0.3, 1));
+}
+.model-select:hover {
+  border-color: var(--accent, #f25f0f);
+}
+.model-select:focus {
+  outline: none;
+  border-color: var(--accent, #f25f0f);
+  box-shadow: 0 0 0 2px var(--accent-glow, rgba(242, 95, 15, 0.12));
+}
+
 /* ── Approval Overlay ── */
 .approval-overlay {
   position: fixed;
@@ -669,7 +655,268 @@
   background: var(--accent-hover, #d1580c);
 }
 
-/* ── Responsive ── */
+/* ═══════════════════════════════════════════════════════════════════
+   Session Sidebar - 左侧会话历史
+   ═══════════════════════════════════════════════════════════════════ */
+.session-sidebar {
+  border-right: 1px solid var(--border-light, #f0f0f0);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  background: var(--bg, #ffffff);
+}
+
+.session-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 16px 12px;
+  border-bottom: 1px solid var(--border-light, #f0f0f0);
+  flex-shrink: 0;
+}
+
+.session-sidebar-header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text, #1a1a1a);
+}
+
+.session-new-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--border, #e5e5e5);
+  background: var(--surface, #ffffff);
+  color: var(--text-secondary, #666);
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  transition: border-color var(--duration-fast, 150ms),
+              color var(--duration-fast, 150ms),
+              background var(--duration-fast, 150ms);
+}
+.session-new-btn:hover {
+  border-color: var(--accent, #f25f0f);
+  color: var(--accent, #f25f0f);
+  background: var(--accent-light, #fff5f0);
+}
+
+.session-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 0;
+}
+
+.session-list::-webkit-scrollbar { width: 4px; }
+.session-list::-webkit-scrollbar-track { background: transparent; }
+.session-list::-webkit-scrollbar-thumb {
+  background: var(--border, #e5e5e5);
+  border-radius: 10px;
+}
+
+.session-list-item {
+  padding: 10px 16px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text, #1a1a1a);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background var(--duration-fast, 150ms);
+}
+.session-list-item:hover {
+  background: var(--bg-warm, #f5f5f5);
+}
+.session-list-item.active {
+  background: var(--bg-warm, #f5f5f5);
+  font-weight: 500;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Agent Sidebar - 右侧智能体列表
+   ═══════════════════════════════════════════════════════════════════ */
+.agent-sidebar {
+  border-left: 1px solid var(--border-light, #f0f0f0);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  background: var(--bg, #ffffff);
+}
+
+.agent-sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px 16px;
+  border-bottom: 1px solid var(--border-light, #f0f0f0);
+  flex-shrink: 0;
+}
+
+.agent-sidebar-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text, #1a1a1a);
+  letter-spacing: -0.01em;
+}
+
+.agent-sidebar-subtitle {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-muted, #999);
+}
+
+.agent-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-list::-webkit-scrollbar { width: 4px; }
+.agent-list::-webkit-scrollbar-track { background: transparent; }
+.agent-list::-webkit-scrollbar-thumb {
+  background: var(--border, #e5e5e5);
+  border-radius: 10px;
+}
+
+.agent-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #e5e5e5);
+  border-radius: var(--radius, 10px);
+  background: var(--surface, #ffffff);
+  cursor: pointer;
+  font-family: inherit;
+  transition:
+    border-color var(--duration-fast, 150ms) var(--ease-out-expo, cubic-bezier(0.16, 1, 0.3, 1)),
+    background var(--duration-fast, 150ms) var(--ease-out-expo, cubic-bezier(0.16, 1, 0.3, 1)),
+    box-shadow var(--duration-fast, 150ms) var(--ease-out-expo, cubic-bezier(0.16, 1, 0.3, 1));
+}
+
+.agent-card:hover {
+  border-color: var(--border-strong, #d0d0d0);
+  background: var(--bg-warm, #fafafa);
+}
+
+.agent-card.active {
+  border-color: var(--accent, #f25f0f);
+  background: var(--accent-light, #fff5f0);
+  box-shadow: 0 0 0 1px var(--accent, #f25f0f) inset;
+}
+
+.agent-card-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text, #1a1a1a);
+  margin-bottom: 2px;
+}
+
+.agent-card.active .agent-card-name {
+  color: var(--accent-hover, #d1580c);
+}
+
+.agent-card-desc {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-muted, #999);
+}
+
+.agent-sidebar-footer {
+  padding: 10px 16px;
+  border-top: 1px solid var(--border-light, #f0f0f0);
+  flex-shrink: 0;
+}
+
+.agent-hint {
+  font-size: 11.5px;
+  color: var(--text-muted, #999);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Team Consultation - 团队会诊状态 + 信号 chips
+   ═══════════════════════════════════════════════════════════════════ */
+.team-thinking {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 0;
+}
+
+.team-thinking-label {
+  font-size: 13px;
+  color: var(--text-muted, #999);
+}
+
+.signal-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 0 10px 0;
+  margin-bottom: 10px;
+  border-bottom: 1px dashed var(--border-light, #f0f0f0);
+}
+
+.signal-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #e5e5e5);
+  background: var(--bg-warm, #f5f5f5);
+  color: var(--text-secondary, #666);
+}
+
+.signal-chip.stance-bull {
+  background: #f0f8f0;
+  border-color: #cfe8cf;
+  color: #1a8a4a;
+}
+
+.signal-chip.stance-bear {
+  background: #fdf0f0;
+  border-color: #f0cfcf;
+  color: #c93a3a;
+}
+
+.signal-chip.stance-neutral {
+  background: #f5f5f5;
+  border-color: #e5e5e5;
+  color: #666;
+}
+
+.reply-text {
+  /* 团队模式下回复文本容器，继承 .bubble-content 排版 */
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Responsive
+   ═══════════════════════════════════════════════════════════════════ */
+@media (max-width: 960px) {
+  .app-main {
+    grid-template-columns: 200px 1fr 0;
+  }
+  .agent-sidebar { display: none; }
+}
+
+@media (max-width: 768px) {
+  .app-main {
+    grid-template-columns: 0 1fr 0;
+  }
+  .session-sidebar { display: none; }
+}
+
 @media (max-width: 640px) {
   .chat-header { padding: 14px 16px; }
   .chat-composer { padding: 10px 16px 16px; }
