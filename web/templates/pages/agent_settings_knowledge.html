@@ -1,0 +1,410 @@
+{% extends "base.html" %}
+{% block title %}知识库管理 - NewsRadar{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="/static/css/agent_settings.css?v=1">
+{% endblock %}
+{% block content %}
+<div class="app-main">
+  <div class="settings-container">
+    <header class="settings-header">
+      <div class="section-header">
+        <div class="section-header-line"></div>
+        <h1>知识库管理</h1>
+      </div>
+      <button id="create-kb-btn" class="btn-primary">+ 新建知识库</button>
+    </header>
+
+    <!-- KB card list -->
+    <div class="agent-card-list" id="kb-card-list">
+      <div class="settings-empty" id="kb-list-empty" style="display:none">
+        <div class="settings-empty-icon">{{ icon_svg('file-text')|safe }}</div>
+        <div class="settings-empty-title">暂无知识库</div>
+        <div class="settings-empty-desc">点击上方「新建知识库」创建第一个知识库</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Create KB overlay -->
+<div class="overlay hidden" id="kb-create-overlay">
+  <div class="kb-create-panel">
+    <div class="kb-create-header">
+      <h2>新建知识库</h2>
+      <button class="editor-close-btn" id="kb-create-close">&times;</button>
+    </div>
+    <form id="kb-create-form" class="kb-create-form">
+      <div class="form-group">
+        <label for="kb-name">名称 <span class="required">*</span></label>
+        <input type="text" id="kb-name" name="name" required placeholder="例如：巴菲特投资理念、宏观经济数据">
+      </div>
+      <div class="form-group">
+        <label for="kb-desc">简介</label>
+        <textarea id="kb-desc" name="description" rows="3" placeholder="描述该知识库的内容和用途"></textarea>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn-primary" id="kb-create-save">创建</button>
+        <button type="button" class="btn-secondary" id="kb-create-cancel">取消</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- KB detail overlay -->
+<div class="overlay hidden" id="kb-detail-overlay">
+  <div class="kb-detail-panel">
+    <div class="kb-detail-header">
+      <h2 id="kb-detail-title">知识库详情</h2>
+      <button class="editor-close-btn" id="kb-detail-close">&times;</button>
+    </div>
+    <div class="kb-detail-body">
+      <!-- KB info -->
+      <div class="kb-detail-section">
+        <h3>基本信息</h3>
+        <div class="kb-detail-info">
+          <div class="kb-detail-row"><span class="kb-detail-label">名称</span><span id="kb-detail-name">-</span></div>
+          <div class="kb-detail-row"><span class="kb-detail-label">简介</span><span id="kb-detail-desc">-</span></div>
+          <div class="kb-detail-row"><span class="kb-detail-label">命名空间</span><span id="kb-detail-namespace">-</span></div>
+          <div class="kb-detail-row"><span class="kb-detail-label">切片数</span><span id="kb-detail-chunks">-</span></div>
+          <div class="kb-detail-row"><span class="kb-detail-label">创建时间</span><span id="kb-detail-created">-</span></div>
+        </div>
+      </div>
+
+      <!-- Upload -->
+      <div class="kb-detail-section">
+        <h3>上传文档</h3>
+        <form id="kb-upload-form" class="kb-upload-form">
+          <div class="kb-upload-area" id="kb-upload-area">
+            <div class="kb-upload-icon">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="32" height="32"><path d="M14 16a1 1 0 0 0 1-1v-2a1 1 0 0 1 1-1h3.293a.707.707 0 0 0 .5-1.207l-6.939-6.939a1.207 1.207 0 0 0-1.708 0l-6.94 6.94a.707.707 0 0 0 .5 1.206H8a1 1 0 0 1 1 1v2a1 1 0 0 0 1 1z"/><path d="M9 20h6"/></svg>
+            </div>
+            <div class="kb-upload-text">拖拽文件到此处，或点击选择文件</div>
+            <div class="kb-upload-hint">支持 .txt, .md, .json 格式，最大 50MB</div>
+            <input type="file" id="kb-upload-input" name="file" accept=".txt,.md,.json" style="display:none">
+          </div>
+          <div class="kb-upload-status hidden" id="kb-upload-status">
+            <div class="kb-upload-progress">
+              <div class="kb-upload-progress-bar" id="kb-upload-progress-bar"></div>
+            </div>
+            <span class="kb-upload-status-text" id="kb-upload-status-text">上传中...</span>
+          </div>
+          <button type="submit" class="btn-primary hidden" id="kb-upload-btn">上传并导入</button>
+        </form>
+      </div>
+
+      <!-- Associated agents -->
+      <div class="kb-detail-section">
+        <h3>关联角色</h3>
+        <div class="kb-agent-list" id="kb-detail-agents">
+          <div class="settings-empty-desc">暂无关联角色</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function() {
+  'use strict';
+
+  const cardList = document.getElementById('kb-card-list');
+  const emptyHint = document.getElementById('kb-list-empty');
+
+  // Create overlay
+  const createOverlay = document.getElementById('kb-create-overlay');
+  const createForm = document.getElementById('kb-create-form');
+  const kbNameInput = document.getElementById('kb-name');
+  const kbDescInput = document.getElementById('kb-desc');
+  const createSaveBtn = document.getElementById('kb-create-save');
+
+  // Detail overlay
+  const detailOverlay = document.getElementById('kb-detail-overlay');
+  let currentKbId = null;
+
+  // Upload
+  const uploadArea = document.getElementById('kb-upload-area');
+  const uploadInput = document.getElementById('kb-upload-input');
+  const uploadStatus = document.getElementById('kb-upload-status');
+  const uploadProgressBar = document.getElementById('kb-upload-progress-bar');
+  const uploadStatusText = document.getElementById('kb-upload-status-text');
+  const uploadBtn = document.getElementById('kb-upload-btn');
+  let selectedFile = null;
+
+  // ── Load KBs ──
+  async function loadKBs() {
+    try {
+      const res = await fetch('/api/agent/knowledge');
+      const data = await res.json();
+      renderKBCards(data.knowledge_bases || []);
+    } catch (e) {
+      console.error('Failed to load KBs:', e);
+    }
+  }
+
+  function renderKBCards(kbs) {
+    cardList.querySelectorAll('.kb-card').forEach(c => c.remove());
+
+    if (kbs.length === 0) {
+      emptyHint.style.display = '';
+      return;
+    }
+    emptyHint.style.display = 'none';
+
+    kbs.forEach(kb => {
+      const card = document.createElement('div');
+      card.className = 'kb-card';
+      card.innerHTML = `
+        <div class="kb-card-body">
+          <div class="kb-card-name">${escapeHtml(kb.name)}</div>
+          <div class="kb-card-desc">${escapeHtml(kb.description || '暂无简介')}</div>
+          <div class="kb-card-meta">
+            <span class="kb-meta-item"><span class="meta-dot chunks"></span>${kb.chunk_count || 0} 切片</span>
+            <span class="kb-meta-item"><span class="meta-dot kb-linked"></span>${escapeHtml(kb.namespace || '-')}</span>
+          </div>
+        </div>
+        <div class="kb-card-actions">
+          <button class="btn-icon" title="查看详情" data-action="view" data-id="${escapeHtml(kb.id)}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+          </button>
+          <button class="btn-icon btn-icon-danger" title="删除" data-action="delete" data-id="${escapeHtml(kb.id)}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          </button>
+        </div>
+      `;
+      cardList.appendChild(card);
+    });
+  }
+
+  // ── Card action delegation ──
+  cardList.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const id = btn.dataset.id;
+
+    if (action === 'view') {
+      openKbDetail(id);
+    } else if (action === 'delete') {
+      if (!confirm('确定要删除该知识库吗？所有切片数据将被清除。此操作不可撤销。')) return;
+      try {
+        const res = await fetch('/api/agent/knowledge/' + id, { method: 'DELETE' });
+        if (res.ok) {
+          loadKBs();
+        } else {
+          const data = await res.json();
+          alert('删除失败: ' + (data.detail || '未知错误'));
+        }
+      } catch (err) {
+        console.error('Failed to delete KB:', err);
+      }
+    }
+  });
+
+  // ── Create KB overlay ──
+  document.getElementById('create-kb-btn').addEventListener('click', () => {
+    createOverlay.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    kbNameInput.value = '';
+    kbDescInput.value = '';
+    kbNameInput.focus();
+  });
+
+  function closeCreateOverlay() {
+    createOverlay.classList.add('hidden');
+    document.body.style.overflow = '';
+  }
+
+  document.getElementById('kb-create-close').addEventListener('click', closeCreateOverlay);
+  document.getElementById('kb-create-cancel').addEventListener('click', closeCreateOverlay);
+  createOverlay.addEventListener('click', (e) => {
+    if (e.target === createOverlay) closeCreateOverlay();
+  });
+
+  createForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const name = kbNameInput.value.trim();
+    if (!name) { alert('请输入知识库名称'); return; }
+
+    createSaveBtn.disabled = true;
+    createSaveBtn.textContent = '创建中...';
+
+    try {
+      const res = await fetch('/api/agent/knowledge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, description: kbDescInput.value.trim() }),
+      });
+      if (res.ok) {
+        closeCreateOverlay();
+        loadKBs();
+      } else {
+        const data = await res.json();
+        alert('创建失败: ' + (data.detail || '未知错误'));
+      }
+    } catch (err) {
+      console.error('Failed to create KB:', err);
+      alert('创建失败: ' + err.message);
+    } finally {
+      createSaveBtn.disabled = false;
+      createSaveBtn.textContent = '创建';
+    }
+  });
+
+  // ── KB detail overlay ──
+  async function openKbDetail(id) {
+    currentKbId = id;
+    try {
+      const res = await fetch('/api/agent/knowledge');
+      const data = await res.json();
+      const kb = (data.knowledge_bases || []).find(k => k.id === id);
+      if (!kb) { alert('知识库不存在'); return; }
+
+      document.getElementById('kb-detail-title').textContent = kb.name;
+      document.getElementById('kb-detail-name').textContent = kb.name;
+      document.getElementById('kb-detail-desc').textContent = kb.description || '-';
+      document.getElementById('kb-detail-namespace').textContent = kb.namespace || '-';
+      document.getElementById('kb-detail-chunks').textContent = kb.chunk_count || 0;
+      document.getElementById('kb-detail-created').textContent = kb.created_at || '-';
+
+      // Load associated agents
+      loadAssociatedAgents(kb.id);
+
+      // Reset upload UI
+      selectedFile = null;
+      uploadInput.value = '';
+      uploadStatus.classList.add('hidden');
+      uploadBtn.classList.add('hidden');
+      uploadArea.style.display = '';
+
+      detailOverlay.classList.remove('hidden');
+      document.body.style.overflow = 'hidden';
+    } catch (err) {
+      console.error('Failed to load KB detail:', err);
+    }
+  }
+
+  async function loadAssociatedAgents(kbId) {
+    const container = document.getElementById('kb-detail-agents');
+    try {
+      const res = await fetch('/api/agents');
+      const data = await res.json();
+      const linked = (data.agents || []).filter(a => a.knowledge_id === kbId);
+      if (linked.length === 0) {
+        container.innerHTML = '<div class="settings-empty-desc">暂无关联角色</div>';
+        return;
+      }
+      container.innerHTML = linked.map(a =>
+        `<div class="kb-agent-item">
+          <span class="kb-agent-name">${escapeHtml(a.name)}</span>
+          <span class="kb-agent-desc">${escapeHtml(a.description || '')}</span>
+        </div>`
+      ).join('');
+    } catch (e) {
+      container.innerHTML = '<div class="settings-empty-desc">加载失败</div>';
+    }
+  }
+
+  function closeDetailOverlay() {
+    detailOverlay.classList.add('hidden');
+    document.body.style.overflow = '';
+    currentKbId = null;
+  }
+
+  document.getElementById('kb-detail-close').addEventListener('click', closeDetailOverlay);
+  detailOverlay.addEventListener('click', (e) => {
+    if (e.target === detailOverlay) closeDetailOverlay();
+  });
+
+  // ── Upload ──
+  uploadArea.addEventListener('click', () => uploadInput.click());
+
+  uploadArea.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    uploadArea.classList.add('dragover');
+  });
+  uploadArea.addEventListener('dragleave', () => {
+    uploadArea.classList.remove('dragover');
+  });
+  uploadArea.addEventListener('drop', (e) => {
+    e.preventDefault();
+    uploadArea.classList.remove('dragover');
+    const files = e.dataTransfer.files;
+    if (files.length > 0) {
+      selectedFile = files[0];
+      uploadStatus.classList.remove('hidden');
+      uploadArea.style.display = 'none';
+      uploadBtn.classList.remove('hidden');
+      uploadStatusText.textContent = '已选择: ' + selectedFile.name;
+    }
+  });
+
+  uploadInput.addEventListener('change', () => {
+    if (uploadInput.files.length > 0) {
+      selectedFile = uploadInput.files[0];
+      uploadStatus.classList.remove('hidden');
+      uploadArea.style.display = 'none';
+      uploadBtn.classList.remove('hidden');
+      uploadStatusText.textContent = '已选择: ' + selectedFile.name;
+    }
+  });
+
+  const uploadForm = document.getElementById('kb-upload-form');
+  uploadForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!selectedFile || !currentKbId) return;
+
+    const formData = new FormData();
+    formData.append('file', selectedFile);
+
+    uploadBtn.disabled = true;
+    uploadBtn.textContent = '导入中...';
+    uploadStatusText.textContent = '正在导入...';
+    uploadProgressBar.style.width = '0%';
+
+    try {
+      const res = await fetch('/api/agent/knowledge/' + currentKbId + '/ingest', {
+        method: 'POST',
+        body: formData,
+      });
+      if (res.ok) {
+        const data = await res.json();
+        uploadProgressBar.style.width = '100%';
+        uploadStatusText.textContent = '导入完成: ' + (data.chunks || 0) + ' 个切片';
+        // Refresh
+        loadKBs();
+        // Update chunk count in detail
+        document.getElementById('kb-detail-chunks').textContent = data.chunks || 0;
+      } else {
+        const data = await res.json();
+        uploadStatusText.textContent = '导入失败: ' + (data.detail || '未知错误');
+      }
+    } catch (err) {
+      uploadStatusText.textContent = '导入失败: ' + err.message;
+    } finally {
+      uploadBtn.disabled = false;
+      uploadBtn.textContent = '上传并导入';
+      selectedFile = null;
+      uploadInput.value = '';
+    }
+  });
+
+  // ── ESC to close overlays ──
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      if (!detailOverlay.classList.contains('hidden')) closeDetailOverlay();
+      if (!createOverlay.classList.contains('hidden')) closeCreateOverlay();
+    }
+  });
+
+  // ── Utility ──
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  // ── Init ──
+  loadKBs();
+})();
+</script>
+{% endblock %}

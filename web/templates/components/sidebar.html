@@ -44,6 +44,14 @@
       <span class="nav-icon">{{ icon_svg('sparkles')|safe }}</span>
       <span class="nav-label">AI 对话</span>
     </a>
+    <a href="/settings/agents" class="nav-item{% if active_page == 'agent_settings' %} active{% endif %}">
+      <span class="nav-icon">{{ icon_svg('users')|safe }}</span>
+      <span class="nav-label">角色管理</span>
+    </a>
+    <a href="/settings/knowledge" class="nav-item{% if active_page == 'kb_settings' %} active{% endif %}">
+      <span class="nav-icon">{{ icon_svg('book')|safe }}</span>
+      <span class="nav-label">知识库管理</span>
+    </a>
   </div>
 
   <!-- Toggle -->

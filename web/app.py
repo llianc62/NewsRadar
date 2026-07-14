@@ -121,4 +121,9 @@ def create_app(db, s3_config: dict, queues=None, crawler=None,
 
     app.include_router(agent_router)
 
+    # ── Register agent admin routes (always) ──
+    from .agent_admin import router as agent_admin_router
+
+    app.include_router(agent_admin_router)
+
     return app

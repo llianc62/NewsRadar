@@ -1,0 +1,367 @@
+{% extends "base.html" %}
+{% block title %}角色管理 - NewsRadar{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="/static/css/agent_settings.css?v=1">
+{% endblock %}
+{% block content %}
+<div class="app-main">
+  <div class="settings-container">
+    <header class="settings-header">
+      <div class="section-header">
+        <div class="section-header-line"></div>
+        <h1>角色管理</h1>
+      </div>
+      <button id="create-agent-btn" class="btn-primary">+ 新建角色</button>
+    </header>
+
+    <!-- Agent card list -->
+    <div class="agent-card-list" id="agent-card-list">
+      <div class="settings-empty" id="agent-list-empty" style="display:none">
+        <div class="settings-empty-icon">{{ icon_svg('sparkles')|safe }}</div>
+        <div class="settings-empty-title">暂无角色定义</div>
+        <div class="settings-empty-desc">点击上方「新建角色」创建第一个角色</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Editor overlay -->
+<div class="overlay hidden" id="editor-overlay">
+  <div class="editor-panel" id="editor-panel">
+    <div class="editor-header">
+      <h2 id="editor-title">新建角色</h2>
+      <button class="editor-close-btn" id="editor-close">&times;</button>
+    </div>
+    <form id="agent-form" class="editor-form">
+      <input type="hidden" name="id" id="agent-id">
+      <div class="form-group">
+        <label for="agent-name">名称 <span class="required">*</span></label>
+        <input type="text" id="agent-name" name="name" required placeholder="例如：巴菲特、市场分析师">
+      </div>
+      <div class="form-group">
+        <label for="agent-desc">简介</label>
+        <input type="text" id="agent-desc" name="description" placeholder="简短描述该角色的职责和风格">
+      </div>
+      <div class="form-group">
+        <label for="agent-prompt">系统提示词 <span class="required">*</span></label>
+        <textarea id="agent-prompt" name="system_prompt" rows="12" class="prompt-editor" placeholder="定义角色的行为、语气、专业领域和回答格式..." required></textarea>
+      </div>
+      <div class="form-group">
+        <label>可用工具</label>
+        <div class="tool-checkbox-group" id="tool-checkbox-group">
+          <div class="settings-empty" id="tools-empty" style="display:none">
+            <div class="settings-empty-desc">暂无可用工具</div>
+          </div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="agent-knowledge">关联知识库</label>
+        <select id="agent-knowledge" name="knowledge_id">
+          <option value="">无</option>
+        </select>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn-primary" id="agent-save-btn">保存</button>
+        <button type="button" class="btn-secondary" id="editor-cancel">取消</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Toast container (for delete confirmation) -->
+<div id="toast-container-settings" class="toast-container"></div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function() {
+  'use strict';
+
+  const cardList = document.getElementById('agent-card-list');
+  const emptyHint = document.getElementById('agent-list-empty');
+  const overlay = document.getElementById('editor-overlay');
+  const editorTitle = document.getElementById('editor-title');
+  const agentForm = document.getElementById('agent-form');
+  const agentIdInput = document.getElementById('agent-id');
+  const agentNameInput = document.getElementById('agent-name');
+  const agentDescInput = document.getElementById('agent-desc');
+  const agentPromptInput = document.getElementById('agent-prompt');
+  const agentKnowledgeSelect = document.getElementById('agent-knowledge');
+  const toolCheckboxGroup = document.getElementById('tool-checkbox-group');
+  const toolsEmpty = document.getElementById('tools-empty');
+  const saveBtn = document.getElementById('agent-save-btn');
+
+  let currentAgentId = null;
+  let allTools = [];
+
+  // ── Overlay open/close ──
+  function openEditor(title, agent) {
+    editorTitle.textContent = title;
+    if (agent) {
+      currentAgentId = agent.id;
+      agentIdInput.value = agent.id;
+      agentNameInput.value = agent.name || '';
+      agentDescInput.value = agent.description || '';
+      agentPromptInput.value = agent.system_prompt || '';
+      agentKnowledgeSelect.value = agent.knowledge_id || '';
+      // Check tools
+      const toolNames = agent.tools || [];
+      toolCheckboxGroup.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+        cb.checked = toolNames.includes(cb.value);
+      });
+    } else {
+      currentAgentId = null;
+      agentIdInput.value = '';
+      agentNameInput.value = '';
+      agentDescInput.value = '';
+      agentPromptInput.value = '';
+      agentKnowledgeSelect.value = '';
+      toolCheckboxGroup.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+        cb.checked = false;
+      });
+    }
+    overlay.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    agentNameInput.focus();
+  }
+
+  function closeEditor() {
+    overlay.classList.add('hidden');
+    document.body.style.overflow = '';
+    currentAgentId = null;
+  }
+
+  // ── Load tools ──
+  async function loadTools() {
+    try {
+      const res = await fetch('/api/tools');
+      const data = await res.json();
+      allTools = data.tools || [];
+      renderToolCheckboxes(allTools);
+    } catch (e) {
+      console.error('Failed to load tools:', e);
+    }
+  }
+
+  function renderToolCheckboxes(tools) {
+    toolCheckboxGroup.innerHTML = '';
+    if (tools.length === 0) {
+      toolsEmpty.style.display = '';
+      return;
+    }
+    toolsEmpty.style.display = 'none';
+
+    // Group by category
+    const categories = {};
+    tools.forEach(t => {
+      const cat = t.category || '其他';
+      if (!categories[cat]) categories[cat] = [];
+      categories[cat].push(t);
+    });
+
+    Object.entries(categories).forEach(([cat, catTools]) => {
+      const group = document.createElement('div');
+      group.className = 'tool-category';
+      group.innerHTML = `<div class="tool-category-label">${escapeHtml(cat)}</div>`;
+      const items = document.createElement('div');
+      items.className = 'tool-category-items';
+      catTools.forEach(t => {
+        const label = document.createElement('label');
+        label.className = 'tool-checkbox';
+        label.innerHTML = `
+          <input type="checkbox" name="tools" value="${escapeHtml(t.name)}">
+          <span class="tool-checkbox-label">
+            <span class="tool-checkbox-name">${escapeHtml(t.name)}</span>
+            <span class="tool-checkbox-desc">${escapeHtml(t.description || '')}</span>
+          </span>
+        `;
+        items.appendChild(label);
+      });
+      group.appendChild(items);
+      toolCheckboxGroup.appendChild(group);
+    });
+  }
+
+  // ── Load knowledge bases ──
+  async function loadKnowledgeBases() {
+    try {
+      const res = await fetch('/api/agent/knowledge');
+      const data = await res.json();
+      const kbs = data.knowledge_bases || [];
+      agentKnowledgeSelect.innerHTML = '<option value="">无</option>';
+      kbs.forEach(kb => {
+        const opt = document.createElement('option');
+        opt.value = kb.id;
+        opt.textContent = kb.name;
+        agentKnowledgeSelect.appendChild(opt);
+      });
+    } catch (e) {
+      console.error('Failed to load knowledge bases:', e);
+    }
+  }
+
+  // ── Load agents ──
+  async function loadAgents() {
+    try {
+      const res = await fetch('/api/agents');
+      const data = await res.json();
+      renderAgentCards(data.agents || []);
+    } catch (e) {
+      console.error('Failed to load agents:', e);
+    }
+  }
+
+  function renderAgentCards(agents) {
+    // Remove existing cards (keep empty hint)
+    cardList.querySelectorAll('.agent-card').forEach(c => c.remove());
+
+    if (agents.length === 0) {
+      emptyHint.style.display = '';
+      return;
+    }
+    emptyHint.style.display = 'none';
+
+    agents.forEach(agent => {
+      const card = document.createElement('div');
+      card.className = 'agent-card';
+      const toolCount = agent.tools ? agent.tools.length : 0;
+      const kbName = agent.knowledge_id ? '已关联' : '未关联';
+      card.innerHTML = `
+        <div class="agent-card-body">
+          <div class="agent-card-name">${escapeHtml(agent.name)}</div>
+          <div class="agent-card-desc">${escapeHtml(agent.description || '暂无简介')}</div>
+          <div class="agent-card-meta">
+            <span class="agent-meta-item"><span class="meta-dot tools"></span>${toolCount} 个工具</span>
+            <span class="agent-meta-item"><span class="meta-dot ${agent.knowledge_id ? 'kb-linked' : 'kb-none'}"></span>${kbName}</span>
+          </div>
+        </div>
+        <div class="agent-card-actions">
+          <button class="btn-icon" title="编辑" data-action="edit" data-id="${escapeHtml(agent.id)}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
+          </button>
+          <button class="btn-icon btn-icon-danger" title="删除" data-action="delete" data-id="${escapeHtml(agent.id)}">
+            ${document.querySelector('.btn-icon-danger') ? '' : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>'}
+          </button>
+        </div>
+      `;
+      cardList.appendChild(card);
+    });
+  }
+
+  // ── Event delegation for card actions ──
+  cardList.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const id = btn.dataset.id;
+
+    if (action === 'edit') {
+      try {
+        const res = await fetch('/api/agents/' + id);
+        const agent = await res.json();
+        openEditor('编辑角色', agent);
+      } catch (err) {
+        console.error('Failed to load agent:', err);
+      }
+    } else if (action === 'delete') {
+      if (!confirm('确定要删除该角色吗？此操作不可撤销。')) return;
+      try {
+        const res = await fetch('/api/agents/' + id, { method: 'DELETE' });
+        if (res.ok) {
+          loadAgents();
+        } else {
+          const data = await res.json();
+          alert('删除失败: ' + (data.detail || '未知错误'));
+        }
+      } catch (err) {
+        console.error('Failed to delete agent:', err);
+      }
+    }
+  });
+
+  // ── Create button ──
+  document.getElementById('create-agent-btn').addEventListener('click', () => {
+    openEditor('新建角色');
+  });
+
+  // ── Close editor ──
+  document.getElementById('editor-close').addEventListener('click', closeEditor);
+  document.getElementById('editor-cancel').addEventListener('click', closeEditor);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeEditor();
+  });
+
+  // ── ESC to close ──
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !overlay.classList.contains('hidden')) {
+      closeEditor();
+    }
+  });
+
+  // ── Form submit ──
+  agentForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const checkedTools = [];
+    toolCheckboxGroup.querySelectorAll('input[type="checkbox"]:checked').forEach(cb => {
+      checkedTools.push(cb.value);
+    });
+
+    const body = {
+      name: agentNameInput.value.trim(),
+      description: agentDescInput.value.trim(),
+      system_prompt: agentPromptInput.value.trim(),
+      tools: checkedTools,
+      knowledge_id: agentKnowledgeSelect.value || null,
+    };
+
+    if (!body.name) { alert('请输入角色名称'); return; }
+    if (!body.system_prompt) { alert('请输入系统提示词'); return; }
+
+    saveBtn.disabled = true;
+    saveBtn.textContent = '保存中...';
+
+    try {
+      let res;
+      if (currentAgentId) {
+        res = await fetch('/api/agents/' + currentAgentId, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      } else {
+        res = await fetch('/api/agents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      }
+
+      if (res.ok) {
+        closeEditor();
+        loadAgents();
+      } else {
+        const data = await res.json();
+        alert('保存失败: ' + (data.detail || '未知错误'));
+      }
+    } catch (err) {
+      console.error('Failed to save agent:', err);
+      alert('保存失败: ' + err.message);
+    } finally {
+      saveBtn.disabled = false;
+      saveBtn.textContent = '保存';
+    }
+  });
+
+  // ── Utility ──
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  // ── Init ──
+  loadAgents();
+  loadTools();
+  loadKnowledgeBases();
+})();
+</script>
+{% endblock %}
