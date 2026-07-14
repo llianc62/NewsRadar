@@ -60,7 +60,7 @@ class AgentFactory:
             已装配的 :class:`DefaultAgent` 实例。
         """
         tools = self._resolve_tools(defn.tools)
-        knowledge = self._resolve_knowledge(defn.knowledge_id)
+        knowledge, kb_namespace = self._resolve_knowledge(defn.knowledge_id)
         executor = ReActExecutor(max_steps=10)
         memory = LongTermMemory(PgMemoryStorage(self._db))
 
@@ -70,8 +70,9 @@ class AgentFactory:
             memory=memory,
             tools=tools,
             system_prompt=defn.system_prompt,
+            knowledge=knowledge,
+            kb_namespace=kb_namespace or "",
         )
-        agent._knowledge = knowledge
         return agent
 
     def _resolve_tools(self, tool_names: list[str]) -> Registry:
@@ -86,22 +87,25 @@ class AgentFactory:
                 reg.add_tool(tool)
         return reg
 
-    def _resolve_knowledge(self, knowledge_id: str | None) -> KnowledgeEngine | None:
+    def _resolve_knowledge(
+        self, knowledge_id: str | None
+    ) -> tuple[KnowledgeEngine | None, str | None]:
         """从 DB 查询知识库定义，构建 :class:`KnowledgeEngine`。
 
-        ``knowledge_id`` 为 ``None`` 或 DB 中未找到时返回 ``None``。
+        ``knowledge_id`` 为 ``None`` 或 DB 中未找到时返回 ``(None, None)``。
+        否则返回构建好的 ``KnowledgeEngine`` 与对应 ``AgentKnowledge.namespace``。
         Embedding 配置从环境变量读取：
         ``KNOWLEDGE_EMBEDDING_API_KEY`` / ``KNOWLEDGE_EMBEDDING_BASE_URL`` /
         ``KNOWLEDGE_EMBEDDING_MODEL``。
         """
         if not knowledge_id:
-            return None
+            return None, None
         kb = self._db.get_agent_knowledge(knowledge_id)
         if not kb:
-            return None
+            return None, None
         from agent.knowledge import EmbeddingClient, KnowledgeEngine, PgVectorKnowledgeStore
 
-        return KnowledgeEngine(
+        engine = KnowledgeEngine(
             store=PgVectorKnowledgeStore(self._db),
             embedding=EmbeddingClient(
                 api_key=os.environ.get("KNOWLEDGE_EMBEDDING_API_KEY", ""),
@@ -110,6 +114,7 @@ class AgentFactory:
             ),
             top_k=self._top_k,
         )
+        return engine, kb.namespace or None
 
 
 async def create_agent(
@@ -233,6 +238,7 @@ async def create_persona(
 
     kwargs: dict = {
         "knowledge": knowledge,
+        "kb_namespace": spec.kb_namespace,
         "executor": executor,
         "tools": tools,
         "memory": memory,

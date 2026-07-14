@@ -34,6 +34,13 @@ class MemoryModule(ABC):
         """执行后：存储本次交互到记忆。"""
         ...
 
+    async def get_context(self, session_id: str, query: str = "") -> str | None:
+        """获取上下文文本，供 DefaultAgent._make_ctx 注入 memory_context。
+
+        基类返回 ``None``（无上下文）。子类可 override 以提供记忆检索。
+        """
+        return None
+
 
 class NullMemory(MemoryModule):
     """空记忆——什么都不做，用于显式关闭记忆功能。"""
@@ -59,6 +66,16 @@ class ShortTermMemory(MemoryModule):
             raise ValueError("window_size must be >= 1")
         self._window: list[dict] = []
         self._window_size = window_size
+
+    async def get_context(self, session_id: str, query: str = "") -> str | None:
+        """返回格式化后的窗口记忆文本。"""
+        if not self._window:
+            return None
+        lines = ["## 对话历史"]
+        for msg in self._window:
+            role = "用户" if msg.get("role") == "user" else "助手"
+            lines.append(f"{role}: {msg.get('content', '')}")
+        return "\n".join(lines)
 
     async def on_before_execute(self, ctx: Any) -> None:
         """将历史消息列表注入 Context。"""
@@ -242,6 +259,21 @@ class LongTermMemory(MemoryModule):
         self._extract_interval = extract_interval
         self._extractor = extractor
         self._turn_count = 0
+
+    async def get_context(self, session_id: str, query: str = "") -> str | None:
+        """语义检索相关记忆，返回格式化文本。
+
+        供 ``DefaultAgent._make_ctx`` 调用，在 executor 执行前注入记忆。
+        """
+        if not query:
+            return None
+        search_query = self._build_search_query(query)
+        if not search_query:
+            return None
+        memories = await self._storage.search(search_query, top_k=5)
+        if memories:
+            return self._format_memories(memories)
+        return None
 
     async def on_before_execute(self, ctx: Any) -> None:
         """语义检索相关记忆。"""

@@ -113,7 +113,7 @@ class TestAgentFactoryResolveKnowledge:
 
         result = factory._resolve_knowledge(None)
 
-        assert result is None
+        assert result == (None, None)
 
     def test_returns_none_when_kb_not_found(self):
         """_resolve_knowledge returns None when DB returns None for knowledge_id."""
@@ -124,7 +124,7 @@ class TestAgentFactoryResolveKnowledge:
 
         result = factory._resolve_knowledge("nonexistent-id")
 
-        assert result is None
+        assert result == (None, None)
         db.get_agent_knowledge.assert_called_once_with("nonexistent-id")
 
     def test_creates_knowledge_engine_when_kb_found(self):
@@ -146,11 +146,13 @@ class TestAgentFactoryResolveKnowledge:
             factory = AgentFactory(models, db, Registry())
             result = factory._resolve_knowledge("kb-1")
 
-        assert result is not None
+        engine, namespace = result
+        assert engine is not None
+        assert namespace == "kb_test"
         # Verify it's a KnowledgeEngine by checking its attributes
-        assert hasattr(result, "_store")
-        assert hasattr(result, "_embedding")
-        assert result._top_k == 5
+        assert hasattr(engine, "_store")
+        assert hasattr(engine, "_embedding")
+        assert engine._top_k == 5
 
     def test_respects_top_k_parameter(self):
         """_resolve_knowledge passes top_k param to KnowledgeEngine."""
@@ -163,7 +165,9 @@ class TestAgentFactoryResolveKnowledge:
             factory = AgentFactory(models, db, Registry(), top_k=10)
             result = factory._resolve_knowledge("kb-1")
 
-        assert result._top_k == 10
+        engine, namespace = result
+        assert engine._top_k == 10
+        assert namespace == "kb_test"
 
 
 class TestAgentFactoryBuild:
@@ -214,6 +218,8 @@ class TestAgentFactoryBuild:
 
         # DefaultAgent stores knowledge in brain or we can check it was created
         assert agent is not None
+        assert agent._knowledge is not None
+        assert agent._kb_namespace == "kb_test"
 
     def test_build_with_no_tools(self):
         """build() works with an AgentDefinition that has no tools."""

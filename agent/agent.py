@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 
@@ -11,6 +12,7 @@ from .memory import MemoryModule, NullMemory
 from .models import AgentResult, Context
 
 if TYPE_CHECKING:
+    from .knowledge import KnowledgeEngine
     from .tools import Registry
 
 
@@ -46,6 +48,8 @@ class DefaultAgent:
         tools: Registry | None = None,  # Phase 3
         running_mode: str = "normal",
         approval_callback=None,
+        knowledge: "KnowledgeEngine | None" = None,
+        kb_namespace: str = "",
     ):
         if running_mode not in ("strict", "normal", "loose"):
             raise ValueError(f"Invalid running_mode: {running_mode}")
@@ -56,6 +60,8 @@ class DefaultAgent:
         self.memory = memory or NullMemory()
         self.tools = tools
         self.system_prompt = system_prompt
+        self._knowledge = knowledge
+        self._kb_namespace = kb_namespace
 
     @property
     def running_mode(self) -> str:
@@ -67,6 +73,46 @@ class DefaultAgent:
             raise ValueError(f"Invalid running_mode: {value}")
         self._running_mode = value
 
+    @property
+    def kb_namespace(self) -> str:
+        """知识库命名空间（如 ``"investing/buffett"``）。"""
+        return self._kb_namespace
+
+    async def _make_ctx(
+        self, user_input: str, session_id: str, model_name: str
+    ) -> Context:
+        """构建本次调用的 Context。
+
+        注入知识库检索结果（``ctx.knowledge_context``）与记忆上下文
+        （``ctx.memory_context``）。``chat``/``chat_stream`` 共用此入口，
+        确保任意子类的注入对两个调用路径都生效。
+        """
+        ctx = Context(
+            user_input=user_input,
+            session_id=session_id,
+            system_prompt=self.system_prompt,
+            model_name=model_name or "default",
+            running_mode=self._running_mode,
+        )
+
+        # 知识库检索（sync -> to_thread 避免阻塞事件循环）
+        if self._knowledge and self._kb_namespace:
+            text = await asyncio.to_thread(
+                self._knowledge.retrieve_render,
+                user_input,
+                self._kb_namespace,
+            )
+            if text:
+                ctx.knowledge_context = text
+
+        # 记忆上下文（委托给 MemoryModule.get_context）
+        if self.memory and session_id:
+            mem_text = await self.memory.get_context(session_id, user_input)
+            if mem_text:
+                ctx.memory_context = mem_text
+
+        return ctx
+
     # ── public API ──────────────────────────────────────────────
 
     async def chat(
@@ -76,13 +122,7 @@ class DefaultAgent:
         model_name: str = "",
     ) -> AgentResult:
         """执行一次完整的 Agent 调用（非流式）。"""
-        ctx = Context(
-            user_input=user_input,
-            session_id=session_id,
-            system_prompt=self.system_prompt,
-            model_name=model_name or "default",
-            running_mode=self._running_mode,
-        )
+        ctx = await self._make_ctx(user_input, session_id, model_name)
 
         result_text = await self.executor.run(
             ctx=ctx,
@@ -107,13 +147,7 @@ class DefaultAgent:
         model_name: str = "",
     ) -> AsyncIterator[str]:
         """流式版本——逐 token 返回 LLM 输出。"""
-        ctx = Context(
-            user_input=user_input,
-            session_id=session_id,
-            system_prompt=self.system_prompt,
-            model_name=model_name or "default",
-            running_mode=self._running_mode,
-        )
+        ctx = await self._make_ctx(user_input, session_id, model_name)
 
         async for token in self.executor.run_stream(
             ctx=ctx,
