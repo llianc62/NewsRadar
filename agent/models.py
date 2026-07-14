@@ -43,3 +43,42 @@ class AgentResult:
     tool_calls: list[dict] = field(default_factory=list)
     tool_results: list[str] = field(default_factory=list)
     step_count: int = 0
+
+
+@dataclass
+class AgentConfig:
+    """DefaultAgent 组件配置——由 AgentFactory 构建后注入。"""
+
+    brain: Any = None           # ModelHub
+    executor: Any = None        # DirectExecutor | ReActExecutor
+    memory: Any = None          # MemoryModule
+    tools: Any = None           # ToolRegistry
+    knowledge: Any = None       # KnowledgeEngine | None
+    system_prompt: str = ""
+
+
+@dataclass
+class AgentDefinition:
+    """角色定义——运行时创建 Agent 的全部信息。"""
+
+    id: str                          # UUID
+    name: str                        # 显示名称
+    description: str = ""
+    system_prompt: str = ""          # 角色提示词（大字段）
+    tools: list[str] = field(default_factory=list)  # 工具名列表
+    knowledge_id: str | None = None  # 关联知识库 UUID
+    metadata: dict = field(default_factory=dict)
+    created_at: str = ""             # ISO format
+    updated_at: str = ""
+
+
+@dataclass
+class AgentKnowledge:
+    """知识库定义——namespace 的实体层。"""
+
+    id: str                          # UUID
+    name: str                        # 显示名称
+    description: str = ""
+    namespace: str = ""              # 内部 namespace，如 "kb_<uuid>"
+    created_at: str = ""
+    updated_at: str = ""
