@@ -238,8 +238,13 @@ class NewsRadarDaemon:
 
         # 条件构建 Agent（仅当配置了 models 时）
         agent = None
+        persona_manager = None
+        persona_orchestrator = None
         if self.config.get("models"):
-            from agent.factory import create_agent
+            from agent.factory import (
+                create_agent,
+                create_persona_orchestrator,
+            )
 
             agent = await create_agent(
                 self.config["models"],
@@ -248,9 +253,37 @@ class NewsRadarDaemon:
             )
             print("[Daemon] Agent built (with ReActExecutor + tools).")
 
+            # 角色扮演：单角色懒构建管理器 + 多角色编排器（共享同一 manager）
+            persona_orchestrator = await create_persona_orchestrator(
+                self.config, db=self.db
+            )
+            persona_manager = persona_orchestrator._manager
+            selectable = [s for s in persona_manager.available() if s.category != "editor"]
+            print(
+                f"[Daemon] PersonaOrchestrator built "
+                f"({len(selectable)} selectable personas + editor)."
+            )
+
         # 创建 Web 应用（含条件注册 Agent 路由）
+        tool_registry = None
+        agent_factory = None
+        if self.config.get("models"):
+            from agent.tools.tools import setup_builtin_tools
+            from agent.factory import AgentFactory
+
+            tool_registry = setup_builtin_tools()
+            agent_factory = AgentFactory(
+                self.config["models"],
+                self.db,
+                tool_registry,
+            )
+
         app = create_app(self.db, s3_config, queues=queues, crawler=crawler,
-                          agent_config=self.config, agent_instance=agent)
+                          agent_config=self.config, agent_instance=agent,
+                          persona_manager=persona_manager,
+                          persona_orchestrator=persona_orchestrator,
+                          tool_registry=tool_registry,
+                          agent_factory=agent_factory)
 
         web_task = asyncio.create_task(self._serve_web(app), name="web")
 
