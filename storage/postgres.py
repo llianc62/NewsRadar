@@ -6,16 +6,20 @@ class (no more module-level global ``_pool``).
 """
 
 import json
+import os
 import re
 import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from uuid import uuid4
 
 import psycopg2
 import psycopg2.extras
 from psycopg2.pool import ThreadedConnectionPool
+
+from agent.models import AgentDefinition, AgentKnowledge
 
 # Detect CJK characters for search routing:
 #   CJK search  → ILIKE + pg_trgm GIN index
@@ -26,6 +30,21 @@ _CJK_RE = re.compile(r"[一-鿿㐀-䶿豈-﫿]")
 def _contains_cjk(text: str) -> bool:
     """Return True if *text* contains any CJK character."""
     return bool(_CJK_RE.search(text))
+
+
+# 知识库 embedding 维度（pgvector vector 列长度，建表时固化）。
+# 从 env KNOWLEDGE_EMBEDDING_DIM 读（与 config.loader 同源），默认对齐
+# OpenAI text-embedding-3-small（1536）。切换维度需 DROP 重建表。
+KNOWLEDGE_EMBEDDING_DIM = int(os.environ.get("KNOWLEDGE_EMBEDDING_DIM", "1536"))
+
+
+def _vec_to_str(vec: list[float]) -> str:
+    """将浮点向量序列化为 pgvector 字面量 ``'[v1,v2,...]'``。
+
+    psycopg2 原生不识别 pgvector 类型，零依赖方案：转成字符串后用
+    ``::vector`` 强制转换（见 ingest/search_knowledge）。
+    """
+    return "[" + ",".join(repr(float(x)) for x in vec) + "]"
 
 # Register JSONB adapter
 psycopg2.extras.register_default_jsonb(loads=json.loads)
@@ -418,6 +437,65 @@ class PostgreSQL:
                     CREATE INDEX IF NOT EXISTS idx_memories_search_trgm
                         ON agent_memories USING GIN (content gin_trgm_ops);
                 """)
+                # ── 知识库（Phase 3，pgvector 语义检索） ────────────────
+                # pgvector 扩展（pgvector/pgvector:pg16 镜像预装，trusted，
+                # 非 superuser 的库 owner 可直接 CREATE EXTENSION）
+                cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+                cur.execute(f"""
+                    CREATE TABLE IF NOT EXISTS knowledge_chunks (
+                        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                        source      TEXT NOT NULL,
+                        namespace   TEXT NOT NULL DEFAULT '',
+                        content     TEXT NOT NULL,
+                        embedding   vector({KNOWLEDGE_EMBEDDING_DIM}),
+                        metadata    JSONB DEFAULT '{{}}'::jsonb,
+                        created_at  TIMESTAMPTZ DEFAULT NOW()
+                    );
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_knowledge_namespace
+                        ON knowledge_chunks (namespace);
+                """)
+                cur.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_knowledge_embedding
+                        ON knowledge_chunks USING hnsw (embedding vector_cosine_ops);
+                """)
+                # ── 角色系统（agent_definitions + agent_knowledge） ────────
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS agent_definitions (
+                        id           TEXT PRIMARY KEY,
+                        name         TEXT NOT NULL,
+                        description  TEXT NOT NULL DEFAULT '',
+                        system_prompt TEXT NOT NULL,
+                        tools        JSONB NOT NULL DEFAULT '[]',
+                        knowledge_id TEXT,
+                        metadata     JSONB NOT NULL DEFAULT '{}',
+                        created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS agent_knowledge (
+                        id          TEXT PRIMARY KEY,
+                        name        TEXT NOT NULL,
+                        description TEXT NOT NULL DEFAULT '',
+                        namespace   TEXT NOT NULL UNIQUE,
+                        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    )
+                """)
+                # agent_sessions 加 agent_id 列（如不存在）
+                cur.execute("""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_name='agent_sessions' AND column_name='agent_id'
+                        ) THEN
+                            ALTER TABLE agent_sessions ADD COLUMN agent_id TEXT;
+                        END IF;
+                    END $$;
+                """)
             conn.commit()
             print("[DB] Agent schema initialized")
         finally:
@@ -540,6 +618,230 @@ class PostgreSQL:
             return msg_id
         finally:
             self._pool.putconn(conn)
+
+    # ── Knowledge base (Phase 3, pgvector) ───────────────────────────
+
+    def ingest_knowledge(self, chunks: list[dict]) -> int:
+        """批量写入知识切片。
+
+        每个 chunk::
+
+            {"source": str, "namespace": str, "content": str,
+             "embedding": list[float], "metadata": dict}
+
+        embedding 以 pgvector 字面量字符串插入（``::vector`` 强制转换）。
+        返回插入行数。
+        """
+        if not chunks:
+            return 0
+        rows = [
+            (
+                c["source"],
+                c.get("namespace", ""),
+                c["content"],
+                _vec_to_str(c["embedding"]),
+                psycopg2.extras.Json(c.get("metadata") or {}),
+            )
+            for c in chunks
+        ]
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                psycopg2.extras.execute_values(
+                    cur,
+                    """
+                    INSERT INTO knowledge_chunks
+                        (source, namespace, content, embedding, metadata)
+                    VALUES %s
+                    """,
+                    rows,
+                    template="(%s, %s, %s, %s::vector, %s)",
+                )
+        return len(rows)
+
+    def search_knowledge(
+        self, query_embedding: list[float], namespace: str, top_k: int = 5
+    ) -> list[dict]:
+        """向量近邻检索（余弦距离），返回 Top-K 切片。
+
+        返回每条 ``{id, source, namespace, content, metadata, similarity}``，
+        ``similarity = 1 - 余弦距离``（越大越相关，范围 0~1）。
+        """
+        q = _vec_to_str(query_embedding)
+        with self.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT id, source, namespace, content, metadata,
+                           1 - (embedding <=> %s::vector) AS similarity
+                    FROM knowledge_chunks
+                    WHERE namespace = %s
+                    ORDER BY embedding <=> %s::vector
+                    LIMIT %s
+                    """,
+                    (q, namespace, q, top_k),
+                )
+                return [dict(r) for r in cur.fetchall()]
+
+    def delete_knowledge(self, namespace: str) -> int:
+        """按命名空间清空知识切片，返回删除行数。"""
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM knowledge_chunks WHERE namespace = %s",
+                    (namespace,),
+                )
+                return cur.rowcount
+
+    def count_knowledge(self, namespace: str = "") -> int:
+        """统计切片数；namespace 为空则统计全部。"""
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                if namespace:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM knowledge_chunks WHERE namespace = %s",
+                        (namespace,),
+                    )
+                else:
+                    cur.execute("SELECT COUNT(*) FROM knowledge_chunks")
+                return cur.fetchone()[0]
+
+    # ── AgentDefinition CRUD ──────────────────────────────────────────
+
+    def create_agent_definition(self, defn: AgentDefinition) -> str:
+        """写入角色定义，返回 id。"""
+        defn.id = defn.id or str(uuid4())
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO agent_definitions (id, name, description, system_prompt, tools, knowledge_id, metadata) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (defn.id, defn.name, defn.description, defn.system_prompt,
+                     json.dumps(defn.tools), defn.knowledge_id, json.dumps(defn.metadata)),
+                )
+        return defn.id
+
+    def get_agent_definition(self, id: str) -> AgentDefinition | None:
+        """按 ID 查询角色定义。"""
+        with self.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT * FROM agent_definitions WHERE id = %s", (id,))
+                row = cur.fetchone()
+        if not row:
+            return None
+        row["tools"] = json.loads(row["tools"]) if isinstance(row["tools"], str) else (row["tools"] or [])
+        row["metadata"] = json.loads(row["metadata"]) if isinstance(row["metadata"], str) else (row["metadata"] or {})
+        return AgentDefinition(**row)
+
+    def list_agent_definitions(self) -> list[AgentDefinition]:
+        """列出所有角色定义。"""
+        with self.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT * FROM agent_definitions ORDER BY created_at DESC")
+                rows = cur.fetchall()
+        result = []
+        for row in rows:
+            row["tools"] = json.loads(row["tools"]) if isinstance(row["tools"], str) else (row["tools"] or [])
+            row["metadata"] = json.loads(row["metadata"]) if isinstance(row["metadata"], str) else (row["metadata"] or {})
+            result.append(AgentDefinition(**row))
+        return result
+
+    def update_agent_definition(self, defn: AgentDefinition) -> bool:
+        """更新角色定义。"""
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE agent_definitions SET name=%s, description=%s, system_prompt=%s, "
+                    "tools=%s, knowledge_id=%s, metadata=%s, updated_at=NOW() WHERE id=%s",
+                    (defn.name, defn.description, defn.system_prompt,
+                     json.dumps(defn.tools), defn.knowledge_id, json.dumps(defn.metadata), defn.id),
+                )
+                updated = cur.rowcount
+        return updated > 0
+
+    def delete_agent_definition(self, id: str) -> bool:
+        """删除角色定义。"""
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM agent_definitions WHERE id = %s", (id,))
+                deleted = cur.rowcount
+        return deleted > 0
+
+    # ── AgentKnowledge CRUD ───────────────────────────────────────────
+
+    def create_agent_knowledge(self, kb: AgentKnowledge) -> str:
+        """创建知识库定义，自动生成 namespace。"""
+        kb.id = kb.id or str(uuid4())
+        kb.namespace = kb.namespace or f"kb_{kb.id}"
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO agent_knowledge (id, name, description, namespace) VALUES (%s, %s, %s, %s)",
+                    (kb.id, kb.name, kb.description, kb.namespace),
+                )
+        return kb.id
+
+    def get_agent_knowledge(self, id: str) -> AgentKnowledge | None:
+        """按 ID 查询知识库。"""
+        with self.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT * FROM agent_knowledge WHERE id = %s", (id,))
+                row = cur.fetchone()
+        return AgentKnowledge(**row) if row else None
+
+    def list_agent_knowledge(self) -> list[AgentKnowledge]:
+        """列出所有知识库（含切片计数）。"""
+        with self.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT k.*, COALESCE(c.cnt, 0) AS chunk_count
+                    FROM agent_knowledge k
+                    LEFT JOIN (SELECT namespace, COUNT(*) AS cnt FROM knowledge_chunks GROUP BY namespace) c
+                        ON k.namespace = c.namespace
+                    ORDER BY k.created_at DESC
+                """)
+                rows = cur.fetchall()
+        result = []
+        for row in rows:
+            chunk_count = row.pop("chunk_count", 0)
+            kb = AgentKnowledge(**row)
+            kb._chunk_count = chunk_count
+            result.append(kb)
+        return result
+
+    def delete_agent_knowledge(self, id: str) -> bool:
+        """删除知识库（同时清理切片）。"""
+        kb = self.get_agent_knowledge(id)
+        if not kb:
+            return False
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM knowledge_chunks WHERE namespace = %s", (kb.namespace,))
+                cur.execute("DELETE FROM agent_knowledge WHERE id = %s", (id,))
+        return True
+
+    # ── Agent sessions by agent_id ────────────────────────────────────
+
+    def get_agent_sessions_by_agent(self, agent_id: str, limit: int = 20, offset: int = 0) -> list[dict]:
+        """按 agent_id 获取会话列表（按 updated_at 倒序）。"""
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT id, title, message_count, created_at, updated_at
+                       FROM agent_sessions
+                       WHERE agent_id = %s
+                       ORDER BY updated_at DESC
+                       LIMIT %s OFFSET %s""",
+                    (agent_id, limit, offset),
+                )
+                rows = cur.fetchall()
+                return [
+                    {
+                        "id": r[0], "title": r[1], "message_count": r[2],
+                        "created_at": r[3].isoformat() if r[3] else None,
+                        "updated_at": r[4].isoformat() if r[4] else None,
+                    }
+                    for r in rows
+                ]
 
     def _schema_ready(self) -> bool:
         """Check whether the schema tables already exist."""
