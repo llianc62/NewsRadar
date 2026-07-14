@@ -24,13 +24,13 @@ from .registry import Registry
 # ── 基础用法：@tool 无参数 ──────────────────────────────────────
 
 
-@tool
+@tool(category="general")
 def get_current_time() -> str:
     """获取当前的日期和时间（北京时间）。"""
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-@tool
+@tool(category="general")
 def get_random_number(max_value: int = 100) -> int:
     """生成一个随机整数。
 
@@ -43,7 +43,7 @@ def get_random_number(max_value: int = 100) -> int:
 # ── 指定名称和描述 ────────────────────────────────────────────
 
 
-@tool(name="calculator", description="执行四则运算，支持加/减/乘/除")
+@tool(name="calculator", description="执行四则运算，支持加/减/乘/除", category="general")
 def calc(a: float, b: float, op: str) -> str:
     """计算器。
 
@@ -60,7 +60,7 @@ def calc(a: float, b: float, op: str) -> str:
 # ── 带复杂类型的参数 ──────────────────────────────────────────
 
 
-@tool
+@tool(category="general")
 def roll_dice(count: int = 2, sides: int = 6) -> list[int]:
     """掷骰子。
 
@@ -74,7 +74,7 @@ def roll_dice(count: int = 2, sides: int = 6) -> list[int]:
 # ── 天气工具 ────────────────────────────────────────────────────────
 
 
-@tool(level=1)
+@tool(level=1, category="general")
 async def get_current_weather(city: str = "北京") -> str:
     """获取指定城市的当前天气。
 
@@ -97,7 +97,7 @@ async def get_current_weather(city: str = "北京") -> str:
 # ── 新闻查询工具（通过 MCP Server） ──────────────────────────────
 
 
-@tool(level=2)
+@tool(level=2, category="news")
 async def get_latest_news(query: str = "热点", limit: int = 10) -> str:
     """查询最新新闻，通过 News MCP Server 获取。
 

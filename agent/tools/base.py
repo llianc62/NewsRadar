@@ -39,6 +39,12 @@ class BaseTool(ABC):
 
     @property
     @abstractmethod
+    def category(self) -> str:
+        """工具分类，如 "news"、"finance"、"general"、"mcp:<server>"。"""
+        ...
+
+    @property
+    @abstractmethod
     def level(self) -> int:
         """工具危险等级 1-4。"""
         ...
@@ -71,6 +77,7 @@ class FunctionTool(BaseTool):
         fn: Callable[..., Any],
         input_schema: dict,
         level: int = 1,
+        category: str = "general",
     ):
         if not name.strip():
             raise ValueError("name must not be empty")
@@ -81,6 +88,11 @@ class FunctionTool(BaseTool):
         self._fn = fn
         self._schema = input_schema
         self._level = level
+        self._category = category
+
+    @property
+    def category(self) -> str:
+        return self._category
 
     @property
     def level(self) -> int:
@@ -193,6 +205,7 @@ def tool(
     name: str | None = None,
     description: str | None = None,
     level: int = 1,
+    category: str = "general",
 ) -> FunctionTool | Callable[[Callable], FunctionTool]:
     """将函数转换为 FunctionTool，自动从类型注解生成 JSON Schema。
 
@@ -214,19 +227,24 @@ def tool(
         def search_news(q: str) -> str:
             \"\"\"搜索新闻。\"\"\"
             ...
+
+        @tool(category="news")
+        def get_hot_topics() -> str:
+            \"\"\"获取热点话题。\"\"\"
+            ...
     """
     if fn is not None:
         # 无参数调用: @tool
-        return _make_tool(fn, name=name, description=description, level=level)
+        return _make_tool(fn, name=name, description=description, level=level, category=category)
 
     # 带参数调用: @tool(...)
     def decorator(f: Callable) -> FunctionTool:
-        return _make_tool(f, name=name, description=description, level=level)
+        return _make_tool(f, name=name, description=description, level=level, category=category)
 
     return decorator
 
 
-def _make_tool(fn: Callable, *, name: str | None = None, description: str | None = None, level: int = 1) -> FunctionTool:
+def _make_tool(fn: Callable, *, name: str | None = None, description: str | None = None, level: int = 1, category: str = "general") -> FunctionTool:
     """将函数包装为 FunctionTool。"""
     tool_name = name or fn.__name__
 
@@ -276,4 +294,4 @@ def _make_tool(fn: Callable, *, name: str | None = None, description: str | None
     if required:
         input_schema["required"] = required
 
-    return FunctionTool(name=tool_name, description=tool_desc, fn=fn, input_schema=input_schema, level=level)
+    return FunctionTool(name=tool_name, description=tool_desc, fn=fn, input_schema=input_schema, level=level, category=category)

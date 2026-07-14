@@ -107,6 +107,17 @@ class Registry:
         """返回所有注册的工具名列表。"""
         return list(self._tools.keys())
 
+    def list_tool_defs(self) -> list[dict]:
+        """列出所有工具的名/描述/分类，供前端展示。"""
+        return [
+            {
+                "name": t.get_def().name,
+                "description": t.get_def().description,
+                "category": t.category,
+            }
+            for t in self._tools.values()
+        ]
+
     def remove_tool(self, name: str) -> None:
         """移除已注册的工具。
 

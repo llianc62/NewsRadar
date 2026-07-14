@@ -909,6 +909,126 @@ class TestPolicy:
         assert get_latest_news.level == 2
 
 
+# ── Test Tool Category ────────────────────────────────────────────
+
+
+class TestToolCategory:
+    """测试工具 category 属性。"""
+
+    def test_base_tool_category_abstract(self):
+        """BaseTool 有 category 抽象属性。"""
+        assert hasattr(BaseTool, "category"), "BaseTool should have category property"
+        # 验证是 abstract property（无法实例化 BaseTool 来测试，但属性存在即可）
+        with pytest.raises(TypeError):
+            BaseTool()  # still abstract
+
+    def test_function_tool_category_default(self):
+        """FunctionTool 默认 category 为 'general'。"""
+        tool = FunctionTool(
+            name="echo", description="Echo", fn=lambda x: x, input_schema={},
+        )
+        assert tool.category == "general"
+
+    def test_function_tool_category_explicit(self):
+        """FunctionTool 可显式设置 category。"""
+        tool = FunctionTool(
+            name="news_search", description="Search news", fn=lambda q: [],
+            input_schema={}, category="news",
+        )
+        assert tool.category == "news"
+
+    def test_tool_decorator_category_default(self):
+        """@tool 装饰器默认 category 为 'general'。"""
+        @tool
+        def my_tool(x: int) -> str:
+            return str(x)
+
+        assert my_tool.category == "general"
+
+    def test_tool_decorator_category_explicit(self):
+        """@tool(category='news') 设置 category。"""
+        @tool(category="news")
+        def search_news(query: str, limit: int = 10) -> str:
+            """搜索新闻。"""
+            return f"results for {query}"
+
+        assert search_news.category == "news"
+        assert search_news.get_def().name == "search_news"
+
+    def test_mcp_tool_category(self):
+        """MCPTool 的 category 从 client.name 派生。"""
+        from unittest.mock import MagicMock
+
+        mock_client = MagicMock()
+        mock_client.name = "news-server"
+        tool_info = {
+            "name": "search_news",
+            "description": "Search news articles",
+            "inputSchema": {"type": "object", "properties": {}},
+        }
+        # Bypass isinstance check in __init__ by using __new__
+        tool = MCPTool.__new__(MCPTool)
+        tool._client = mock_client
+        tool._name = tool_info["name"]
+        tool._description = tool_info["description"]
+        tool._input_schema = tool_info["inputSchema"]
+        tool._level = 1
+        tool._category = f"mcp:{mock_client.name}"
+        assert tool.category == "mcp:news-server"
+
+    def test_mcp_tool_category_different_client(self):
+        """MCPTool 的 category 随 client.name 变化。"""
+        from unittest.mock import MagicMock
+
+        mock_client = MagicMock()
+        mock_client.name = "finance-api"
+        tool_info = {"name": "get_stock", "description": "Get stock price", "inputSchema": {}}
+        tool = MCPTool.__new__(MCPTool)
+        tool._client = mock_client
+        tool._name = tool_info["name"]
+        tool._description = tool_info["description"]
+        tool._input_schema = tool_info["inputSchema"]
+        tool._level = 1
+        tool._category = f"mcp:{mock_client.name}"
+        assert tool.category == "mcp:finance-api"
+
+    def test_registry_list_tool_defs(self):
+        """Registry.list_tool_defs() 返回 name/description/category 列表。"""
+        registry = Registry()
+        tool1 = FunctionTool(
+            name="echo", description="Echo back", fn=lambda x: x,
+            input_schema={}, category="general",
+        )
+        tool2 = FunctionTool(
+            name="search_news", description="Search news", fn=lambda q: [],
+            input_schema={}, category="news",
+        )
+        registry.add_tool(tool1)
+        registry.add_tool(tool2)
+
+        defs = registry.list_tool_defs()
+        assert len(defs) == 2
+        assert defs[0] == {"name": "echo", "description": "Echo back", "category": "general"}
+        assert defs[1] == {"name": "search_news", "description": "Search news", "category": "news"}
+
+    def test_registry_list_tool_defs_empty(self):
+        """空 Registry 的 list_tool_defs() 返回空列表。"""
+        registry = Registry()
+        assert registry.list_tool_defs() == []
+
+    def test_list_tools_still_works(self):
+        """list_tools() 仍返回 list[str]（无破坏性变更）。"""
+        registry = Registry()
+        tool = FunctionTool(
+            name="echo", description="Echo", fn=lambda x: x,
+            input_schema={}, category="general",
+        )
+        registry.add_tool(tool)
+        names = registry.list_tools()
+        assert names == ["echo"]
+        assert isinstance(names[0], str)
+
+
 # ── Test built-in tools ───────────────────────────────────────────
 
 
@@ -979,3 +1099,38 @@ class TestBuiltinTools:
         assert "roll_dice" in names
         assert all(s["type"] == "function" for s in schemas)
         assert all("parameters" in s["function"] for s in schemas)
+
+    def test_builtin_tools_categories(self):
+        """验证内置工具的 category 正确。"""
+        from agent.tools.tools import (
+            calc, get_current_time, get_current_weather,
+            get_latest_news, get_random_number, roll_dice,
+        )
+
+        assert get_current_time.category == "general"
+        assert get_random_number.category == "general"
+        assert calc.category == "general"
+        assert roll_dice.category == "general"
+        assert get_current_weather.category == "general"
+        assert get_latest_news.category == "news"
+
+    def test_setup_registry_list_tool_defs(self):
+        """验证 setup_builtin_tools() 的 list_tool_defs() 返回正确 category。"""
+        from agent.tools.tools import setup_builtin_tools
+
+        registry = setup_builtin_tools()
+        defs = registry.list_tool_defs()
+        defs_by_name = {d["name"]: d for d in defs}
+
+        assert defs_by_name["get_current_time"] == {
+            "name": "get_current_time",
+            "description": "获取当前的日期和时间（北京时间）。",
+            "category": "general",
+        }
+        assert defs_by_name["calculator"] == {
+            "name": "calculator",
+            "description": "执行四则运算，支持加/减/乘/除",
+            "category": "general",
+        }
+        assert defs_by_name["get_latest_news"]["category"] == "news"
+        assert defs_by_name["roll_dice"]["category"] == "general"

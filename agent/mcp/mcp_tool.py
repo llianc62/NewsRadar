@@ -29,6 +29,11 @@ class MCPTool(BaseTool):
         self._description = tool_info.get("description", "")
         self._input_schema = tool_info.get("inputSchema", {})
         self._level = level
+        self._category = f"mcp:{client.name}"
+
+    @property
+    def category(self) -> str:
+        return self._category
 
     @property
     def level(self) -> int:
