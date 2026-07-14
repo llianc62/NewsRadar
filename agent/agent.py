@@ -105,12 +105,6 @@ class DefaultAgent:
             if text:
                 ctx.knowledge_context = text
 
-        # 记忆上下文（委托给 MemoryModule.get_context）
-        if self.memory and session_id:
-            mem_text = await self.memory.get_context(session_id, user_input)
-            if mem_text:
-                ctx.memory_context = mem_text
-
         return ctx
 
     # ── public API ──────────────────────────────────────────────
