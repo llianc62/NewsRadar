@@ -118,7 +118,8 @@ class TestInitSchema:
         # and _init_agent_schema() creates agent_sessions + agent_messages
         # + agent_memories + knowledge_chunks (Phase 3 pgvector)
         # + agent_definitions + agent_knowledge (Role System)
-        assert len(ddl_calls) == 7
+        # + news_sources (Source Management)
+        assert len(ddl_calls) == 8
         assert any("news_images" in s for s in ddl_calls)
         assert any("agent_sessions" in s for s in ddl_calls)
         assert any("agent_messages" in s for s in ddl_calls)
@@ -126,6 +127,7 @@ class TestInitSchema:
         assert any("knowledge_chunks" in s for s in ddl_calls)
         assert any("agent_definitions" in s for s in ddl_calls)
         assert any("agent_knowledge" in s for s in ddl_calls)
+        assert any("news_sources" in s for s in ddl_calls)
 
 
 class TestRunMigrations:

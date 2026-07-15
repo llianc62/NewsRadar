@@ -1,0 +1,280 @@
+{% extends "base.html" %}
+{% block title %}模型管理 - NewsRadar{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="/static/css/agent_settings.css?v=2">
+{% endblock %}
+{% block content %}
+<div class="app-main">
+  <div class="settings-container">
+    <header class="settings-header">
+      <div class="section-header">
+        <div class="section-header-line"></div>
+        <h1>模型管理</h1>
+      </div>
+      <button id="add-model-btn" class="btn-primary">+ 添加模型</button>
+    </header>
+
+    <!-- Model card list -->
+    <div class="model-card-list" id="model-card-list">
+      <div class="settings-empty" id="model-list-empty" style="display:none">
+        <div class="settings-empty-icon">{{ icon_svg('cpu')|safe }}</div>
+        <div class="settings-empty-title">暂无模型配置</div>
+        <div class="settings-empty-desc">点击上方「添加模型」添加第一个模型</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Editor overlay -->
+<div class="overlay hidden" id="editor-overlay">
+  <div class="editor-panel" id="editor-panel">
+    <div class="editor-header">
+      <h2 id="editor-title">添加模型</h2>
+      <button class="editor-close-btn" id="editor-close">&times;</button>
+    </div>
+    <form id="model-form" class="editor-form">
+      <input type="hidden" name="original_name" id="model-original-name">
+      <div class="form-group">
+        <label for="model-name">名称 <span class="required">*</span></label>
+        <input type="text" id="model-name" name="name" required placeholder="例如：default、quick、deep">
+      </div>
+      <div class="form-group">
+        <label for="model-protocol">协议</label>
+        <select id="model-protocol" name="protocol">
+          <option value="openai">openai</option>
+          <option value="anthropic">anthropic</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="model-model">模型名 <span class="required">*</span></label>
+        <input type="text" id="model-model" name="model" required placeholder="例如：gpt-4o-mini、claude-sonnet-4">
+      </div>
+      <div class="form-group">
+        <label for="model-base-url">端点 URL</label>
+        <input type="text" id="model-base-url" name="base_url" placeholder="例如：https://api.openai.com/v1（留空使用默认）">
+      </div>
+      <div class="form-group">
+        <label for="model-api-key">API Key</label>
+        <input type="password" id="model-api-key" name="api_key" placeholder="（留空使用环境变量）">
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn-primary" id="model-save-btn">保存</button>
+        <button type="button" class="btn-secondary" id="editor-cancel">取消</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function() {
+  'use strict';
+
+  const cardList = document.getElementById('model-card-list');
+  const emptyHint = document.getElementById('model-list-empty');
+  const overlay = document.getElementById('editor-overlay');
+  const editorTitle = document.getElementById('editor-title');
+  const modelForm = document.getElementById('model-form');
+  const modelOrigNameInput = document.getElementById('model-original-name');
+  const modelNameInput = document.getElementById('model-name');
+  const saveBtn = document.getElementById('model-save-btn');
+
+  let currentModelName = null;
+
+  // ── Overlay open/close ──
+  function openEditor(title, model) {
+    editorTitle.textContent = title;
+    if (model) {
+      currentModelName = model.name;
+      modelOrigNameInput.value = model.name;
+      modelNameInput.value = model.name;
+      document.getElementById('model-protocol').value = model.protocol || 'openai';
+      document.getElementById('model-model').value = model.model || '';
+      document.getElementById('model-base-url').value = model.base_url || '';
+      document.getElementById('model-api-key').value = model.api_key || '';
+    } else {
+      currentModelName = null;
+      modelOrigNameInput.value = '';
+      modelNameInput.value = '';
+      document.getElementById('model-protocol').value = 'openai';
+      document.getElementById('model-model').value = '';
+      document.getElementById('model-base-url').value = '';
+      document.getElementById('model-api-key').value = '';
+    }
+    overlay.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    modelNameInput.focus();
+  }
+
+  function closeEditor() {
+    overlay.classList.add('hidden');
+    document.body.style.overflow = '';
+    currentModelName = null;
+  }
+
+  // ── Load models ──
+  async function loadModels() {
+    try {
+      const res = await fetch('/api/models');
+      const data = await res.json();
+      renderModels(data.models || []);
+    } catch (e) {
+      console.error('Failed to load models:', e);
+    }
+  }
+
+  function renderModels(models) {
+    cardList.querySelectorAll('.model-card').forEach(c => c.remove());
+
+    if (models.length === 0) {
+      emptyHint.style.display = '';
+      return;
+    }
+    emptyHint.style.display = 'none';
+
+    models.forEach(model => {
+      const card = document.createElement('div');
+      card.className = 'model-card';
+      const protocolLabel = model.protocol === 'anthropic' ? 'Anthropic 云端' : 'OpenAI 兼容';
+      const baseUrlDisplay = model.base_url || '（默认）';
+      card.innerHTML = `
+        <div class="model-card-body">
+          <div class="model-card-header">
+            <span class="model-card-name">${escapeHtml(model.name)}</span>
+            <span class="model-card-protocol">${escapeHtml(protocolLabel)}</span>
+          </div>
+          <div class="model-card-meta">
+            <span>协议: ${escapeHtml(model.protocol || 'openai')}</span>
+            <span class="meta-sep">·</span>
+            <span>模型: ${escapeHtml(model.model || '')}</span>
+          </div>
+          <div class="model-card-meta">
+            <span>端点: ${escapeHtml(baseUrlDisplay)}</span>
+          </div>
+        </div>
+        <div class="model-card-actions">
+          <button class="btn-icon" title="编辑" data-action="edit" data-name="${escapeHtml(model.name)}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
+          </button>
+          <button class="btn-icon btn-icon-danger" title="删除" data-action="delete" data-name="${escapeHtml(model.name)}">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+          </button>
+        </div>
+      `;
+      cardList.appendChild(card);
+    });
+  }
+
+  // ── Event delegation for card actions ──
+  cardList.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const name = btn.dataset.name;
+
+    if (action === 'edit') {
+      try {
+        const res = await fetch('/api/models');
+        const data = await res.json();
+        const model = (data.models || []).find(m => m.name === name);
+        if (model) openEditor('编辑模型', model);
+      } catch (err) {
+        console.error('Failed to load model:', err);
+      }
+    } else if (action === 'delete') {
+      if (!confirm('确定要删除模型 "' + name + '" 吗？')) return;
+      try {
+        const res = await fetch('/api/models/' + encodeURIComponent(name), { method: 'DELETE' });
+        if (res.ok) {
+          loadModels();
+        } else {
+          const data = await res.json();
+          alert('删除失败: ' + (data.detail || '未知错误'));
+        }
+      } catch (err) {
+        console.error('Failed to delete model:', err);
+      }
+    }
+  });
+
+  // ── Create button ──
+  document.getElementById('add-model-btn').addEventListener('click', () => {
+    openEditor('添加模型');
+  });
+
+  // ── Close editor ──
+  document.getElementById('editor-close').addEventListener('click', closeEditor);
+  document.getElementById('editor-cancel').addEventListener('click', closeEditor);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeEditor();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !overlay.classList.contains('hidden')) {
+      closeEditor();
+    }
+  });
+
+  // ── Form submit ──
+  modelForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const body = {
+      name: modelNameInput.value.trim(),
+      protocol: document.getElementById('model-protocol').value,
+      model: document.getElementById('model-model').value.trim(),
+      base_url: document.getElementById('model-base-url').value.trim(),
+      api_key: document.getElementById('model-api-key').value,
+    };
+
+    if (!body.name) { alert('请输入模型名称'); return; }
+    if (!body.model) { alert('请输入模型名'); return; }
+
+    saveBtn.disabled = true;
+    saveBtn.textContent = '保存中...';
+
+    try {
+      let res;
+      if (currentModelName) {
+        // PUT: rename if name changed
+        const url = '/api/models/' + encodeURIComponent(currentModelName);
+        res = await fetch(url, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      } else {
+        res = await fetch('/api/models', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      }
+
+      if (res.ok) {
+        closeEditor();
+        loadModels();
+      } else {
+        const data = await res.json();
+        alert('保存失败: ' + (data.detail || '未知错误'));
+      }
+    } catch (err) {
+      console.error('Failed to save model:', err);
+      alert('保存失败: ' + err.message);
+    } finally {
+      saveBtn.disabled = false;
+      saveBtn.textContent = '保存';
+    }
+  });
+
+  // ── Utility ──
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = String(str);
+    return div.innerHTML;
+  }
+
+  // ── Init ──
+  loadModels();
+})();
+</script>
+{% endblock %}

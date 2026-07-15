@@ -1,0 +1,429 @@
+{% extends "base.html" %}
+{% block title %}新闻源管理 - NewsRadar{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="/static/css/agent_settings.css?v=2">
+{% endblock %}
+{% block content %}
+<div class="app-main">
+  <div class="settings-container">
+    <header class="settings-header">
+      <div class="section-header">
+        <div class="section-header-line"></div>
+        <h1>新闻源管理</h1>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <button id="seed-btn" class="btn-secondary">从 config.yaml 种子</button>
+        <button id="add-source-btn" class="btn-primary">+ 新建源</button>
+      </div>
+    </header>
+
+    <!-- Filter -->
+    <div class="source-filter">
+      <select id="source-filter-select">
+        <option value="">全部</option>
+        <option value="newsnow">NewsNow</option>
+        <option value="rss">RSS</option>
+      </select>
+    </div>
+
+    <!-- Source list -->
+    <div class="source-list" id="source-list">
+      <div class="settings-empty" id="source-list-empty" style="display:none">
+        <div class="settings-empty-icon">{{ icon_svg('radio')|safe }}</div>
+        <div class="settings-empty-title">暂无新闻源</div>
+        <div class="settings-empty-desc">点击上方「新建源」或「从 config.yaml 种子」添加新闻源</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Editor overlay -->
+<div class="overlay hidden" id="editor-overlay">
+  <div class="editor-panel" id="editor-panel">
+    <div class="editor-header">
+      <h2 id="editor-title">新建新闻源</h2>
+      <button class="editor-close-btn" id="editor-close">&times;</button>
+    </div>
+    <form id="source-form" class="editor-form">
+      <input type="hidden" name="id" id="source-id">
+      <div class="form-group">
+        <label for="source-type">类型 <span class="required">*</span></label>
+        <select id="source-type" name="source_type" required>
+          <option value="newsnow">NewsNow</option>
+          <option value="rss">RSS</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="source-name">名称 <span class="required">*</span></label>
+        <input type="text" id="source-name" name="name" required placeholder="例如：华尔街见闻">
+      </div>
+      <div class="form-group">
+        <label for="source-source-id">源 ID</label>
+        <input type="text" id="source-source-id" name="source_id" placeholder="例如：wallstreetcn-hot">
+      </div>
+      <div class="form-group" id="url-group">
+        <label for="source-url">URL</label>
+        <input type="text" id="source-url" name="url" placeholder="RSS feed URL">
+      </div>
+      <div class="form-group">
+        <label for="source-tier">层级</label>
+        <select id="source-tier" name="tier">
+          <option value="1">T1 主流财经</option>
+          <option value="2">T2 综合新闻</option>
+          <option value="3">T3 垂直深度</option>
+          <option value="4">T4 内容资讯</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label for="source-priority">优先级</label>
+        <input type="number" id="source-priority" name="priority" min="0" max="100" value="0">
+      </div>
+      <div class="form-group">
+        <label class="toggle-label">
+          <input type="checkbox" id="source-enabled" name="enabled" checked>
+          <span>启用</span>
+        </label>
+      </div>
+      <div class="form-group" id="max-age-group">
+        <label for="source-max-age">max_age_days</label>
+        <input type="number" id="source-max-age" name="max_age_days" min="0" value="0">
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn-primary" id="source-save-btn">保存</button>
+        <button type="button" class="btn-secondary" id="editor-cancel">取消</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function() {
+  'use strict';
+
+  const sourceList = document.getElementById('source-list');
+  const emptyHint = document.getElementById('source-list-empty');
+  const overlay = document.getElementById('editor-overlay');
+  const editorTitle = document.getElementById('editor-title');
+  const sourceForm = document.getElementById('source-form');
+  const sourceIdInput = document.getElementById('source-id');
+  const sourceTypeSelect = document.getElementById('source-type');
+  const urlGroup = document.getElementById('url-group');
+  const maxAgeGroup = document.getElementById('max-age-group');
+  const saveBtn = document.getElementById('source-save-btn');
+  const filterSelect = document.getElementById('source-filter-select');
+
+  let currentSourceId = null;
+
+  // Show/hide URL field based on type
+  sourceTypeSelect.addEventListener('change', () => {
+    const isRss = sourceTypeSelect.value === 'rss';
+    urlGroup.style.display = isRss ? '' : 'none';
+    maxAgeGroup.style.display = isRss ? '' : 'none';
+  });
+
+  // ── Overlay open/close ──
+  function openEditor(title, source) {
+    editorTitle.textContent = title;
+    if (source) {
+      currentSourceId = source.id;
+      sourceIdInput.value = source.id;
+      sourceTypeSelect.value = source.source_type || 'rss';
+      document.getElementById('source-name').value = source.name || '';
+      document.getElementById('source-source-id').value = source.source_id || '';
+      document.getElementById('source-url').value = source.url || '';
+      document.getElementById('source-tier').value = source.tier || 4;
+      document.getElementById('source-priority').value = source.priority || 0;
+      document.getElementById('source-enabled').checked = source.enabled !== false;
+      const config = source.config || {};
+      document.getElementById('source-max-age').value = config.max_age_days || 0;
+    } else {
+      currentSourceId = null;
+      sourceIdInput.value = '';
+      sourceTypeSelect.value = 'rss';
+      document.getElementById('source-name').value = '';
+      document.getElementById('source-source-id').value = '';
+      document.getElementById('source-url').value = '';
+      document.getElementById('source-tier').value = '4';
+      document.getElementById('source-priority').value = '0';
+      document.getElementById('source-enabled').checked = true;
+      document.getElementById('source-max-age').value = '0';
+    }
+    sourceTypeSelect.dispatchEvent(new Event('change'));
+    overlay.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+    document.getElementById('source-name').focus();
+  }
+
+  function closeEditor() {
+    overlay.classList.add('hidden');
+    document.body.style.overflow = '';
+    currentSourceId = null;
+  }
+
+  // ── Load sources ──
+  async function loadSources() {
+    const filter = filterSelect.value;
+    let url = '/api/settings/sources';
+    if (filter) url += '?source_type=' + filter;
+    try {
+      const res = await fetch(url);
+      const data = await res.json();
+      renderSources(data.sources || []);
+    } catch (e) {
+      console.error('Failed to load sources:', e);
+    }
+  }
+
+  function renderSources(sources) {
+    sourceList.querySelectorAll('.source-item').forEach(el => el.remove());
+
+    if (sources.length === 0) {
+      emptyHint.style.display = '';
+      return;
+    }
+    emptyHint.style.display = 'none';
+
+    // Group by source_type
+    const groups = { newsnow: [], rss: [] };
+    sources.forEach(s => {
+      const t = s.source_type || 'rss';
+      if (!groups[t]) groups[t] = [];
+      groups[t].push(s);
+    });
+
+    const groupLabels = { newsnow: 'NewsNow 数据源', rss: 'RSS 数据源' };
+
+    for (const [stype, items] of Object.entries(groups)) {
+      if (items.length === 0) continue;
+      const section = document.createElement('div');
+      section.className = 'source-group';
+      section.innerHTML = '<div class="source-group-label">' + (groupLabels[stype] || stype) + '</div>';
+      const itemsDiv = document.createElement('div');
+      itemsDiv.className = 'source-group-items';
+
+      items.forEach(s => {
+        const item = document.createElement('div');
+        item.className = 'source-item' + (s.enabled === false ? ' disabled' : '');
+        const tierLabels = {1: 'T1', 2: 'T2', 3: 'T3', 4: 'T4'};
+        const tierLabel = tierLabels[s.tier] || 'T' + s.tier;
+
+        let urlPart = '';
+        if (s.url) {
+          const displayUrl = s.url.length > 40 ? s.url.substring(0, 40) + '...' : s.url;
+          urlPart = '<span class="source-url">' + escapeHtml(displayUrl) + '</span>';
+        }
+
+        let disabledNote = '';
+        if (s.enabled === false) {
+          disabledNote = ' <span class="source-disabled-note">(已禁用)</span>';
+        }
+
+        item.innerHTML = `
+          <div class="source-item-body">
+            <div class="source-item-header">
+              <span class="source-toggle">
+                <input type="checkbox" class="source-enabled-checkbox" data-id="${escapeHtml(s.id)}" ${s.enabled !== false ? 'checked' : ''}>
+              </span>
+              <span class="source-item-name">${escapeHtml(s.name)}${disabledNote}</span>
+              <span class="source-item-badge">${tierLabel} · ${s.priority}</span>
+              ${urlPart}
+            </div>
+          </div>
+          <div class="source-item-actions">
+            ${stype === 'rss' ? `<button class="btn-secondary btn-sm test-btn" data-id="${escapeHtml(s.id)}" data-url="${escapeHtml(s.url || '')}">测试连通</button>` : ''}
+            <button class="btn-icon" title="编辑" data-action="edit" data-id="${escapeHtml(s.id)}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/></svg>
+            </button>
+            <button class="btn-icon btn-icon-danger" title="删除" data-action="delete" data-id="${escapeHtml(s.id)}">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><path d="M10 11v6"/><path d="M14 11v6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+          </div>
+        `;
+        itemsDiv.appendChild(item);
+      });
+
+      section.appendChild(itemsDiv);
+      sourceList.appendChild(section);
+    }
+
+    // Attach test button handlers
+    sourceList.querySelectorAll('.test-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.id;
+        btn.disabled = true;
+        btn.textContent = '测试中...';
+        try {
+          const res = await fetch('/api/settings/sources/' + id + '/test', { method: 'POST' });
+          const result = await res.json();
+          if (result.ok) {
+            const xmlOk = result.is_xml ? ' (XML)' : ' (非XML)';
+            alert('连通成功: HTTP ' + result.status_code + xmlOk + '\nContent-Type: ' + result.content_type);
+          } else {
+            alert('连通失败: ' + (result.error || '未知错误'));
+          }
+        } catch (e) {
+          alert('测试请求失败: ' + e.message);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = '测试连通';
+        }
+      });
+    });
+
+    // Attach toggle handlers
+    sourceList.querySelectorAll('.source-enabled-checkbox').forEach(cb => {
+      cb.addEventListener('change', async () => {
+        const id = cb.dataset.id;
+        try {
+          await fetch('/api/settings/sources/' + id, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: cb.checked }),
+          });
+        } catch (e) {
+          console.error('Failed to toggle source:', e);
+          cb.checked = !cb.checked;
+        }
+      });
+    });
+  }
+
+  // ── Event delegation for card actions ──
+  sourceList.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const action = btn.dataset.action;
+    const id = btn.dataset.id;
+
+    if (action === 'edit') {
+      try {
+        const res = await fetch('/api/settings/sources');
+        const data = await res.json();
+        const source = (data.sources || []).find(s => s.id === id);
+        if (source) openEditor('编辑新闻源', source);
+      } catch (err) {
+        console.error('Failed to load source:', err);
+      }
+    } else if (action === 'delete') {
+      if (!confirm('确定要删除该新闻源吗？')) return;
+      try {
+        const res = await fetch('/api/settings/sources/' + id, { method: 'DELETE' });
+        if (res.ok) {
+          loadSources();
+        } else {
+          const data = await res.json();
+          alert('删除失败: ' + (data.detail || '未知错误'));
+        }
+      } catch (err) {
+        console.error('Failed to delete source:', err);
+      }
+    }
+  });
+
+  // ── Create button ──
+  document.getElementById('add-source-btn').addEventListener('click', () => {
+    openEditor('新建新闻源');
+  });
+
+  // ── Seed button ──
+  document.getElementById('seed-btn').addEventListener('click', async () => {
+    if (!confirm('将从 config.yaml 重新种子数据（不会覆盖已有源）。继续？')) return;
+    const btn = document.getElementById('seed-btn');
+    btn.disabled = true;
+    btn.textContent = '种子中...';
+    try {
+      const res = await fetch('/api/settings/sources/seed', { method: 'POST' });
+      const data = await res.json();
+      alert('种子完成: 新增 ' + data.inserted + ' 个源');
+      loadSources();
+    } catch (e) {
+      alert('种子失败: ' + e.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '从 config.yaml 种子';
+    }
+  });
+
+  // ── Filter ──
+  filterSelect.addEventListener('change', loadSources);
+
+  // ── Close editor ──
+  document.getElementById('editor-close').addEventListener('click', closeEditor);
+  document.getElementById('editor-cancel').addEventListener('click', closeEditor);
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeEditor();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !overlay.classList.contains('hidden')) {
+      closeEditor();
+    }
+  });
+
+  // ── Form submit ──
+  sourceForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const isRss = sourceTypeSelect.value === 'rss';
+    const config = isRss ? { max_age_days: parseInt(document.getElementById('source-max-age').value) || 0 } : {};
+
+    const body = {
+      source_type: sourceTypeSelect.value,
+      name: document.getElementById('source-name').value.trim(),
+      source_id: document.getElementById('source-source-id').value.trim(),
+      url: isRss ? document.getElementById('source-url').value.trim() : '',
+      tier: parseInt(document.getElementById('source-tier').value) || 4,
+      priority: parseInt(document.getElementById('source-priority').value) || 0,
+      enabled: document.getElementById('source-enabled').checked,
+      config: config,
+    };
+
+    if (!body.name) { alert('请输入名称'); return; }
+
+    saveBtn.disabled = true;
+    saveBtn.textContent = '保存中...';
+
+    try {
+      let res;
+      if (currentSourceId) {
+        res = await fetch('/api/settings/sources/' + currentSourceId, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      } else {
+        res = await fetch('/api/settings/sources', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      }
+
+      if (res.ok) {
+        closeEditor();
+        loadSources();
+      } else {
+        const data = await res.json();
+        alert('保存失败: ' + (data.detail || '未知错误'));
+      }
+    } catch (err) {
+      console.error('Failed to save source:', err);
+      alert('保存失败: ' + err.message);
+    } finally {
+      saveBtn.disabled = false;
+      saveBtn.textContent = '保存';
+    }
+  });
+
+  // ── Utility ──
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = String(str);
+    return div.innerHTML;
+  }
+
+  // ── Init ──
+  loadSources();
+})();
+</script>
+{% endblock %}

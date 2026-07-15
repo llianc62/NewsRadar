@@ -496,6 +496,22 @@ class PostgreSQL:
                         END IF;
                     END $$;
                 """)
+                # ── 新闻源管理 ──────────────────────────────────────
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS news_sources (
+                        id          TEXT PRIMARY KEY,
+                        source_type TEXT NOT NULL DEFAULT 'rss',
+                        name        TEXT NOT NULL,
+                        source_id   TEXT NOT NULL DEFAULT '',
+                        url         TEXT NOT NULL DEFAULT '',
+                        tier        INTEGER NOT NULL DEFAULT 4,
+                        priority    INTEGER NOT NULL DEFAULT 0,
+                        enabled     BOOLEAN NOT NULL DEFAULT true,
+                        config      JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                    );
+                """)
             conn.commit()
             print("[DB] Agent schema initialized")
         finally:
@@ -818,6 +834,142 @@ class PostgreSQL:
                 cur.execute("DELETE FROM knowledge_chunks WHERE namespace = %s", (kb.namespace,))
                 cur.execute("DELETE FROM agent_knowledge WHERE id = %s", (id,))
         return True
+
+    # ── News Sources CRUD ──────────────────────────────────────────────
+
+    def create_news_source(self, data: dict) -> str:
+        """创建新闻源，返回 id。"""
+        source_id = data.get("id") or str(uuid4())
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO news_sources (id, source_type, name, source_id, url, tier, priority, enabled, config)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        source_id,
+                        data.get("source_type", "rss"),
+                        data.get("name", ""),
+                        data.get("source_id", ""),
+                        data.get("url", ""),
+                        data.get("tier", 4),
+                        data.get("priority", 0),
+                        data.get("enabled", True),
+                        json.dumps(data.get("config") or {}),
+                    ),
+                )
+        return source_id
+
+    def get_news_source(self, id: str) -> dict | None:
+        """按 ID 查询新闻源。"""
+        with self.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT * FROM news_sources WHERE id = %s", (id,))
+                row = cur.fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["created_at"] = result["created_at"].isoformat() if result["created_at"] else None
+        result["updated_at"] = result["updated_at"].isoformat() if result["updated_at"] else None
+        if isinstance(result.get("config"), str):
+            result["config"] = json.loads(result["config"])
+        return result
+
+    def list_news_sources(self, source_type: str | None = None) -> list[dict]:
+        """列出所有新闻源，可按 source_type 过滤。"""
+        with self.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                if source_type:
+                    cur.execute(
+                        "SELECT * FROM news_sources WHERE source_type = %s ORDER BY tier ASC, priority DESC",
+                        (source_type,),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT * FROM news_sources ORDER BY source_type, tier ASC, priority DESC"
+                    )
+                rows = cur.fetchall()
+        result = []
+        for row in rows:
+            d = dict(row)
+            d["created_at"] = d["created_at"].isoformat() if d["created_at"] else None
+            d["updated_at"] = d["updated_at"].isoformat() if d["updated_at"] else None
+            if isinstance(d.get("config"), str):
+                d["config"] = json.loads(d["config"])
+            result.append(d)
+        return result
+
+    def update_news_source(self, id: str, data: dict) -> bool:
+        """更新新闻源。返回是否成功。"""
+        fields = []
+        params = []
+        for key in ("source_type", "name", "source_id", "url", "tier", "priority", "enabled"):
+            if key in data:
+                fields.append(f"{key} = %s")
+                params.append(data[key])
+        if "config" in data:
+            fields.append("config = %s")
+            params.append(json.dumps(data["config"]))
+        if not fields:
+            return False
+        fields.append("updated_at = NOW()")
+        params.append(id)
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"UPDATE news_sources SET {', '.join(fields)} WHERE id = %s",
+                    params,
+                )
+                return cur.rowcount > 0
+
+    def delete_news_source(self, id: str) -> bool:
+        """删除新闻源。"""
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM news_sources WHERE id = %s", (id,))
+                return cur.rowcount > 0
+
+    def seed_news_sources(self, newsnow_sources: list[dict], rss_sources: list[dict]) -> int:
+        """从 config.yaml 种子数据到 news_sources 表（幂等，INSERT … ON CONFLICT DO NOTHING）。
+
+        返回实际插入的行数。
+        """
+        rows = []
+        for src in newsnow_sources:
+            rows.append((
+                src.get("id", ""),
+                "newsnow",
+                src.get("name", ""),
+                src.get("id", ""),
+                "",
+                src.get("tier", 4),
+                src.get("priority", 0),
+                True,
+                json.dumps({}),
+            ))
+        for src in rss_sources:
+            rows.append((
+                src.get("id", ""),
+                "rss",
+                src.get("name", ""),
+                src.get("id", ""),
+                src.get("url", ""),
+                src.get("tier", 4),
+                src.get("priority", 0),
+                src.get("enabled", True),
+                json.dumps({"max_age_days": src.get("max_age_days", 0)}),
+            ))
+        inserted = 0
+        with self.get_conn() as conn:
+            with conn.cursor() as cur:
+                for row in rows:
+                    cur.execute(
+                        """INSERT INTO news_sources (id, source_type, name, source_id, url, tier, priority, enabled, config)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                           ON CONFLICT (id) DO NOTHING""",
+                        row,
+                    )
+                    inserted += cur.rowcount
+        return inserted
 
     # ── Agent sessions by agent_id ────────────────────────────────────
 

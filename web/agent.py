@@ -146,6 +146,8 @@ def _knowledge_to_dict(kb: AgentKnowledge) -> dict:
 @router.post("/api/agents")
 async def create_agent(body: dict, request: Request):
     """创建角色定义。"""
+    if "name" not in body or "system_prompt" not in body:
+        raise HTTPException(status_code=422, detail="name and system_prompt are required")
     db = request.app.state.db
     defn = AgentDefinition(
         id=str(uuid4()),
@@ -208,6 +210,8 @@ async def delete_agent(defn_id: str, request: Request):
 @router.post("/api/agent/knowledge")
 async def create_knowledge(body: dict, request: Request):
     """创建知识库定义。"""
+    if "name" not in body:
+        raise HTTPException(status_code=422, detail="name is required")
     db = request.app.state.db
     kb = AgentKnowledge(
         id=str(uuid4()),
@@ -246,8 +250,15 @@ async def ingest_knowledge_doc(knowledge_id: str, request: Request):
     form = await request.form()
     file = form.get("file")
     if not file:
-        raise HTTPException(400, "file required")
-    content = (await file.read()).decode("utf-8")
+        raise HTTPException(status_code=400, detail="file required")
+    MAX_SIZE = 50 * 1024 * 1024  # 50MB
+    content = await file.read()
+    if len(content) > MAX_SIZE:
+        raise HTTPException(status_code=413, detail="file too large")
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="file must be UTF-8 text")
     from agent.knowledge import EmbeddingClient, KnowledgeEngine, PgVectorKnowledgeStore
 
     engine = KnowledgeEngine(
@@ -261,7 +272,7 @@ async def ingest_knowledge_doc(knowledge_id: str, request: Request):
     )
     count = await asyncio.to_thread(
         engine.ingest_documents,
-        [{"source": file.filename, "content": content}],
+        [{"source": file.filename, "content": text}],
         namespace=kb.namespace,
     )
     return {"chunks": count}
@@ -277,6 +288,231 @@ async def list_tools(request: Request):
     if registry is None:
         return {"tools": []}
     return {"tools": registry.list_tool_defs()}
+
+
+# ── REST: 常规设置 ──────────────────────────────────────────────────
+
+
+@router.get("/api/settings")
+async def get_settings(request: Request):
+    """返回常规设置（只读，来自 config.yaml）。"""
+    cfg = getattr(request.app.state, "agent_config", None) or {}
+    app_cfg = cfg.get("app", {})
+    crawler_cfg = cfg.get("crawler", {})
+    notif_cfg = cfg.get("notification", {})
+
+    return {
+        "timezone": app_cfg.get("timezone", "Asia/Shanghai"),
+        "crawl_circle": crawler_cfg.get("crawl_circle", 60),
+        "sync_circle": crawler_cfg.get("sync_circle", 60),
+        "email": {
+            "from_addr": notif_cfg.get("email", {}).get("from_addr", ""),
+            "to_addr": notif_cfg.get("email", {}).get("to_addr", ""),
+            "frequency_words": notif_cfg.get("frequency_words", ""),
+            "keyword_limit_news": notif_cfg.get("keyword_limit_news", 0),
+        },
+        "blacklist": notif_cfg.get("black_list", []),
+    }
+
+
+# ── REST: 新闻源管理 ────────────────────────────────────────────────
+
+
+@router.get("/api/settings/sources")
+async def list_sources(request: Request, source_type: str | None = None):
+    """列出新闻源（可按 source_type 过滤）。"""
+    db = request.app.state.db
+    sources = db.list_news_sources(source_type=source_type)
+    return {"sources": sources}
+
+
+@router.post("/api/settings/sources")
+async def create_source(body: dict, request: Request):
+    """新建新闻源。"""
+    if "name" not in body:
+        raise HTTPException(status_code=422, detail="name is required")
+    db = request.app.state.db
+    source_id = db.create_news_source(body)
+    source = db.get_news_source(source_id)
+    return {"id": source_id, "source": source}
+
+
+@router.put("/api/settings/sources/{source_id}")
+async def update_source(source_id: str, body: dict, request: Request):
+    """更新新闻源。"""
+    db = request.app.state.db
+    updated = db.update_news_source(source_id, body)
+    if not updated:
+        raise HTTPException(404, "新闻源不存在")
+    source = db.get_news_source(source_id)
+    return {"ok": True, "source": source}
+
+
+@router.delete("/api/settings/sources/{source_id}")
+async def delete_source(source_id: str, request: Request):
+    """删除新闻源。"""
+    db = request.app.state.db
+    deleted = db.delete_news_source(source_id)
+    if not deleted:
+        raise HTTPException(404, "新闻源不存在")
+    return {"ok": True}
+
+
+@router.post("/api/settings/sources/{source_id}/test")
+async def test_source_connectivity(source_id: str, request: Request):
+    """测试 RSS 连通性（HTTP GET 到 URL，检查响应）。"""
+    db = request.app.state.db
+    source = db.get_news_source(source_id)
+    if not source:
+        raise HTTPException(404, "新闻源不存在")
+    url = source.get("url", "")
+    if not url:
+        return {"ok": False, "error": "该新闻源没有配置 URL"}
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(url)
+            content_type = resp.headers.get("content-type", "")
+            is_xml = "xml" in content_type or resp.text.strip().startswith("<?xml")
+            return {
+                "ok": True,
+                "status_code": resp.status_code,
+                "content_type": content_type,
+                "is_xml": is_xml,
+                "body_preview": resp.text[:500] if resp.status_code < 400 else "",
+            }
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:500]}
+
+
+@router.post("/api/settings/sources/seed")
+async def seed_sources(request: Request):
+    """从 config.yaml 种子数据到 news_sources 表。"""
+    cfg = getattr(request.app.state, "agent_config", None) or {}
+    crawler_cfg = cfg.get("crawler", {})
+    newsnow_cfg = crawler_cfg.get("newsnow", {})
+    rss_cfg = crawler_cfg.get("rss", {})
+    newsnow_sources = newsnow_cfg.get("sources", [])
+    rss_sources = rss_cfg.get("sources", [])
+    db = request.app.state.db
+    count = db.seed_news_sources(newsnow_sources, rss_sources)
+    return {"ok": True, "inserted": count}
+
+
+# ── REST: 模型管理（内存 + JSON 文件） ────────────────────────────────
+
+import threading
+from pathlib import Path as _Path
+
+_MODELS_LOCK = threading.Lock()
+_MODELS_CACHE: dict | None = None
+_MODELS_FILE = _Path(os.environ.get("MODELS_CONFIG_PATH", "models_config.json"))
+
+
+def _load_models() -> dict:
+    """从 JSON 文件加载模型配置（线程安全）。"""
+    global _MODELS_CACHE
+    with _MODELS_LOCK:
+        if _MODELS_CACHE is not None:
+            return dict(_MODELS_CACHE)
+        if _MODELS_FILE.exists():
+            try:
+                _MODELS_CACHE = _json.loads(_MODELS_FILE.read_text("utf-8"))
+            except Exception:
+                _MODELS_CACHE = {}
+        else:
+            _MODELS_CACHE = {}
+        return dict(_MODELS_CACHE)
+
+
+def _save_models(models: dict) -> None:
+    """持久化模型配置到 JSON 文件（线程安全）。"""
+    global _MODELS_CACHE
+    with _MODELS_LOCK:
+        _MODELS_CACHE = dict(models)
+        _MODELS_FILE.write_text(_json.dumps(models, indent=2, ensure_ascii=False), "utf-8")
+
+
+def _init_models_from_config(agent_config: dict) -> None:
+    """首次加载时从 agent_config 的 models 段初始化模型存储。"""
+    global _MODELS_CACHE
+    with _MODELS_LOCK:
+        if _MODELS_CACHE is not None:
+            return
+        cfg_models = agent_config.get("models", {})
+        if cfg_models:
+            _MODELS_CACHE = dict(cfg_models)
+            _MODELS_FILE.write_text(_json.dumps(cfg_models, indent=2, ensure_ascii=False), "utf-8")
+        else:
+            _MODELS_CACHE = {}
+        return
+
+
+@router.get("/api/models")
+async def list_models(request: Request):
+    """列出所有模型配置。"""
+    cfg = getattr(request.app.state, "agent_config", None) or {}
+    _init_models_from_config(cfg)
+    models = _load_models()
+    items = []
+    for name, m in models.items():
+        item = dict(m)
+        item["name"] = name
+        items.append(item)
+    return {"models": items}
+
+
+@router.post("/api/models")
+async def create_model(body: dict, request: Request):
+    """添加模型。"""
+    if "name" not in body:
+        raise HTTPException(status_code=422, detail="name is required")
+    cfg = getattr(request.app.state, "agent_config", None) or {}
+    _init_models_from_config(cfg)
+    models = _load_models()
+    name = body["name"]
+    if name in models:
+        raise HTTPException(status_code=409, detail="模型名称已存在")
+    models[name] = {
+        "protocol": body.get("protocol", "openai"),
+        "model": body.get("model", ""),
+        "base_url": body.get("base_url", ""),
+        "api_key": body.get("api_key", ""),
+    }
+    _save_models(models)
+    item = dict(models[name])
+    item["name"] = name
+    return {"ok": True, "model": item}
+
+
+@router.put("/api/models/{model_name}")
+async def update_model(model_name: str, body: dict, request: Request):
+    """更新模型配置。"""
+    cfg = getattr(request.app.state, "agent_config", None) or {}
+    _init_models_from_config(cfg)
+    models = _load_models()
+    if model_name not in models:
+        raise HTTPException(404, "模型不存在")
+    for key in ("protocol", "model", "base_url", "api_key"):
+        if key in body:
+            models[model_name][key] = body[key]
+    _save_models(models)
+    item = dict(models[model_name])
+    item["name"] = model_name
+    return {"ok": True, "model": item}
+
+
+@router.delete("/api/models/{model_name}")
+async def delete_model(model_name: str, request: Request):
+    """删除模型。"""
+    cfg = getattr(request.app.state, "agent_config", None) or {}
+    _init_models_from_config(cfg)
+    models = _load_models()
+    if model_name not in models:
+        raise HTTPException(404, "模型不存在")
+    del models[model_name]
+    _save_models(models)
+    return {"ok": True}
 
 
 # ── WebSocket: 统一实时通道 ──

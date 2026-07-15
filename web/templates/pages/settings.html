@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}常规设置 - NewsRadar{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="/static/css/agent_settings.css?v=2">
+{% endblock %}
+{% block content %}
+<div class="app-main">
+  <div class="settings-container">
+    <header class="settings-header">
+      <div class="section-header">
+        <div class="section-header-line"></div>
+        <h1>常规设置</h1>
+      </div>
+    </header>
+
+    <div id="settings-content">
+      <div class="settings-empty">
+        <div class="settings-empty-icon">{{ icon_svg('sliders')|safe }}</div>
+        <div class="settings-empty-title">加载中...</div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function() {
+  'use strict';
+
+  const container = document.getElementById('settings-content');
+
+  async function loadSettings() {
+    try {
+      const res = await fetch('/api/settings');
+      const data = await res.json();
+      renderSettings(data);
+    } catch (e) {
+      console.error('Failed to load settings:', e);
+      container.innerHTML = '<div class="settings-empty"><div class="settings-empty-title">加载失败</div><div class="settings-empty-desc">' + escapeHtml(String(e)) + '</div></div>';
+    }
+  }
+
+  function renderSettings(data) {
+    const tierLabels = {1: 'T1 主流财经', 2: 'T2 综合新闻', 3: 'T3 垂直深度', 4: 'T4 内容资讯'};
+
+    let html = '';
+
+    // ── 基本设置 ──
+    html += '<div class="settings-section-card">';
+    html += '<div class="settings-section-title">基本设置</div>';
+    html += '<div class="settings-info-grid">';
+    html += infoRow('时区', escapeHtml(data.timezone || ''));
+    html += infoRow('新闻抓取间隔', (data.crawl_circle || 60) + ' 分钟');
+    html += infoRow('云端同步间隔', (data.sync_circle || 60) + ' 分钟');
+    html += '</div></div>';
+
+    // ── 邮件通知 ──
+    const email = data.email || {};
+    html += '<div class="settings-section-card">';
+    html += '<div class="settings-section-title">邮件通知</div>';
+    html += '<div class="settings-info-grid">';
+    html += infoRow('发件地址', escapeHtml(email.from_addr || '（未配置）'));
+    html += infoRow('收件地址', escapeHtml(email.to_addr || '（未配置）'));
+    html += infoRow('关键词文件', escapeHtml(email.frequency_words || ''));
+    html += infoRow('关键词限制', email.keyword_limit_news || 0);
+    html += '</div></div>';
+
+    // ── 黑名单 ──
+    const blacklist = data.blacklist || [];
+    html += '<div class="settings-section-card">';
+    html += '<div class="settings-section-title">黑名单</div>';
+    html += '<div class="settings-info-grid">';
+    html += infoRow('已屏蔽来源', blacklist.length > 0 ? blacklist.join(', ') + ' （共 ' + blacklist.length + ' 个源）' : '无');
+    html += '</div></div>';
+
+    // ── 只读提示 ──
+    html += '<div class="settings-readonly-note">注：当前为只读视图，修改配置请编辑 config.yaml</div>';
+
+    container.innerHTML = html;
+  }
+
+  function infoRow(label, value) {
+    return '<div class="settings-info-row"><span class="settings-info-label">' + label + '</span><span class="settings-info-value">' + value + '</span></div>';
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = String(str);
+    return div.innerHTML;
+  }
+
+  loadSettings();
+})();
+</script>
+{% endblock %}
