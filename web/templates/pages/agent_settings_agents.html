@@ -1,10 +1,40 @@
 {% extends "base.html" %}
-{% block title %}角色管理 - NewsRadar{% endblock %}
+{% block title %}智能体设置 - NewsRadar{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="/static/css/agent_settings.css?v=1">
+<link rel="stylesheet" href="/static/css/agent_settings.css?v=2">
 {% endblock %}
 {% block content %}
 <div class="app-main">
+  <!-- 设置二级导航 -->
+  <aside class="settings-nav">
+    <div class="settings-nav-header">
+      <div class="section-header-line"></div>
+      <h2>系统设置</h2>
+    </div>
+    <nav class="settings-nav-list">
+      <a href="/settings" class="settings-nav-item">
+        <span class="settings-nav-icon">{{ icon_svg('sliders')|safe }}</span>
+        <span class="settings-nav-label">常规设置</span>
+      </a>
+      <a href="/settings/sources" class="settings-nav-item">
+        <span class="settings-nav-icon">{{ icon_svg('radio')|safe }}</span>
+        <span class="settings-nav-label">新闻源管理</span>
+      </a>
+      <a href="/settings/models" class="settings-nav-item">
+        <span class="settings-nav-icon">{{ icon_svg('cpu')|safe }}</span>
+        <span class="settings-nav-label">模型管理</span>
+      </a>
+      <a href="/settings/agents" class="settings-nav-item active">
+        <span class="settings-nav-icon">{{ icon_svg('users')|safe }}</span>
+        <span class="settings-nav-label">智能体设置</span>
+      </a>
+      <a href="/settings/knowledge" class="settings-nav-item">
+        <span class="settings-nav-icon">{{ icon_svg('book')|safe }}</span>
+        <span class="settings-nav-label">知识库管理</span>
+      </a>
+    </nav>
+  </aside>
+
   <div class="settings-container">
     <header class="settings-header">
       <div class="section-header">

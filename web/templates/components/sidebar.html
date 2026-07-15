@@ -46,32 +46,6 @@
     </a>
   </div>
 
-  <!-- 系统设置 -->
-  <div class="sidebar-divider"></div>
-  <div class="sidebar-section">
-    <div class="sidebar-section-label">系统设置</div>
-    <a href="/settings" class="nav-item{% if active_page == 'settings' %} active{% endif %}">
-      <span class="nav-icon">{{ icon_svg('sliders')|safe }}</span>
-      <span class="nav-label">常规设置</span>
-    </a>
-    <a href="/settings/sources" class="nav-item{% if active_page == 'settings_sources' %} active{% endif %}">
-      <span class="nav-icon">{{ icon_svg('radio')|safe }}</span>
-      <span class="nav-label">新闻源管理</span>
-    </a>
-    <a href="/settings/models" class="nav-item{% if active_page == 'settings_models' %} active{% endif %}">
-      <span class="nav-icon">{{ icon_svg('cpu')|safe }}</span>
-      <span class="nav-label">模型管理</span>
-    </a>
-    <a href="/settings/agents" class="nav-item{% if active_page == 'settings_agents' %} active{% endif %}">
-      <span class="nav-icon">{{ icon_svg('users')|safe }}</span>
-      <span class="nav-label">智能体设置</span>
-    </a>
-    <a href="/settings/knowledge" class="nav-item{% if active_page == 'settings_knowledge' %} active{% endif %}">
-      <span class="nav-icon">{{ icon_svg('book')|safe }}</span>
-      <span class="nav-label">知识库管理</span>
-    </a>
-  </div>
-
   <!-- Toggle -->
   <div class="sidebar-toggle">
     <button class="sidebar-toggle-btn" title="收起侧栏" onclick="document.querySelector('.app-sidebar').classList.toggle('expanded')">
