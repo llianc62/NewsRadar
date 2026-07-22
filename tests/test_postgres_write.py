@@ -185,32 +185,4 @@ class TestDeleteNews:
         assert result is False
 
 
-class TestSaveArticleImage:
-    def test_saves_image_returns_id(self, db, mock_cursor):
-        mock_cursor.fetchone.return_value = [42]
-        img_id = db.save_article_image(
-            article_id=1,
-            image_url="/media/2026-06-21/img.jpg",
-            original_url="https://example.com/img.jpg",
-            width=800,
-            height=600,
-            file_size=102400,
-            sort_order=0,
-        )
-        assert img_id == 42
-        sql, params = capture_sql(mock_cursor)
-        assert "INSERT INTO news_images" in sql
-        assert "RETURNING id" in sql
-
-    def test_optional_fields_null(self, db, mock_cursor):
-        mock_cursor.fetchone.return_value = [1]
-        img_id = db.save_article_image(
-            article_id=1,
-            image_url="/media/img.jpg",
-        )
-        assert img_id == 1
-        _, params = capture_sql(mock_cursor)
-        assert params[2] == ""    # original_url defaults to ""
-        assert params[3] is None  # width
-        assert params[4] is None  # height
-        assert params[5] is None  # file_size
+    # ── save_article_image 已删除（news_images 表废弃） ──

@@ -146,9 +146,15 @@ class PgMemoryStorage(MemoryStorage):
         self._db = db
         self._agent_name = agent_name
 
-    async def search(self, query: str, top_k: int = 5) -> list[dict]:
-        """使用 PostgreSQL 全文搜索检索相关记忆。"""
-        return await asyncio.to_thread(self._search_sync, query, top_k)
+    async def search(self, query: str, top_k: int = 5, session_id: str = "") -> list[dict]:
+        """使用 PostgreSQL 全文搜索检索相关记忆。
+
+        Args:
+            query: 搜索关键词。
+            top_k: 返回结果数上限。
+            session_id: 可选，指定后仅搜索该会话内的记忆。
+        """
+        return await asyncio.to_thread(self._search_sync, query, top_k, session_id)
 
     async def save(self, session_id: str, content: str,
                    memory_type: str = "summary", **meta: Any) -> None:
@@ -163,7 +169,7 @@ class PgMemoryStorage(MemoryStorage):
 
     # ── 同步实现（在 asyncio.to_thread 中执行） ──────────────
 
-    def _search_sync(self, query: str, top_k: int) -> list[dict]:
+    def _search_sync(self, query: str, top_k: int, session_id: str = "") -> list[dict]:
         with self._db.get_conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 if _CJK_RE.search(query):
@@ -178,10 +184,11 @@ class PgMemoryStorage(MemoryStorage):
                         FROM agent_memories
                         WHERE agent_name = %s
                           AND content ILIKE ANY(%s)
+                          AND (%s = '' OR session_id = %s)
                         ORDER BY created_at DESC
                         LIMIT %s
                         """,
-                        (self._agent_name, patterns, top_k),
+                        (self._agent_name, patterns, session_id, session_id, top_k),
                     )
                 else:
                     # ASCII 搜索：拆成 OR 连接，PG 的 english 配置处理停用词
@@ -195,10 +202,11 @@ class PgMemoryStorage(MemoryStorage):
                         FROM agent_memories
                         WHERE agent_name = %s
                           AND to_tsvector('english', content) @@ to_tsquery('english', %s)
+                          AND (%s = '' OR session_id = %s)
                         ORDER BY ts_rank(to_tsvector('english', content), to_tsquery('english', %s)) DESC
                         LIMIT %s
                         """,
-                        (self._agent_name, tsq_parts, tsq_parts, top_k),
+                        (self._agent_name, tsq_parts, session_id, session_id, tsq_parts, top_k),
                     )
                 return [dict(r) for r in cur.fetchall()]
 
@@ -276,13 +284,13 @@ class LongTermMemory(MemoryModule):
         return None
 
     async def on_before_execute(self, ctx: Any) -> None:
-        """语义检索相关记忆。"""
-        if not ctx.user_input:
+        """语义检索相关记忆（仅限同一会话，避免交叉会话记忆污染）。"""
+        if not ctx.user_input or not ctx.session_id:
             return
         query = self._build_search_query(ctx.user_input)
         if not query:
             return
-        memories = await self._storage.search(query, top_k=5)
+        memories = await self._storage.search(query, top_k=5, session_id=ctx.session_id)
         if memories:
             ctx.memory_context = self._format_memories(memories)
 

@@ -192,16 +192,13 @@ class TestGetNewsById:
             {"id": 1, "title": "Test"},
             None,
         ]
-        mock_cursor.fetchall.return_value = [{"id": 10, "image_url": "/img.jpg"}]
         result = db.get_news_by_id(1)
-        # 第一次 execute: 文章查询
+        # 文章查询
         first_sql = str(mock_cursor.execute.call_args_list[0][0][0])
         assert "news_articles" in first_sql
-        # 第二次 execute: 图片查询
-        second_sql = str(mock_cursor.execute.call_args_list[1][0][0])
-        assert "news_images" in second_sql
-        assert "ORDER BY sort_order" in second_sql
+        # images 字段为空列表（news_images 表已废弃）
         assert isinstance(result.get("images"), list)
+        assert len(result["images"]) == 0
 
 
 class TestGetArticleByUrl:

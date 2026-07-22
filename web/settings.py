@@ -23,7 +23,7 @@ router = APIRouter()
 async def settings_page(request: Request):
     """常规设置页面 —— 只读展示系统配置。"""
     return HTMLResponse(
-        render_template("pages/settings.html", {"request": request, "active_page": "settings"})
+        render_template("pages/settings.html", **{"request": request, "active_page": "settings"})
     )
 
 
@@ -34,7 +34,7 @@ async def settings_page(request: Request):
 async def settings_sources_page(request: Request):
     """新闻源管理页面 —— 列表 + CRUD + 连通性测试。"""
     return HTMLResponse(
-        render_template("pages/settings_sources.html", {"request": request, "active_page": "settings_sources"})
+        render_template("pages/settings_sources.html", **{"request": request, "active_page": "settings_sources"})
     )
 
 
@@ -45,7 +45,7 @@ async def settings_sources_page(request: Request):
 async def settings_models_page(request: Request):
     """模型管理页面 —— 列表 + CRUD。"""
     return HTMLResponse(
-        render_template("pages/settings_models.html", {"request": request, "active_page": "settings_models"})
+        render_template("pages/settings_models.html", **{"request": request, "active_page": "settings_models"})
     )
 
 
@@ -56,7 +56,7 @@ async def settings_models_page(request: Request):
 async def agent_settings_page(request: Request):
     """Agent 角色管理页面 —— 列表视图 + 内联编辑器。"""
     return HTMLResponse(
-        render_template("pages/agent_settings_agents.html", {"request": request, "active_page": "settings_agents"})
+        render_template("pages/settings_agents.html", **{"request": request, "active_page": "settings_agents"})
     )
 
 
@@ -65,7 +65,7 @@ async def agent_edit_page(request: Request, id: str):
     """Agent 编辑页面（复用同一模板，通过 edit_id 自动打开编辑器）。"""
     return HTMLResponse(
         render_template(
-            "pages/agent_settings_agents.html",
+            "pages/settings_agents.html",
             {"request": request, "edit_id": id, "active_page": "settings_agents"},
         )
     )
@@ -79,7 +79,7 @@ async def knowledge_settings_page(request: Request):
     """知识库管理页面 —— 列表视图 + 详情视图。"""
     return HTMLResponse(
         render_template(
-            "pages/agent_settings_knowledge.html", {"request": request, "active_page": "settings_knowledge"}
+            "pages/settings_knowledge.html", {"request": request, "active_page": "settings_knowledge"}
         )
     )
 
@@ -89,7 +89,7 @@ async def knowledge_detail_page(request: Request, id: str):
     """知识库详情页面（复用同一模板，通过 kb_id 自动打开详情视图）。"""
     return HTMLResponse(
         render_template(
-            "pages/agent_settings_knowledge.html",
+            "pages/settings_knowledge.html",
             {"request": request, "kb_id": id, "active_page": "settings_knowledge"},
         )
     )

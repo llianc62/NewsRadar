@@ -315,54 +315,74 @@ async def get_settings(request: Request):
     }
 
 
-# ── REST: 新闻源管理 ────────────────────────────────────────────────
+# ── REST: 新闻源管理（只读，数据来自 config.yaml） ────────────────────
 
 
 @router.get("/api/settings/sources")
 async def list_sources(request: Request, source_type: str | None = None):
-    """列出新闻源（可按 source_type 过滤）。"""
-    db = request.app.state.db
-    sources = db.list_news_sources(source_type=source_type)
+    """列出新闻源（只读，来自 config.yaml crawler 段）。"""
+    cfg = getattr(request.app.state, "agent_config", None) or {}
+    crawler_cfg = cfg.get("crawler", {})
+
+    sources = []
+    for s in crawler_cfg.get("newsnow", {}).get("sources", []):
+        sources.append({
+            "id": s.get("id", ""),
+            "source_type": "newsnow",
+            "name": s.get("name", ""),
+            "source_id": s.get("id", ""),
+            "url": "",
+            "tier": s.get("tier", 4),
+            "priority": s.get("priority", 0),
+            "enabled": True,
+            "config": {},
+        })
+    for s in crawler_cfg.get("rss", {}).get("sources", []):
+        sources.append({
+            "id": s.get("id", ""),
+            "source_type": "rss",
+            "name": s.get("name", ""),
+            "source_id": s.get("id", ""),
+            "url": s.get("url", ""),
+            "tier": s.get("tier", 4),
+            "priority": s.get("priority", 0),
+            "enabled": s.get("enabled", True),
+            "config": {"max_age_days": s.get("max_age_days", 0)},
+        })
+
+    if source_type:
+        sources = [s for s in sources if s["source_type"] == source_type]
     return {"sources": sources}
 
 
 @router.post("/api/settings/sources")
-async def create_source(body: dict, request: Request):
-    """新建新闻源。"""
-    if "name" not in body:
-        raise HTTPException(status_code=422, detail="name is required")
-    db = request.app.state.db
-    source_id = db.create_news_source(body)
-    source = db.get_news_source(source_id)
-    return {"id": source_id, "source": source}
+async def create_source(_body: dict, _request: Request):
+    """新建新闻源（只读模式，已禁用）。"""
+    return {"id": None, "source": None}
 
 
 @router.put("/api/settings/sources/{source_id}")
-async def update_source(source_id: str, body: dict, request: Request):
-    """更新新闻源。"""
-    db = request.app.state.db
-    updated = db.update_news_source(source_id, body)
-    if not updated:
-        raise HTTPException(404, "新闻源不存在")
-    source = db.get_news_source(source_id)
-    return {"ok": True, "source": source}
+async def update_source(_source_id: str, _body: dict, _request: Request):
+    """更新新闻源（只读模式，已禁用）。"""
+    return {"ok": True, "source": None}
 
 
 @router.delete("/api/settings/sources/{source_id}")
-async def delete_source(source_id: str, request: Request):
-    """删除新闻源。"""
-    db = request.app.state.db
-    deleted = db.delete_news_source(source_id)
-    if not deleted:
-        raise HTTPException(404, "新闻源不存在")
+async def delete_source(_source_id: str, _request: Request):
+    """删除新闻源（只读模式，已禁用）。"""
     return {"ok": True}
 
 
 @router.post("/api/settings/sources/{source_id}/test")
 async def test_source_connectivity(source_id: str, request: Request):
-    """测试 RSS 连通性（HTTP GET 到 URL，检查响应）。"""
-    db = request.app.state.db
-    source = db.get_news_source(source_id)
+    """测试 RSS 连通性（HTTP GET 到 URL，检查响应）。
+
+    从 config.yaml 查找来源 URL，不依赖数据库。
+    """
+    cfg = getattr(request.app.state, "agent_config", None) or {}
+    crawler_cfg = cfg.get("crawler", {})
+    rss_sources = crawler_cfg.get("rss", {}).get("sources", [])
+    source = next((s for s in rss_sources if s.get("id") == source_id), None)
     if not source:
         raise HTTPException(404, "新闻源不存在")
     url = source.get("url", "")
@@ -386,331 +406,48 @@ async def test_source_connectivity(source_id: str, request: Request):
 
 
 @router.post("/api/settings/sources/seed")
-async def seed_sources(request: Request):
-    """从 config.yaml 种子数据到 news_sources 表。"""
-    cfg = getattr(request.app.state, "agent_config", None) or {}
-    crawler_cfg = cfg.get("crawler", {})
-    newsnow_cfg = crawler_cfg.get("newsnow", {})
-    rss_cfg = crawler_cfg.get("rss", {})
-    newsnow_sources = newsnow_cfg.get("sources", [])
-    rss_sources = rss_cfg.get("sources", [])
-    db = request.app.state.db
-    count = db.seed_news_sources(newsnow_sources, rss_sources)
-    return {"ok": True, "inserted": count}
+async def seed_sources(_request: Request):
+    """从 config.yaml 种子（只读模式，已禁用）。"""
+    return {"ok": True, "inserted": 0}
 
 
-# ── REST: 模型管理（内存 + JSON 文件） ────────────────────────────────
-
-import threading
-from pathlib import Path as _Path
-
-_MODELS_LOCK = threading.Lock()
-_MODELS_CACHE: dict | None = None
-_MODELS_FILE = _Path(os.environ.get("MODELS_CONFIG_PATH", "models_config.json"))
-
-
-def _load_models() -> dict:
-    """从 JSON 文件加载模型配置（线程安全）。"""
-    global _MODELS_CACHE
-    with _MODELS_LOCK:
-        if _MODELS_CACHE is not None:
-            return dict(_MODELS_CACHE)
-        if _MODELS_FILE.exists():
-            try:
-                _MODELS_CACHE = _json.loads(_MODELS_FILE.read_text("utf-8"))
-            except Exception:
-                _MODELS_CACHE = {}
-        else:
-            _MODELS_CACHE = {}
-        return dict(_MODELS_CACHE)
-
-
-def _save_models(models: dict) -> None:
-    """持久化模型配置到 JSON 文件（线程安全）。"""
-    global _MODELS_CACHE
-    with _MODELS_LOCK:
-        _MODELS_CACHE = dict(models)
-        _MODELS_FILE.write_text(_json.dumps(models, indent=2, ensure_ascii=False), "utf-8")
-
-
-def _init_models_from_config(agent_config: dict) -> None:
-    """首次加载时从 agent_config 的 models 段初始化模型存储。"""
-    global _MODELS_CACHE
-    with _MODELS_LOCK:
-        if _MODELS_CACHE is not None:
-            return
-        cfg_models = agent_config.get("models", {})
-        if cfg_models:
-            _MODELS_CACHE = dict(cfg_models)
-            _MODELS_FILE.write_text(_json.dumps(cfg_models, indent=2, ensure_ascii=False), "utf-8")
-        else:
-            _MODELS_CACHE = {}
-        return
+# ── REST: 模型管理（只读，数据来自 config.yaml） ─────────────────────────
 
 
 @router.get("/api/models")
 async def list_models(request: Request):
-    """列出所有模型配置。"""
+    """列出所有模型配置（只读，来自 config.yaml models 段）。"""
     cfg = getattr(request.app.state, "agent_config", None) or {}
-    _init_models_from_config(cfg)
-    models = _load_models()
+    models = cfg.get("models", {})
     items = []
     for name, m in models.items():
         item = dict(m)
         item["name"] = name
+        # 隐藏 api_key，前端不需要看到
+        item.pop("api_key", None)
         items.append(item)
     return {"models": items}
 
 
 @router.post("/api/models")
-async def create_model(body: dict, request: Request):
-    """添加模型。"""
-    if "name" not in body:
-        raise HTTPException(status_code=422, detail="name is required")
-    cfg = getattr(request.app.state, "agent_config", None) or {}
-    _init_models_from_config(cfg)
-    models = _load_models()
-    name = body["name"]
-    if name in models:
-        raise HTTPException(status_code=409, detail="模型名称已存在")
-    models[name] = {
-        "protocol": body.get("protocol", "openai"),
-        "model": body.get("model", ""),
-        "base_url": body.get("base_url", ""),
-        "api_key": body.get("api_key", ""),
-    }
-    _save_models(models)
-    item = dict(models[name])
-    item["name"] = name
-    return {"ok": True, "model": item}
+async def create_model(_body: dict, _request: Request):
+    """添加模型（只读模式，已禁用）。"""
+    return {"ok": True, "model": None}
 
 
 @router.put("/api/models/{model_name}")
-async def update_model(model_name: str, body: dict, request: Request):
-    """更新模型配置。"""
-    cfg = getattr(request.app.state, "agent_config", None) or {}
-    _init_models_from_config(cfg)
-    models = _load_models()
-    if model_name not in models:
-        raise HTTPException(404, "模型不存在")
-    for key in ("protocol", "model", "base_url", "api_key"):
-        if key in body:
-            models[model_name][key] = body[key]
-    _save_models(models)
-    item = dict(models[model_name])
-    item["name"] = model_name
-    return {"ok": True, "model": item}
+async def update_model(_model_name: str, _body: dict, _request: Request):
+    """更新模型配置（只读模式，已禁用）。"""
+    return {"ok": True, "model": None}
 
 
 @router.delete("/api/models/{model_name}")
-async def delete_model(model_name: str, request: Request):
-    """删除模型。"""
-    cfg = getattr(request.app.state, "agent_config", None) or {}
-    _init_models_from_config(cfg)
-    models = _load_models()
-    if model_name not in models:
-        raise HTTPException(404, "模型不存在")
-    del models[model_name]
-    _save_models(models)
+async def delete_model(_model_name: str, _request: Request):
+    """删除模型（只读模式，已禁用）。"""
     return {"ok": True}
 
 
-# ── WebSocket: 统一实时通道 ──
-
-@router.websocket("/api/ws")
-async def websocket_endpoint(ws: WebSocket):
-    await ws.accept()
-    client_id = id(ws)
-    _ws_clients[client_id] = ws
-
-    # Resolve dependencies from app state (matches news.py pattern)
-    config = getattr(ws.app.state, "agent_config", None) or {}
-    db = ws.app.state.db
-    agent_instance = getattr(ws.app.state, "agent_instance", None)
-    persona_manager = getattr(ws.app.state, "persona_manager", None)
-    persona_orchestrator = getattr(ws.app.state, "persona_orchestrator", None)
-
-    agent_cfg = config.get("agent", {})
-    current_model = agent_cfg.get("default_model", "quick")
-    current_running_mode = "strict"
-    current_task: asyncio.Task | None = None
-    pending_approvals: dict[str, asyncio.Future] = {}
-
-    try:
-        while True:
-            raw = await ws.receive_text()
-            try:
-                data = _json.loads(raw)
-            except _json.JSONDecodeError:
-                await ws.send_json({"type": "error", "message": "无效的 JSON"})
-                continue
-
-            msg_type = data.get("type", "")
-
-            if msg_type == "chat":
-                message = (data.get("message") or "").strip()
-                if not message:
-                    continue
-
-                session_id = data.get("session_id", 0)
-                if not isinstance(session_id, int) or session_id < 1:
-                    await ws.send_json({"type": "error", "message": "session_id 必须为正整数"})
-                    continue
-                if "model" in data:
-                    current_model = data["model"]
-                if "running_mode" in data:
-                    current_running_mode = data["running_mode"]
-
-                model_cfg = config.get("models", {})
-                if not model_cfg:
-                    await ws.send_json({"type": "error", "message": "模型未配置"})
-                    continue
-                if current_model not in model_cfg:
-                    current_model = "quick" if "quick" in model_cfg else next(iter(model_cfg))
-
-                async def approval_handler(tool_def, args: dict) -> dict:
-                    req_id = str(uuid.uuid4())
-                    future = asyncio.get_event_loop().create_future()
-                    pending_approvals[req_id] = future
-                    try:
-                        if dataclasses.is_dataclass(tool_def) and not isinstance(tool_def, type):
-                            tool_data = dataclasses.asdict(tool_def)
-                        else:
-                            tool_data = tool_def
-                        await ws.send_json({
-                            "type": "tool_approval_request",
-                            "request_id": req_id,
-                            "tool": tool_data,
-                            "args": args,
-                        })
-                        result = await asyncio.wait_for(future, timeout=120.0)
-                        return result
-                    except asyncio.TimeoutError:
-                        pending_approvals.pop(req_id, None)
-                        return {"approved": False, "reason": "审批超时"}
-                    except Exception:
-                        pending_approvals.pop(req_id, None)
-                        return {"approved": False, "reason": "审批连接中断"}
-
-                # ── 角色解析：支持单选（字符串）或多选（列表）──
-                raw_persona = data.get("persona")
-                if isinstance(raw_persona, str):
-                    persona_names = [raw_persona.strip()] if raw_persona.strip() else []
-                elif isinstance(raw_persona, list):
-                    persona_names = [p.strip() for p in raw_persona
-                                     if isinstance(p, str) and p.strip()]
-                else:
-                    persona_names = []
-                if persona_manager:
-                    persona_names = [n for n in persona_names if persona_manager.has(n)]
-
-                is_team = len(persona_names) >= 2 and persona_orchestrator is not None
-
-                # 把运行模式 + 审批回调下发给 manager（单角色 get 与编排器内部 get 共用）
-                if persona_manager:
-                    persona_manager.set_running_config(current_running_mode, approval_handler)
-
-                # Resolve chat agent（单角色 / 默认 / 现建降级）；团队会诊另走编排器
-                chat_agent = None
-                if not is_team:
-                    if persona_manager and len(persona_names) == 1:
-                        try:
-                            chat_agent = await persona_manager.get(persona_names[0])
-                        except Exception as e:
-                            await ws.send_json({"type": "error", "message": f"角色构建失败: {e!s}"[:500]})
-                            continue
-                    if chat_agent is None:
-                        chat_agent = agent_instance
-                    if chat_agent is not None:
-                        chat_agent.running_mode = current_running_mode
-                        chat_agent.executor._approval_callback = approval_handler
-                    else:
-                        from agent.executor import DirectExecutor
-                        from agent.agent import DefaultAgent
-                        chat_agent = DefaultAgent(
-                            model_cfg,
-                            executor=DirectExecutor(approval_callback=approval_handler),
-                            running_mode=current_running_mode,
-                        )
-
-                # Save user message
-                try:
-                    db.save_agent_message(session_id, "user", message)
-                except Exception:
-                    pass
-
-                full_reply = ""
-
-                async def generate():
-                    nonlocal full_reply
-                    try:
-                        if is_team:
-                            # 团队会诊：Phase 1 各角色并行（静默）-> signals -> Phase 2 主编流式
-                            await ws.send_json({
-                                "type": "team_thinking",
-                                "personas": persona_names,
-                            })
-                            async for event in persona_orchestrator.chat_stream(
-                                message, persona_names, model_name=current_model
-                            ):
-                                if event["type"] == "signals":
-                                    await ws.send_json({
-                                        "type": "signals",
-                                        "signals": event["signals"],
-                                    })
-                                elif event["type"] == "token":
-                                    full_reply += event["content"]
-                                    await ws.send_json({"type": "token", "content": event["content"]})
-                        else:
-                            async for token in chat_agent.chat_stream(message, model_name=current_model):
-                                full_reply += token
-                                await ws.send_json({"type": "token", "content": token})
-                    except asyncio.CancelledError:
-                        await ws.send_json({"type": "done", "session_id": session_id, "full_reply": full_reply, "stopped": True})
-                        return
-                    except Exception as e:
-                        import traceback
-                        traceback.print_exc()
-                        await ws.send_json({"type": "error", "message": str(e)[:500]})
-                        return
-                    try:
-                        db.save_agent_message(session_id, "assistant", full_reply)
-                    except Exception:
-                        pass
-                    await ws.send_json({"type": "done", "session_id": session_id, "full_reply": full_reply})
-
-                current_task = asyncio.create_task(generate())
-
-            elif msg_type == "stop":
-                if current_task and not current_task.done():
-                    current_task.cancel()
-                    try:
-                        await current_task
-                    except asyncio.CancelledError:
-                        pass
-                current_task = None
-
-            elif msg_type == "tool_approval_response":
-                req_id = data.get("request_id", "")
-                if req_id in pending_approvals:
-                    future = pending_approvals.pop(req_id)
-                    future.set_result({
-                        "approved": data.get("approved", False),
-                        "reason": data.get("reason", ""),
-                    })
-
-    except WebSocketDisconnect:
-        if current_task and not current_task.done():
-            current_task.cancel()
-        for future in pending_approvals.values():
-            if not future.done():
-                future.set_result({"approved": False, "reason": "连接断开"})
-        pending_approvals.clear()
-    finally:
-        _ws_clients.pop(client_id, None)
-
-
-# ── WebSocket: 带 agent_id 的角色化聊天通道 ────────────────────────
+# ── WebSocket: 统一聊天通道（支持 agent_id 参数） ──
 
 
 @router.websocket("/api/agent/ws")
@@ -732,7 +469,7 @@ async def agent_websocket_endpoint(ws: WebSocket):
 
     agent_cfg = config.get("agent", {})
     current_model = agent_cfg.get("default_model", "quick")
-    current_running_mode = "strict"
+    current_running_mode = "normal"
     current_task: asyncio.Task | None = None
     pending_approvals: dict[str, asyncio.Future] = {}
 
@@ -834,22 +571,70 @@ async def agent_websocket_endpoint(ws: WebSocket):
                             continue
                     if chat_agent is None:
                         chat_agent = agent_instance
+                        if chat_agent is None:
+                            print("[Agent WS] agent_instance is None, creating fallback agent")
                     if chat_agent is not None:
                         chat_agent.running_mode = current_running_mode
                         chat_agent.executor._approval_callback = approval_handler
                     else:
-                        from agent.executor import DirectExecutor
+                        from agent.executor import ReActExecutor
                         from agent.agent import DefaultAgent
+                        from agent.tools import Registry
+                        from agent.tools.tools import setup_builtin_tools
+                        print("[Agent WS] Creating fallback ReActExecutor agent")
+                        fallback_registry = setup_builtin_tools()
+                        try:
+                            from agent.mcp import MCPClient
+                            mcp_session = await MCPClient.connect_stdio(
+                                "python", "-m", "agent.mcp.news_server",
+                            )
+                            fallback_registry.add_mcp(mcp_session, level_map={
+                                "search_news": 2, "get_hot_topics": 1,
+                                "get_news_detail": 2, "analyze_sentiment": 1, "get_source_stats": 1,
+                            })
+                        except Exception as mcp_err:
+                            print(f"[Agent WS] MCP fallback connect failed: {mcp_err}")
                         chat_agent = DefaultAgent(
                             model_cfg,
-                            executor=DirectExecutor(approval_callback=approval_handler),
+                            executor=ReActExecutor(approval_callback=approval_handler),
+                            tools=fallback_registry,
                             running_mode=current_running_mode,
                         )
 
                 try:
-                    db.save_agent_message(session_id, "user", message)
+                    db.save_agent_message(session_id, "user", message, agent_id=agent_id or "0")
                 except Exception:
                     pass
+
+                # 加载会话历史到 agent 记忆（解决切换智能体后上下文丢失）
+                if chat_agent is not None:
+                    try:
+                        prev = db.get_agent_messages(session_id, limit=50)
+                        if not prev:
+                            pass
+
+                        from agent.models import Message as AgentMessage
+
+                        # 构建历史 Message 对象列表（作为实际 role 消息注入 messages）
+                        history_msgs = []
+                        for m in prev:
+                            history_msgs.append(AgentMessage(
+                                role=m["role"],
+                                content=m["content"],
+                            ))
+                        chat_agent._history_messages = history_msgs
+
+                        # ShortTermMemory 兼容：同时写入 _window
+                        from agent.memory import ShortTermMemory
+                        if isinstance(chat_agent.memory, ShortTermMemory) and chat_agent.memory.turn_count == 0:
+                            for m in prev:
+                                if m["role"] == "user":
+                                    chat_agent.memory._window.append({"role": "user", "content": m["content"]})
+                                elif m["role"] == "assistant" and m["content"]:
+                                    chat_agent.memory._window.append({"role": "assistant", "content": m["content"]})
+                    except Exception:
+                        import traceback
+                        traceback.print_exc()
 
                 full_reply = ""
 
@@ -873,7 +658,7 @@ async def agent_websocket_endpoint(ws: WebSocket):
                                     full_reply += event["content"]
                                     await ws.send_json({"type": "token", "content": event["content"]})
                         else:
-                            async for token in chat_agent.chat_stream(message, model_name=current_model):
+                            async for token in chat_agent.chat_stream(message, session_id=str(session_id), model_name=current_model):
                                 full_reply += token
                                 await ws.send_json({"type": "token", "content": token})
                     except asyncio.CancelledError:
@@ -885,7 +670,10 @@ async def agent_websocket_endpoint(ws: WebSocket):
                         await ws.send_json({"type": "error", "message": str(e)[:500]})
                         return
                     try:
-                        db.save_agent_message(session_id, "assistant", full_reply)
+                        model_version = (model_cfg.get(current_model) or {}).get("model", "")
+                        db.save_agent_message(session_id, "assistant", full_reply,
+                                              agent_id=agent_id or "0",
+                                              model_version=model_version)
                     except Exception:
                         pass
                     await ws.send_json({"type": "done", "session_id": session_id, "full_reply": full_reply})
@@ -921,4 +709,4 @@ async def agent_websocket_endpoint(ws: WebSocket):
         _ws_clients.pop(client_id, None)
 
 
-print("[Agent] Routes ready — WebSocket at /api/ws + /api/agent/ws")
+print("[Agent] Routes ready — WebSocket /api/agent/ws")

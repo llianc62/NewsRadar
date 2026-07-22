@@ -11,7 +11,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - [crawler.md](docs/crawler.md) — 爬取管线 + 内容富化 + 失败重试
 - [web.md](docs/web.md) — FastAPI 前端 + 通知系统
 - [daemon.md](docs/daemon.md) — 后台调度 + 启动序列
-- [agent.md](docs/agent.md) → [agent/](docs/agent/) — AI Agent 子系统（分模块设计文档）
+- [agent/architecture-v1.md](docs/agent/architecture-v1.md) — AI Agent 子系统设计（Phase 1-3 完成）
+- [agent/configuration.md](docs/agent/configuration.md) — 配置参考
+- [agent/phase0-chat.md](docs/agent/phase0-chat.md) — 聊天 Agent 设计
+- [agent/persona.md](docs/agent/persona.md) — 角色扮演 + 多角色会诊
 
 历史开发记录在 `docs/superpowers/`（plans + specs），不主动加载。
 
@@ -25,6 +28,7 @@ cli/
 ├── crawl.py      # python -m cli crawl — 抓取 → SQLite
 ├── notify.py     # python -m cli notify — 关键词匹配 → 邮件
 ├── grab.py       # python -m cli grab-one — 单 URL 测试
+├── knowledge.py  # python -m cli knowledge - 知识库 ingest/search/list/clear
 └── db.py         # python -m cli db clear — 数据库维护
 ```
 
@@ -66,6 +70,26 @@ python -m cli grab-one "https://example.com" --output-style postgresql --images
 python -m cli db clear --start "2026-07-02" --end "2026-07-04" --force
 python -m cli db clear --all --force
 
+# Knowledge base (pgvector) - requires `knowledge.enabled: true` + embedding key
+python -m cli knowledge ingest path/to/doc.md --namespace buffett   # 导入文档
+python -m cli knowledge search "查询语句" --namespace buffett        # 语义检索
+python -m cli knowledge list --namespace buffett                    # 查看切片数
+python -m cli knowledge clear --namespace buffett --force           # 清空命名空间
+
+# MCP Server (standalone)
+python -m agent.mcp.news_server                           # stdio mode (default)
+python -m agent.mcp.news_server --transport sse --port 8001  # HTTP SSE mode
+
+# Tests
+pytest                                                           # unit tests only (default)
+pytest -m integration                                            # integration tests
+pytest tests/test_agent_agent.py                                 # agent unit tests
+pytest tests/test_agent_tools.py                                 # tool tests
+pytest tests/test_agent_memory.py                                # memory module tests
+pytest tests/test_agent_memory_integration.py -m integration     # memory PG integration
+pytest tests/test_agent_routes.py                                # agent API routes
+pytest tests/test_agent_db.py                                    # agent DB operations
+pytest --cov=. --cov-report=term-missing                         # coverage
 ```
 
 ## Architecture
@@ -193,6 +217,171 @@ Manual trigger ──put(callback)──▶  (callback 用于 SSE 通知)
 
 启动序列（7 步）：DB init → signal handlers → web server → Workers → Timers → manual trigger（当前已注释）→ await shutdown。
 
+## Agent Subsystem (`agent/`)
+
+模块化 AI Agent 基座（Phase 1-3 完成）。详见 [docs/agent/architecture-v1.md](docs/agent/architecture-v1.md)。
+
+### Architecture
+
+```
+DefaultAgent (编排器)
+├── Brain (ModelHub) — LLM Client 池
+│   ├── OpenAIClient      — OpenAI 兼容 API（含 tool calling）
+│   └── AnthropicClient   — Anthropic API
+├── Executor — 推理循环（可插拔）
+│   ├── DirectExecutor    — 直调，无工具（Phase 2）
+│   └── ReActExecutor     — ReAct 循环，自主调工具（Phase 3）
+├── MemoryModule — 记忆系统（可选）
+│   ├── NullMemory        — 无记忆
+│   ├── ShortTermMemory   — 内存级滑动窗口
+│   └── LongTermMemory    — PG 持久化 + 语义检索
+├── Registry — 工具注册中心
+│   ├── FunctionTool      — 内置函数（@tool 装饰器）
+│   └── MCPTool           — 外部 MCP 协议工具
+└── Context — 模块间数据总线
+```
+
+### Key patterns
+
+- **@tool decorator** (`agent/tools/base.py`): 自动从类型注解 + Google-style docstring 生成 OpenAI format JSON Schema。支持 sync/async、默认值、可选参数。
+- **ReActExecutor** (`agent/executor.py`): 循环直到 LLM 返回文本或超 max_steps。工具结果注入 history 作为下一轮 user 消息。
+- **Policy-based tool security**: 工具分 level 1-4，`running_mode`（strict/normal/loose）决定自动/需审批。
+- **WebSocket 审批通道**: 前端通过 WebSocket 收 tool_approval_request，用户决定允许/拒绝，后端继续执行。
+- **MCP Client**: 自实现轻量 JSON-RPC 2.0 over stdio/SSE，无 mcp SDK 依赖。
+
+### MCP Server (`agent/mcp/`)
+
+MCP 协议实现的新闻查询服务，两种传输模式：
+
+- **stdio**: 子进程管道，Agent 启动时自动连接（`create_agent(register_mcp=True)`）
+- **SSE**: HTTP 服务，外部 Agent 可通过 `MCPClient.connect_sse()` 连接
+
+工具列表：`search_news` / `get_hot_topics` / `get_news_detail` / `analyze_sentiment` / `get_source_stats`
+
+MCP Server 在 `news_server.py` 中使用 FastMCP，全局延迟初始化 DB 连接。
+
+### Web Agent routes (`web/agent.py`)
+
+| 路由 | 方法 | 说明 |
+|------|------|------|
+| `/agent` | GET | 聊天页面 |
+| `/api/agent/sessions` | GET | 会话列表（分页） |
+| `/api/agent/sessions` | POST | 新建会话（设 cookie） |
+| `/api/agent/sessions/{session_id}` | DELETE | 删除会话 |
+| `/api/agent/sessions/{session_id}/messages` | GET | 消息历史 |
+| `/api/agent/personas` | GET | 角色列表（右侧团队面板，含 `enabled`/`default_team`） |
+| `/api/agents` | GET | 列出所有角色定义 |
+| `/api/agents` | POST | 创建角色定义 |
+| `/api/agents/{defn_id}` | GET | 查询角色定义 |
+| `/api/agents/{defn_id}` | PUT | 更新角色定义 |
+| `/api/agents/{defn_id}` | DELETE | 删除角色定义 |
+| `/api/agent/knowledge` | GET | 列出所有知识库 |
+| `/api/agent/knowledge` | POST | 创建知识库 |
+| `/api/agent/knowledge/{knowledge_id}` | DELETE | 删除知识库（含切片） |
+| `/api/agent/knowledge/{knowledge_id}/ingest` | POST | 上传文档到知识库（multipart） |
+| `/api/tools` | GET | 列出所有可用工具 |
+| `/api/settings` | GET | 系统配置（只读） |
+| `/api/settings/sources` | GET | 列出新闻源（可过滤 source_type） |
+| `/api/settings/sources` | POST | 新建新闻源 |
+| `/api/settings/sources/{source_id}` | PUT | 更新新闻源 |
+| `/api/settings/sources/{source_id}` | DELETE | 删除新闻源 |
+| `/api/settings/sources/{source_id}/test` | POST | 测试 RSS 连通性 |
+| `/api/settings/sources/seed` | POST | 从 config.yaml 种子数据到表 |
+| `/api/models` | GET | 列出模型配置（JSON 文件持久化） |
+| `/api/models` | POST | 添加模型 |
+| `/api/models/{model_name}` | PUT | 更新模型 |
+| `/api/models/{model_name}` | DELETE | 删除模型 |
+
+**WebSocket 端点：**
+
+| 端点 | 说明 |
+|------|------|
+| `WS /api/ws` | 统一实时聊天通道，支持 `persona` 参数（单角色/团队会诊） |
+| `WS /api/agent/ws` | 角色化聊天通道，支持 `?agent_id=` 查询参数（从 DB 加载 AgentDefinition 构建） |
+
+**WebSocket 协议：** `chat` / `stop` / `tool_approval_response` 三种消息类型。`chat` 消息支持 `persona`（字符串或列表）、`model`、`running_mode` 参数。输出事件：`token`（流式文本）、`done`（含 `full_reply`）、`tool_approval_request`（审批请求）、`team_thinking`（团队会诊开始）、`signals`（各角色信号）。
+
+### Agent DB (PostgreSQL)
+
+`storage/postgres.py` 包含 5 个 agent 相关方法：
+- `create_agent_session()` / `get_agent_sessions()` / `delete_agent_session()`
+- `save_agent_message()` / `get_agent_messages()`
+
+表：`agent_sessions` / `agent_messages` / `agent_memories`（由 `LongTermMemory` 读写）
+
+### Memory system
+
+| 记忆类型 | 存储 | 生命周期 | 提取策略 |
+|---------|------|---------|---------|
+| NullMemory | 无 | — | 什么都不做 |
+| ShortTermMemory | 内存 list | 重启即失 | 滑动窗口，最近 N 轮 |
+| LongTermMemory | PG (`agent_memories`) | 跨会话持久 | jieba TF-IDF 关键词 → PG FTS/CJK ILIKE 检索 |
+
+`PgMemoryStorage` 通过 `asyncio.to_thread` 桥接同步 psycopg2 到异步接口。CJK 搜索拆单字 ILIKE，ASCII 搜索用 PG `to_tsvector`。
+
+### Knowledge Base (`agent/knowledge/`) — Phase A
+
+pgvector 语义检索知识库，作为角色扮演 agent 的专业知识来源。详见 [docs/agent/phase3-knowledge.md](docs/agent/phase3-knowledge.md)。
+
+| 模块 | 职责 |
+|------|------|
+| `engine.py` | `KnowledgeEngine`：文档切片 -> embedding -> 存 pgvector -> 语义检索 -> `retrieve_render()` 文本块 |
+| `embedding.py` | `EmbeddingClient`：OpenAI 兼容 `/v1/embeddings`（独立 base_url/api_key，DeepSeek 无 embedding 端点） |
+| `chunker.py` | 段落 + 长度切片（~512 token，重叠 64） |
+| `store.py` | `KnowledgeStore` ABC + `PgVectorKnowledgeStore`（委托 `storage/postgres.py`） |
+
+- **表**：`knowledge_chunks`（`vector(N)` + HNSW `vector_cosine_ops` 索引），namespace 隔离（`investing/buffett`、`macro-economics`…）。DDL 在 `storage/postgres.py:_init_agent_schema()`，需 `pgvector/pgvector:pg16` 镜像。
+- **注入**：`PersonaAgent._make_ctx()` 调 `retrieve_render()` 写入 `ctx.knowledge_context` -> executor 在 system prompt 后插入 `## 知识库` 块（对称于 memory 的 `## 相关记忆`）。
+- **配置**：`knowledge:` 段（`enabled`/`embedding_*`/`top_k`/`table`）。`enabled: false` 时 KnowledgeEngine=None，角色退化为纯 prompt。
+- **CLI**：`python -m cli knowledge ingest <file> --namespace buffett` / `search` / `list` / `clear`。
+
+### Persona Subsystem (`agent/persona/`) — Phase B/C
+
+角色扮演 + 多角色会诊，仿 ai-hedge-fund `LLMAgent` + `analyst_signals` + portfolio_manager 聚合。详见 [docs/agent/persona.md](docs/agent/persona.md)。
+
+- **PersonaAgent(DefaultAgent)**：基类，override `_make_ctx()` 注入知识 + `get_system_prompt()` 人格。`_pre_analyze(user_input) -> dict` 钩子注入硬编码领域逻辑（`## 专业分析` 块）。
+- **10 角色**：投资人 `buffett`/`graham`/`taleb`/`wood` + 专家 `macro`/`sentiment`/`industry`/`factcheck`/`blackswan` + 主编 `editor`。`registry.py` 统一注册（`PersonaSpec`，按 `order` 排序）。
+- **硬编码专业逻辑**：`sentiment`/`blackswan`/`industry` 调 `JiebaAnalyzer`（情感/关键词/热度异常），LLM 只叙事（铁律："LLM never touches the trade"）。
+- **PersonaManager**：惰性构建 + 缓存（`asyncio.Lock` 双检），每次 `get()` 应用 `running_mode` + `_approval_callback`（团队会诊的角色调用继承 WS 审批通道）。
+- **PersonaOrchestrator**：单选=单角色直答；多选(>=2)=团队会诊。Phase 1 `asyncio.gather` fan-out 各角色 -> `PersonaSignal`（stance/confidence/reasoning，regex 解析 JSON）；Phase 2 主编 `DirectExecutor` 真流式聚合（`Semaphore(max_concurrent)` 限流，失败降级"分析失败"信号）。
+- **配置**：`personas:` 段（`enabled`/`default_team`/`disabled`）。Daemon 启动时经 `create_persona_orchestrator()` 构建，挂 `app.state.persona_orchestrator` + `persona_manager`。
+- **WebSocket 协议**：chat 消息加 `persona: ["buffett","macro"]`。团队会诊发 `team_thinking`（fan-out 前）-> `signals`（各角色信号，editor 流式前）-> `token`（主编流式）事件。
+- **前端**：右侧团队面板（`persona-panel`），多选 + `default_team` 预选，< 960px 隐藏。
+
+### Factory
+
+`agent/factory.create_agent()` 一键构建带 ReActExecutor + 内置工具 + MCP 工具的 Agent：
+
+```python
+agent = await create_agent(
+    config["models"],
+    system_prompt="你是 NewsRadar 新闻助手",
+    register_mcp=True,
+)
+```
+
+Daemon 启动时条件构建 Agent（仅当 `config["models"]` 存在时），通过 `app.state.agent_instance` 注入 Web 应用。
+
+角色扮演子系统另有两个工厂：`create_persona()`（单角色）与 `create_persona_orchestrator(config, db)`（团队会诊编排器，内部建 `PersonaManager` + `KnowledgeEngine` + `Analyzer`，失败均降级为 None 不阻断）。Daemon 启动时构建 orchestrator 并挂 `app.state.persona_orchestrator` + `persona_manager`。
+
+## Web refactoring (`web/`)
+
+Web 模块从单个 `web/app.py` 拆分为多文件结构：
+
+| 文件 | 职责 |
+|------|------|
+| `app.py` | FastAPI 工厂函数 `create_app()`，组装 lifespan / static / state / routers |
+| `news.py` | 新闻相关路由（hot-news / detail / trigger / refetch / SSE / sentiment） |
+| `agent.py` | Agent 聊天路由 + WebSocket |
+| `settings.py` | 设置页面路由（/settings, /settings/agents, /settings/knowledge, /settings/sources, /settings/models） |
+| `background.py` | `BackgroundTaskRunner` — 通用后台任务执行器（ThreadPoolExecutor） |
+| `notification.py` | `NotificationState` — 内存通知系统 + SSE 分发 |
+| `config.py` | 模板渲染配置（Jinja2） |
+
+`BackgroundTaskRunner` 是零业务依赖的通用任务执行器，提供 dedup（by task_id）、状态追踪、生命周期管理。Crawler refetch 和 URL fetch 都使用它。
+
+`NotificationState` 线程安全，支持 scope/category 过滤、未读计数、SSE 广播。上限 50 条。
+
 ## Parser Registry
 
 Three-tier routing in `news/parser/registry.py`: source_id exact match → URL hostname domain match → default `HtmlParser`.
@@ -207,7 +396,23 @@ To add a new site parser:
 
 ## Tests
 
-25+ test files in `tests/`. Site-specific parser tests use real HTML fixtures in `tests/parser_sites/`. Shared fixtures in `conftest.py` and `conftest_db.py`.
+41 test files in `tests/`. Site-specific parser tests use real HTML fixtures in `tests/parser_sites/`. Shared fixtures in `conftest.py` and `conftest_db.py`.
+
+### Agent test files
+
+| 文件 | 覆盖内容 |
+|------|---------|
+| `test_agent_agent.py` | DefaultAgent 构造/chat/chat_stream，DirectExecutor 运行，ModelHub 多模型 |
+| `test_agent_tools.py` | @tool 装饰器、FunctionTool、Registry、MCPTool、schema 生成 |
+| `test_agent_memory.py` | NullMemory / ShortTermMemory / LongTermMemory / PgMemoryStorage |
+| `test_agent_memory_integration.py` | PG 记忆持久化集成测试 |
+| `test_agent_routes.py` | Web agent 路由（页面 / sessions / messages API） |
+| `test_agent_db.py` | Agent DB 操作（create/get/delete session, save/get messages） |
+| `test_knowledge_engine.py` | KnowledgeEngine 单元（mock embedding + store）+ pgvector 集成 |
+| `test_persona_agent.py` | PersonaAgent 基类、知识/分析注入、各角色人格声音 |
+| `test_persona_manager.py` | PersonaManager 惰性构建/缓存/running_config 传递 |
+| `test_persona_orchestrator.py` | fan-out + 主编聚合 + 信号解析 + 降级 + 端到端 |
+| `test_mcp_news_server.py` | MCP `analyze_sentiment` 路由真分析器 + 兜底词典 |
 
 ### 运行
 
@@ -233,6 +438,19 @@ def test_xxx(db, mock_cursor):
     assert "COUNT(*)" in sql
 ```
 
+### Agent 测试模式
+
+`test_agent_agent.py` 使用 `MockClient(BaseClient)` 模拟 LLM 响应，不调真实 API：
+
+```python
+mock_client = MockClient(api_key="test")
+mock_client.tool_calls_to_return = [...]  # 模拟工具调用
+hub = ModelHub({"default": {"protocol": "openai", "model": "gpt-4o-mini", "api_key": "test"}})
+hub._clients["default"] = mock_client  # 注入 mock
+```
+
+`test_agent_tools.py` 测试 @tool 装饰器的 schema 自动生成（类型注解 → JSON Schema）、工具注册/去重/移除、执行 sync/async 工具。
+
 ### Parser 站点测试
 
 `tests/parser_sites/` 下每个文件测试一个站点解析器。`tests/parser_sites/test_framework.py` 包含 30 个通用解析器测试（标题提取、正文提取、边界情况等），使用参数化 fixture 对多个站点执行。`tests/helpers.py` 提供共享测试工具。
@@ -240,3 +458,19 @@ def test_xxx(db, mock_cursor):
 ## Key env vars
 
 `PG_*`, `CLOUD_S3_*` (SQLite transfer), `RESOURCE_S3_*` (images/MinIO), `EMAIL_*`, `AI_API_*` (LLM，预留给 AgentAnalyzer), `WEB_HOST/PORT`, `CONFIG_PATH`.
+
+Agent 依赖 `config.yaml` 的 `models` 段，通过环境变量 `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` 注入 API key：
+
+```yaml
+models:
+  default:
+    protocol: openai            # openai | anthropic
+    model: gpt-4o-mini
+    api_key: ${OPENAI_API_KEY}
+  quick:
+    protocol: openai
+    model: gpt-4o-mini
+    api_key: ${OPENAI_API_KEY}
+```
+
+Daemon 仅在 `config["models"]` 存在时构建 Agent。Agent 路由始终注册（页面返回空状态提示）。

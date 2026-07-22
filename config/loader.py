@@ -220,6 +220,81 @@ def _load_agent_config(raw: dict) -> dict:
     }
 
 
+def _load_knowledge_config(raw: Dict) -> Dict:
+    """加载 knowledge 配置段 - pgvector 知识库（独立于 models 段）。
+
+    DeepSeek 无 embedding 端点，故 embedding 用独立 base_url/api_key/model。
+    默认 ``enabled: False``（需 pgvector 扩展 + embedding API key 才可用）。
+    """
+    knowledge = raw.get("knowledge", {})
+    env_enabled = _get_env_bool("KNOWLEDGE_ENABLED")
+    return {
+        "enabled": env_enabled if env_enabled is not None
+        else knowledge.get("enabled", False),
+        "embedding_base_url": _get_env_str("KNOWLEDGE_EMBEDDING_BASE_URL")
+        or knowledge.get("embedding_base_url", ""),
+        "embedding_api_key": _get_env_str("KNOWLEDGE_EMBEDDING_API_KEY")
+        or knowledge.get("embedding_api_key", ""),
+        "embedding_model": _get_env_str("KNOWLEDGE_EMBEDDING_MODEL")
+        or knowledge.get("embedding_model", "text-embedding-3-small"),
+        "embedding_dim": _get_env_int("KNOWLEDGE_EMBEDDING_DIM")
+        or knowledge.get("embedding_dim", 1536),
+        "top_k": _get_env_int("KNOWLEDGE_TOP_K")
+        or knowledge.get("top_k", 5),
+        "table": knowledge.get("table", "knowledge_chunks"),
+    }
+
+
+def _load_personas_config(raw: Dict) -> Dict:
+    """加载 personas 配置段 - 角色扮演子系统开关 + 默认团队 + 禁用列表。
+
+    config.yaml::
+
+        personas:
+          enabled: true
+          default_team: [buffett, sentiment, macro]  # 默认团队会诊角色
+          disabled: []                                # 禁用角色名
+
+    默认 ``enabled: True``（角色路由始终注册，仅当 models 就绪时才真正可用）。
+    """
+    personas = raw.get("personas", {})
+    env_enabled = _get_env_bool("PERSONAS_ENABLED")
+    default_team = personas.get("default_team") or []
+    if not isinstance(default_team, list):
+        default_team = []
+    disabled = personas.get("disabled") or []
+    if not isinstance(disabled, list):
+        disabled = []
+    return {
+        "enabled": env_enabled if env_enabled is not None
+        else personas.get("enabled", True),
+        "default_team": [str(x) for x in default_team],
+        "disabled": [str(x) for x in disabled],
+    }
+
+
+def _load_mcp_server_config(raw: Dict) -> Dict:
+    """加载 MCP 新闻服务配置段。
+
+    config.yaml::
+
+        mcp_server:
+          enabled: true                  # 启动时拉起 MCP Server 子进程
+          transport: sse                 # sse（推荐）| stdio（仅调试）
+          host: "0.0.0.0"
+          port: 8001
+
+    ``transport`` 和 ``port`` 通过子进程 CLI 参数传递。
+    """
+    mcp = raw.get("mcp_server", {})
+    return {
+        "enabled": mcp.get("enabled", True),
+        "transport": mcp.get("transport", "sse"),
+        "host": mcp.get("host", "0.0.0.0"),
+        "port": mcp.get("port", 8001),
+    }
+
+
 # =========================================================================
 # Main loader
 # =========================================================================
@@ -254,6 +329,9 @@ def load_config(path: str = "config.yaml") -> Dict[str, Any]:
         "analyzer": _load_analyzer_config(raw),
         "models": _load_models_config(raw),
         "agent": _load_agent_config(raw),
+        "knowledge": _load_knowledge_config(raw),
+        "personas": _load_personas_config(raw),
+        "mcp_server": _load_mcp_server_config(raw),
     }
 
     _print_config_sources(config)

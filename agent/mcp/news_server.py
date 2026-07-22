@@ -12,8 +12,7 @@
     python -m agent.mcp.news_server --transport sse --port 8001
 
     # 外部 Agent 连接 SSE:
-    client = MCPClient("newsradar")
-    await client.connect_sse("http://localhost:8001/sse")
+    client = await MCPClient.connect_sse("http://localhost:8001/sse")
 """
 
 from __future__ import annotations
@@ -23,6 +22,7 @@ import sys
 
 from mcp.server.fastmcp import FastMCP
 
+from news.constants import SENTIMENT_NEGATIVE_THRESHOLD, SENTIMENT_POSITIVE_THRESHOLD
 from storage.postgres import PostgreSQL
 
 
@@ -30,16 +30,33 @@ from storage.postgres import PostgreSQL
 # 全局状态 — 延迟初始化（FastMCP 启动后注入）
 # ======================================================================
 _db: PostgreSQL | None = None
+_analyzer = None  # news.analyzer.Analyzer | None，复用抓取管线的 jieba 分析器
+
+
+def _sentiment_label(score: int) -> str:
+    """0-100 情感分 -> 标签，与 constants.py 阈值口径一致。"""
+    if score >= SENTIMENT_POSITIVE_THRESHOLD:
+        return "正面"
+    if score <= SENTIMENT_NEGATIVE_THRESHOLD:
+        return "负面"
+    return "中性"
 
 
 def init_db(config_path: str = "config.yaml") -> None:
     """初始化数据库连接（FastMCP lifespan 中调用）。"""
-    global _db
+    global _db, _analyzer
     from config.loader import load_config
+    from news.analyzer import create_analyzer
 
     cfg = load_config(config_path)
     _db = PostgreSQL(cfg["postgresql"])
     _db.connect()
+    # 复用抓取管线的 JiebaAnalyzer，保证 MCP 工具与入库情感分同口径
+    try:
+        _analyzer = create_analyzer(cfg, db=_db)
+    except Exception as exc:  # 分析器初始化失败不应阻断 MCP 服务
+        print(f"[MCP Server] analyzer init failed, fall back to mini dict: {exc}", file=sys.stderr)
+        _analyzer = None
 
 
 # ======================================================================
@@ -61,7 +78,7 @@ mcp = FastMCP(
 
 @mcp.tool()
 def search_news(query: str, limit: int = 10) -> list[dict]:
-    """搜索新闻，支持关键词查询。
+    """搜索新闻，支持关键词查询。搜索全量历史数据，无时间限制。
 
     Args:
         query: 搜索关键词，匹配新闻标题和摘要
@@ -71,7 +88,7 @@ def search_news(query: str, limit: int = 10) -> list[dict]:
         raise RuntimeError("数据库未连接")
 
     limit = min(limit, 50)
-    articles = _db.get_recent_news(search=query, limit=limit, offset=0)
+    articles = _db.search_news(query=query, limit=limit, offset=0)
     return [
         {
             "id": a.get("id"),
@@ -151,17 +168,35 @@ def analyze_sentiment(text: str) -> dict:
     Args:
         text: 待分析的文本
     """
+    if not text or not text.strip():
+        return {"score": 50, "label": "中性", "detail": "空文本"}
+
+    # 优先复用抓取管线的 JiebaAnalyzer（jieba 分词 + 4 词典 + tanh 映射）
+    if _analyzer is not None:
+        item = {"title": "", "content": text, "sentiment_score": 50}
+        try:
+            _analyzer.analyze_sentiment([item])
+        except Exception:
+            pass
+        score = int(item.get("sentiment_score", 50))
+        return {
+            "score": score,
+            "label": _sentiment_label(score),
+            "detail": "基于 jieba 词典 + tanh 映射（与抓取管线同口径）",
+        }
+
+    # 兜底：分析器未启用时的极简词典
     positive_words = {"好", "优秀", "成功", "增长", "创新", "突破", "利好", "赞"}
     negative_words = {"差", "失败", "下跌", "危机", "问题", "风险", "利空", "崩"}
     pos_count = sum(1 for w in positive_words if w in text)
     neg_count = sum(1 for w in negative_words if w in text)
     total = pos_count + neg_count
-    if total == 0:
-        score = 50
-    else:
-        score = int(pos_count / total * 100)
-    label = "正面" if score >= 67 else ("负面" if score <= 33 else "中性")
-    return {"score": score, "label": label, "detail": f"正面词{pos_count}个，负面词{neg_count}个"}
+    score = int(pos_count / total * 100) if total else 50
+    return {
+        "score": score,
+        "label": _sentiment_label(score),
+        "detail": f"正面词{pos_count}个，负面词{neg_count}个（兜底词典）",
+    }
 
 
 @mcp.tool()
@@ -210,7 +245,8 @@ def main() -> None:
     init_db(args.config)
 
     if args.transport == "sse":
-        # SSE 模式：启动 HTTP 服务
+        # 用 CLI 参数覆盖 FastMCP 构造时的默认值
+        mcp.settings.port = args.port
         print(f"[MCP Server] Starting SSE on http://0.0.0.0:{args.port}/sse")
         mcp.run(transport="sse")
     else:

@@ -94,28 +94,33 @@ async def get_current_weather(city: str = "北京") -> str:
         return f"获取 {city} 天气失败: {e}"
 
 
-# ── 新闻查询工具（通过 MCP Server） ──────────────────────────────
+# ── 新闻查询工具（已废弃，改用 MCP search_news） ─────────────────
 
 
 @tool(level=2, category="news")
 async def get_latest_news(query: str = "热点", limit: int = 10) -> str:
-    """查询最新新闻，通过 News MCP Server 获取。
+    """查询最新新闻。
 
-    支持关键词搜索，返回新闻标题、来源、热度等摘要信息。
+    .. deprecated::
+       改用 MCP 的 ``search_news`` 工具（SSE 连接，无需开子进程）。
+       此函数保留仅用于测试兼容。
 
     Args:
         query: 搜索关键词（默认"热点"）
         limit: 返回条数（默认 10）
     """
+    import logging
+    logging.getLogger("agent.tools").warning(
+        "get_latest_news is deprecated, use search_news instead."
+    )
     from agent.mcp import MCPClient
 
-    client = MCPClient(name="news-query")
-    await client.connect_stdio("python", "-m", "agent.mcp.news_server")
+    session = await MCPClient.connect_stdio("python", "-m", "agent.mcp.news_server")
     try:
-        result = await client.call_tool("search_news", {"query": query, "limit": limit})
+        result = await session.call_tool("search_news", {"query": query, "limit": limit})
         return result
     finally:
-        await client.close()
+        await session.close()
 
 
 # ── 批量注册 ────────────────────────────────────────────────────
@@ -126,6 +131,9 @@ def setup_builtin_tools() -> Registry:
 
     @tool 装饰的工具本身就是 FunctionTool 实例，
     直接 add_tool 即可注册。
+
+    注意：新闻查询统一走 MCP 的 ``search_news`` 工具（SSE 连接），
+    不注册 ``get_latest_news`` 以避免每次调用开子进程。
     """
     registry = Registry()
     registry.add_tool(get_current_time)
@@ -133,5 +141,4 @@ def setup_builtin_tools() -> Registry:
     registry.add_tool(calc)
     registry.add_tool(roll_dice)
     registry.add_tool(get_current_weather)
-    registry.add_tool(get_latest_news)
     return registry

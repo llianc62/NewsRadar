@@ -1457,16 +1457,15 @@ ReActExecutor.run(ctx, brain, memory, tools)
 
 ### Phase 4：知识库 + 高级 Executor
 
-### Phase 4：知识库 + 高级 Executor
-
 ```
 目标: 完整模块化 Agent
 ```
 
-- [ ] `RAGKnowledge` — 向量检索知识库
-- [ ] `PlanExecutor` — 先规划再执行
-- [ ] Executor 热切换（不同 session 用不同策略）
-- [ ] 验证: 角色扮演 Agent 回答知识库内事实 + 调工具
+- [x] `KnowledgeEngine` - pgvector 向量检索知识库（详见 [phase3-knowledge.md](phase3-knowledge.md)，Phase A 完成）
+- [ ] 知识库检索质量升级 - hybrid / rerank / query 改写（详见 [knowledge-upgrade-plan.md](knowledge-upgrade-plan.md)，规划中）
+- [ ] `PlanExecutor` - 先规划再执行（未来）
+- [ ] Executor 热切换（不同 session 用不同策略）（未来）
+- [x] 角色扮演 Agent 回答知识库内事实 + 调工具（详见 [persona.md](persona.md)，Phase B/C 完成）
 
 ---
 

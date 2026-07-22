@@ -123,6 +123,7 @@ class DefaultAgent:
             brain=self.brain,
             memory=self.memory,
             tools=self.tools,
+            history_messages=getattr(self, "_history_messages", None),
         )
 
         return AgentResult(
@@ -148,5 +149,6 @@ class DefaultAgent:
             brain=self.brain,
             memory=self.memory,
             tools=self.tools,
+            history_messages=getattr(self, "_history_messages", None),
         ):
             yield token

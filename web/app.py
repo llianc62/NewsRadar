@@ -58,6 +58,7 @@ def create_app(db, s3_config: dict, queues=None, crawler=None,
         if not db.is_connected:
             db.connect()
             db.init_schema()
+
         print("[Web] Database ready")
         yield
         db.close()
@@ -122,8 +123,8 @@ def create_app(db, s3_config: dict, queues=None, crawler=None,
     app.include_router(agent_router)
 
     # ── Register agent admin routes (always) ──
-    from .agent_admin import router as agent_admin_router
+    from .settings import router as settings_router
 
-    app.include_router(agent_admin_router)
+    app.include_router(settings_router)
 
     return app

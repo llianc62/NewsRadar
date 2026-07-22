@@ -1,6 +1,8 @@
 # Agent 子系统设计文档
 
-> **版本**: v0.3  
+> **版本**: v1.2（Phase 1-3 已完成）  
+> **当前实现架构**: [architecture-v1.md](architecture-v1.md)（52k，权威设计文档）  
+> **旧版 Phase 文档**: [phase0-chat.md](phase0-chat.md) 至 [phase4-tools.md](phase4-tools.md) 为历史设计记录，当前实现以 architecture-v1.md 为准  
 > **目标**: 为 NewsRadar 引入可演进的 AI Agent 子系统，从"无角色对话"渐进到"深度角色扮演+知识库+工具编排"  
 > **设计原则**: 增量搭建、每层可验证、不侵入现有新闻管线
 
@@ -13,8 +15,10 @@
 | Phase 0 | [phase0-chat.md](phase0-chat.md) | LLM 接入 + 聊天界面 + WebSocket |
 | Phase 1 | [phase1-context.md](phase1-context.md) | 上下文工程（窗口→摘要→多级压缩） |
 | Phase 2 | [phase2-memory.md](phase2-memory.md) | 跨会话记忆（提取/合并/检索） |
-| Phase 3 | [phase3-knowledge.md](phase3-knowledge.md) | 知识库 RAG |
+| Phase 3 | [phase3-knowledge.md](phase3-knowledge.md) | 知识库 RAG（pgvector，已完成） |
 | Phase 4 | [phase4-tools.md](phase4-tools.md) | 工具调用 / MCP |
+| 角色扮演 | [persona.md](persona.md) | PersonaAgent + 多角色编排（仿 ai-hedge-fund，已完成） |
+| KB 升级 | [knowledge-upgrade-plan.md](knowledge-upgrade-plan.md) | 知识库 RAG 后续演进（hybrid/rerank/query 改写，规划中） |
 | 配置 | [configuration.md](configuration.md) | config.yaml + loader 设计 |
 | 集成 | [integration.md](integration.md) | 与现有系统融合 + 数据库表 |
 

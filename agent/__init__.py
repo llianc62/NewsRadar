@@ -4,7 +4,7 @@ from .agent import DefaultAgent
 from .executor import DirectExecutor, Executor, ReActExecutor
 from .factory import create_agent
 from .hub import ModelHub
-from .llm import AnthropicClient, BaseClient, ChatResult, OpenAIClient
+from .llm import AnthropicClient, DeepSeekClient, OpenAIClient
 from .memory import (
     LongTermMemory,
     MemoryModule,
@@ -13,17 +13,16 @@ from .memory import (
     PgMemoryStorage,
     ShortTermMemory,
 )
-from .models import AgentResult, Context
+from .models import AgentResult, Context, Message
 from .mcp import MCPClient, MCPTool
 from .tools import BaseTool, FunctionTool, Registry, ToolCallRecord, ToolDef, tool
 
 __all__ = [
     "DefaultAgent",
     "create_agent",
-    "BaseClient",
-    "ChatResult",
     "OpenAIClient",
     "AnthropicClient",
+    "DeepSeekClient",
     "ModelHub",
     "Context",
     "AgentResult",

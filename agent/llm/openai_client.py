@@ -1,66 +1,25 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from typing import Any
+from langchain_openai import ChatOpenAI
 
-from .base_client import BaseClient, ChatResult
+from .base_client import BaseClient
+
+__all__ = ["OpenAIClient"]
 
 
-class OpenAIClient(BaseClient):
-    """OpenAI 兼容 API 的 Client。"""
+class OpenAIClient(BaseClient, ChatOpenAI):
+    """OpenAI 兼容 API 的 LLM Client。
 
-    def __init__(self, api_key: str, base_url: str = ""):
-        from openai import OpenAI
+    多继承 ``BaseClient`` + ``ChatOpenAI``，获得共享的 ``chat()`` / ``chat_stream()``
+    实现（直接返回 ``AIMessage``，不额外包装）。
 
-        self._client = OpenAI(api_key=api_key, base_url=base_url or None)
+    支持 OpenAI 官方 API 及所有兼容端点（DeepSeek、Ollama、OpenRouter 等）。
+    """
 
-    async def chat(
-        self,
-        model: str,
-        messages: list[dict],
-        temperature: float = 0.7,
-        top_p: float = 1.0,
-        **kwargs: Any,
-    ) -> ChatResult:
-        resp = self._client.chat.completions.create(
+    def __init__(self, api_key: str = "", base_url: str = "", model: str = "", **kwargs):
+        super().__init__(
+            api_key=api_key,
+            base_url=base_url or None,
             model=model,
-            messages=messages,
-            temperature=temperature,
-            top_p=top_p,
             **kwargs,
         )
-        msg = resp.choices[0].message
-        content = msg.content or ""
-        tool_calls = []
-        if msg.tool_calls:
-            for tc in msg.tool_calls:
-                tool_calls.append({
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
-                })
-        return ChatResult(content=content, tool_calls=tool_calls)
-
-    async def chat_stream(
-        self,
-        model: str,
-        messages: list[dict],
-        temperature: float = 0.7,
-        top_p: float = 1.0,
-        **kwargs: Any,
-    ) -> AsyncIterator[str]:
-        stream = self._client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            top_p=top_p,
-            stream=True,
-            **kwargs,
-        )
-        for chunk in stream:
-            delta = chunk.choices[0].delta.content
-            if delta:
-                yield delta

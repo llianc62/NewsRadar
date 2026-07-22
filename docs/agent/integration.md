@@ -1,74 +1,62 @@
 # Agent 与现有系统的融合
 
-> **父文档**: [index.md](index.md)
+> **父文档**: [architecture-v1.md](architecture-v1.md)
 
 ---
 
 ## 1. 改动最小化
 
 - **不改现有新闻管线一行代码**。Agent 子系统是 `agent/` 下的独立模块
-- **config.yaml 加 `llm:` + `agent:` 段**——不改变已有配置结构，只是新增节
-- **`web/app.py` 加 `register_agent_routes()`**——作为额外路由注册，不修改现有路由
+- **config.yaml 加 `models:` 段**——不改变已有配置结构，只是新增节
+- **`web/app.py` 通过 `include_router` 注册 agent 路由**——作为额外路由注册，不修改现有新闻路由
 - **`web/templates/base.html` 侧边栏加一个入口**——不改变已有组件
-- **`storage/postgres.py` 加 `_init_agent_schema()`**——新增表不干扰现有表
-- **`web/app.py` 移除 SSE 通知端点**——`/api/notifications/stream` 替换为 WS `type: "notification"`
+- **`storage/postgres.py` 在 `_init_schema()` 中新增 agent 表**——新增表不干扰现有表
+- **Agent 路由始终注册**（页面显示空状态提示），Agent 实例仅在配置了 `models` 段时由 daemon 预构建
 
 ---
 
-## 2. 通知系统迁移
+## 2. 通知系统现状
 
-现有通知系统使用 SSE（`/api/notifications/stream`），Phase 0 实施时将其迁移到统一的 WebSocket 通道：
+通知系统**维持双通道**，未迁移到统一 WebSocket：
 
-| 组件 | 现状（SSE） | 迁移后（WS） |
-|------|------------|-------------|
-| 通知推送 | `_push_sse_event()` 推 SSE | 遍历 WS 连接池，推 `{"type":"notification",...}` |
-| 客户端接收 | `EventSource` 监听 `new`/`update` 事件 | `WebSocket.onmessage` 按 `type` 分发 |
-| 心跳 | SSE 30s keepalive | WebSocket 自带 ping/pong |
-| 重连 | EventSource 自动 | 前端手动重连（带退避）|
+| 通道 | 用途 | 端点 |
+|------|------|------|
+| SSE | 新闻抓取/同步/refetch 状态推送 | `GET /api/notifications/stream` |
+| WebSocket | Agent 实时聊天 + 工具审批 | `WS /api/ws` |
 
-**服务端 WS 连接管理：**
-```python
-# 取代 _sse_clients: set[asyncio.Queue]
-_ws_clients: dict[int, WebSocket] = {}  # id → WebSocket 连接
-
-def _push_notification(data: dict) -> None:
-    """遍历所有 WS 连接，推送通知。"""
-    for ws in list(_ws_clients.values()):
-        try:
-            ws.send_json({"type": "notification", "notification": data})
-        except Exception:
-            pass  # 连接已断开，忽略
-
-async def websocket_endpoint(ws: WebSocket):
-    await ws.accept()
-    client_id = id(ws)
-    _ws_clients[client_id] = ws
-    try:
-        while True:
-            data = await ws.receive_json()
-            await handle_ws_message(ws, data)
-    except WebSocketDisconnect:
-        _ws_clients.pop(client_id, None)
-```
+`NotificationState`（`web/notification.py`）管理 SSE 客户端连接池，跨线程通过 `call_soon_threadsafe` 分发事件。Agent WebSocket 独立管理自己的连接池。
 
 ---
 
 ## 3. main.py 改动
 
 ```python
-# main.py 中 create_app() 之后
-if config.get("llm"):
-    from web.app import register_agent_routes
-    register_agent_routes(app, config, db)
+# main.py 中 create_app() 之前，条件构建 Agent
+agent = None
+if self.config.get("models"):
+    from agent.factory import create_agent
+    agent = await create_agent(
+        self.config["models"],
+        system_prompt="你是 NewsRadar 新闻助手",
+        register_mcp=True,
+    )
+
+# 通过 agent_instance 注入 Web 应用
+app = create_app(db, s3_config, queues=queues, crawler=crawler,
+                  agent_config=self.config, agent_instance=agent)
 ```
 
-`config` 中没有 `llm` 段时，agent 路由完全不注册，侧边栏不显示入口，零影响。
+Agent 路由在 `create_app()` 中**始终**注册（`web/agent.py`），但 WebSocket 端点在没有模型配置时会返回"模型未配置"错误。
+
+### 角色编排接线（Phase B/C）
+
+当 `config["personas"]` 非空时，额外构建 `PersonaOrchestrator` 挂 `app.state.persona_orchestrator`；`PersonaRegistry` 挂 `app.state.persona_registry` 供前端 `/api/agent/personas` 拉取。WebSocket chat 消息扩展 `persona`（单角色）/ `personas`（团队会诊）字段，`web/agent.py` 优先路由到 orchestrator/registry，降级单 `agent_instance`。详见 [persona.md](persona.md)。
 
 ---
 
 ## 4. 数据库表
 
-### Phase 0：会话管理
+### 会话管理
 
 ```sql
 CREATE TABLE IF NOT EXISTS agent_sessions (
@@ -91,52 +79,53 @@ CREATE INDEX IF NOT EXISTS idx_agent_messages_session
     ON agent_messages(session_id, created_at);
 ```
 
-### Phase 2：记忆存储
+### 记忆存储（Phase 2，无 pgvector）
 
 ```sql
--- 需要 pgvector 扩展
-CREATE EXTENSION IF NOT EXISTS vector;
-
 CREATE TABLE IF NOT EXISTS agent_memories (
-    id SERIAL PRIMARY KEY,
-    key TEXT NOT NULL,
-    content TEXT NOT NULL,
-    embedding vector(1536),
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(key)
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id  TEXT NOT NULL,
+    agent_name  TEXT NOT NULL DEFAULT '',
+    memory_type TEXT NOT NULL DEFAULT 'summary',
+    content     TEXT NOT NULL,
+    created_at  TIMESTAMPTZ DEFAULT now(),
+    updated_at  TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_agent_memories_embedding
-    ON agent_memories USING ivfflat (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_memories_session
+    ON agent_memories(session_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_memories_search
+    ON agent_memories USING GIN (to_tsvector('simple', content));
 ```
 
----
+**说明**：记忆系统**不使用 pgvector**。搜索策略：
+- CJK 文本 → jieba TF-IDF 提取关键词 → `content ILIKE ANY(patterns)`（GIN + pg_trgm 双重索引）
+- ASCII 文本 → `to_tsvector('english', content) @@ to_tsquery('english', ...)`（FTS + ts_rank）
+- 索引：`idx_memories_search`（GIN `to_tsvector('english', content)`）+ `idx_memories_search_trgm`（GIN `content gin_trgm_ops`）
 
-## 5. schema 初始化
+### 知识库存储（Phase 3，使用 pgvector）
 
-在 `storage/postgres.py` 中新增：
+> 与记忆系统不同：知识库**使用 pgvector** 语义向量检索。详见 [phase3-knowledge.md](phase3-knowledge.md)。
 
-```python
-def _init_agent_schema(self) -> None:
-    """初始化 agent 子系统所需的所有表（幂等）。"""
-    # Phase 0: 会话表
-    self.execute("""
-        CREATE TABLE IF NOT EXISTS agent_sessions (
-            id SERIAL PRIMARY KEY,
-            title TEXT NOT NULL DEFAULT '新会话',
-            message_count INTEGER DEFAULT 0,
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            updated_at TIMESTAMPTZ DEFAULT NOW()
-        );
-    """)
-    self.execute("""
-        CREATE TABLE IF NOT EXISTS agent_messages (
-            id SERIAL PRIMARY KEY,
-            session_id INTEGER NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
-            role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
-            content TEXT NOT NULL,
-            created_at TIMESTAMPTZ DEFAULT NOW()
-        );
-    """)
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE IF NOT EXISTS knowledge_chunks (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    source      TEXT NOT NULL,
+    namespace   TEXT NOT NULL DEFAULT '',
+    content     TEXT NOT NULL,
+    embedding   vector(1536),
+    metadata    JSONB DEFAULT '{}',
+    created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_namespace ON knowledge_chunks(namespace);
+CREATE INDEX IF NOT EXISTS idx_knowledge_embedding
+    ON knowledge_chunks USING hnsw (embedding vector_cosine_ops);
 ```
+
+**前提**：`docker-compose.yml` 镜像 `postgres:16-alpine` -> `pgvector/pgvector:pg16`（vanilla 镜像无 pgvector 扩展）。
+
+CRUD 方法（`get_conn()` ctx manager）：`ingest_knowledge` / `search_knowledge(embedding, namespace, top_k)` / `delete_knowledge(namespace)` / `count_knowledge(namespace)`。

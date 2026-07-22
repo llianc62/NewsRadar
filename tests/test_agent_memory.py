@@ -19,7 +19,7 @@ from agent import (
     ShortTermMemory,
 )
 from agent.hub import ModelHub
-from tests.test_agent_agent import MockClient
+from tests.test_agent_agent import MockClient, _patch_hub
 
 
 # ── Helpers ────────────────────────────────────────────────────
@@ -27,9 +27,7 @@ from tests.test_agent_agent import MockClient
 
 @pytest.fixture
 def mock_hub(monkeypatch):
-    from agent import hub as hub_module
-
-    monkeypatch.setitem(hub_module._PROVIDER_MAP, "openai", MockClient)
+    _patch_hub(monkeypatch)
     return ModelHub(config={
         "default": {"protocol": "openai", "model": "gpt-4o", "api_key": "sk-xxx"},
     })
@@ -197,7 +195,7 @@ class TestLongTermMemory:
         mock_storage.search.return_value = [
             {"content": "user likes python", "memory_type": "fact"},
         ]
-        ctx = make_ctx(user_input="tell me about python")
+        ctx = make_ctx(user_input="tell me about python", session_id="sess-1")
         await ltm.on_before_execute(ctx)
         # jieba TF-IDF 提取关键词，确保 "python" 在查询中
         mock_storage.search.assert_called_once()
@@ -208,7 +206,7 @@ class TestLongTermMemory:
     @pytest.mark.asyncio
     async def test_on_before_no_results(self, ltm, mock_storage):
         mock_storage.search.return_value = []
-        ctx = make_ctx(user_input="something")
+        ctx = make_ctx(user_input="something", session_id="sess-1")
         await ltm.on_before_execute(ctx)
         assert ctx.memory_context is None
 
@@ -340,9 +338,7 @@ class TestExecutorWithMemory:
 class TestDefaultAgentWithMemory:
     @pytest.fixture
     def agent_with_memory(self, monkeypatch):
-        from agent import hub as hub_module
-
-        monkeypatch.setitem(hub_module._PROVIDER_MAP, "openai", MockClient)
+        _patch_hub(monkeypatch)
         return DefaultAgent(
             config={
                 "default": {"protocol": "openai", "model": "gpt-4o", "api_key": "sk-xxx"},
@@ -373,9 +369,7 @@ class TestDefaultAgentWithMemory:
     @pytest.mark.asyncio
     async def test_default_agent_has_null_memory(self, monkeypatch):
         """不传 memory 时应默认使用 NullMemory。"""
-        from agent import hub as hub_module
-
-        monkeypatch.setitem(hub_module._PROVIDER_MAP, "openai", MockClient)
+        _patch_hub(monkeypatch)
         agent = DefaultAgent(
             config={
                 "default": {"protocol": "openai", "model": "gpt-4o", "api_key": "sk-xxx"},

@@ -1,11 +1,36 @@
 from __future__ import annotations
 
-from .llm import AnthropicClient, BaseClient, OpenAIClient
+from .llm import AnthropicClient, DeepSeekClient, OpenAIClient
 
-_PROVIDER_MAP: dict[str, type[BaseClient]] = {
-    "openai": OpenAIClient,
-    "anthropic": AnthropicClient,
-}
+
+def _is_deepseek(cfg: dict) -> bool:
+    """是否走 DeepSeek 思考模式 client。"""
+    base_url = (cfg.get("base_url") or "").lower()
+    model = (cfg.get("model") or "").lower()
+    return "deepseek.com" in base_url or model.startswith("deepseek")
+
+
+def _build_client(cfg: dict):
+    """按 protocol + 厂商构建 LangChain LLM client。
+
+    返回 ``ChatOpenAI`` / ``ChatAnthropic`` / ``ChatDeepSeek`` 实例，
+    直接实现 ``LLMClient`` 协议（``chat()`` / ``chat_stream()`` 返回 ``AIMessage``）。
+    """
+    protocol = cfg.get("protocol", "openai")
+    common = {
+        "api_key": cfg.get("api_key", ""),
+        "base_url": cfg.get("base_url", ""),
+        "model": cfg.get("model", ""),
+    }
+    if protocol == "anthropic":
+        return AnthropicClient(**common)
+    if protocol != "openai":
+        raise ValueError(
+            f"Unsupported protocol: {protocol!r} (supported: openai, anthropic)"
+        )
+    if _is_deepseek(cfg):
+        return DeepSeekClient(**common)
+    return OpenAIClient(**common)
 
 
 class ModelHub:
@@ -13,45 +38,41 @@ class ModelHub:
 
     职责:
     - 管理模型配置（原始 dict 格式）
-    - 惰性创建 BaseClient 实例
+    - 惰性创建 LangChain LLM Client 实例（OpenAIClient / AnthropicClient / DeepSeekClient）
     - 按名称（别名）返回 Client
 
     不负责:
-    - ❌ 封装 chat() / chat_stream() 调用
+    - ❌ 封装 chat() / chat_stream() 调用（由 Executor 直接调 client.chat() / client.chat_stream()）
     - ❌ 模型选择逻辑（交给 Executor）
 
     使用方式:
         hub = ModelHub(config={
             "default": {"protocol": "openai", "model": "gpt-4o", "api_key": "..."},
-            "cheap":   {"protocol": "openai", "model": "gpt-4o-mini", "api_key": "..."},
+            "quick":   {"protocol": "openai", "model": "deepseek-v4-flash", "api_key": "...",
+                        "base_url": "https://api.deepseek.com"},
         })
 
-        client = hub.get_default()
-        resp = await client.chat(model="gpt-4o", messages=[...])
+        client = hub.get_default()          # ChatOpenAI / ChatAnthropic 实例
+        result = await client.chat(messages=[...])  # 返回 AIMessage
     """
 
     def __init__(self, config: dict):
         self._config = config
-        self._clients: dict[str, BaseClient] = {}
+        self._clients: dict = {}
 
-    def get_default(self) -> BaseClient:
+    def get_default(self):
         """获取默认模型 Client（name='default' 的配置）。"""
         return self.get("default")
 
-    def get(self, name: str) -> BaseClient:
-        """按配置 name 获取或创建 Client。"""
+    def get(self, name: str):
+        """按配置 name 获取或创建 Client。
+
+        返回实现 ``LLMClient`` 协议的 LangChain 实例
+        （``ChatOpenAI`` / ``ChatAnthropic`` / ``ChatDeepSeek``）。
+        """
         if name not in self._clients:
             cfg = self._config[name]
-            client_cls = _PROVIDER_MAP.get(cfg["protocol"])
-            if not client_cls:
-                raise ValueError(
-                    f"Unsupported protocol: {cfg['protocol']!r} "
-                    f"(supported: {list(_PROVIDER_MAP)})"
-                )
-            self._clients[name] = client_cls(
-                api_key=cfg["api_key"],
-                base_url=cfg.get("base_url", ""),
-            )
+            self._clients[name] = _build_client(cfg)
         return self._clients[name]
 
     def get_model_version(self, name: str) -> str:

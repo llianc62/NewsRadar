@@ -359,3 +359,33 @@ agent:
   memory_enabled: true
   compression_strategy: window
   default_model: quick
+
+# MCP 新闻服务 — 独立 HTTP 服务，提供 search_news/get_hot_topics 等工具。
+# Agent 通过 SSE 长连接调用，每个 agent 独立连接，天然支持并发。
+# 由 daemon 管理生命周期（启动时拉起，关闭时终止）。
+mcp_server:
+  enabled: true
+  transport: sse                       # sse（推荐）| stdio（仅调试）
+  host: "0.0.0.0"
+  port: 8001
+
+# 知识库（Phase 3，pgvector 语义检索）- 支撑角色扮演 agent 的专业知识来源。
+# 需先换 docker-compose 镜像为 pgvector/pgvector:pg16，并配 embedding API key。
+# DeepSeek 无 embedding 端点，embedding 用独立 base_url/api_key（默认走 OpenAI）。
+knowledge:
+  enabled: false                       # 需 pgvector 扩展 + embedding key 才开启
+  embedding_base_url: ""               # 空=OpenAI 默认；可指向本地/兼容服务
+  embedding_api_key: ""                # 独立 key（如 OPENAI_API_KEY）
+  embedding_model: text-embedding-3-small
+  embedding_dim: 1536                  # 必须与表 vector(N) 一致（切换需 DROP 重建）
+  top_k: 5
+  table: knowledge_chunks
+
+# 角色扮演 agent 子系统（Phase 3）- 多角色并行会诊 + 主编聚合。
+# 单选=单一角色直答；多选（>=2）=团队会诊，先并行产出信号再由主编综合。
+# 可用角色：buffett/graham/taleb/wood（投资人）、macro/sentiment/industry/
+# factcheck/blackswan（专家）、editor（主编，多选时自动加入，无需手选）。
+personas:
+  enabled: true                        # 关闭后 /api/agent/personas 返回空，前端隐藏面板
+  default_team: [buffett, macro, sentiment]  # 新会话默认预选的会诊团队
+  disabled: []                         # 禁用的角色名（如 [wood] 暂不开放）

@@ -353,36 +353,25 @@ class PostgreSQL:
                     conn.commit()
                     print("[DB] Migration complete: crawled_at column added.")
 
-                # Migration 008: create news_images table if missing
-                # (old schemas may have news_articles but not news_images)
+                # Migration 008 (removed): news_images table was unused dead code
+
+                # Migration 009: add agent_id + model_version to agent_messages
                 cur.execute(
                     """SELECT EXISTS (
-                        SELECT 1 FROM information_schema.tables
-                        WHERE table_schema = 'public'
-                          AND table_name = 'news_images'
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'agent_messages'
+                          AND column_name = 'agent_id'
                     )"""
                 )
                 if not cur.fetchone()[0]:
-                    print("[DB] Migrating: creating news_images table...")
+                    print("[DB] Migrating: adding agent_id + model_version to agent_messages...")
                     cur.execute(
-                        """CREATE TABLE IF NOT EXISTS news_images (
-                            id           BIGSERIAL PRIMARY KEY,
-                            article_id   BIGINT NOT NULL REFERENCES news_articles(id) ON DELETE CASCADE,
-                            image_url    TEXT NOT NULL,
-                            original_url TEXT DEFAULT '',
-                            width        INTEGER DEFAULT NULL,
-                            height       INTEGER DEFAULT NULL,
-                            file_size    INTEGER DEFAULT NULL,
-                            sort_order   SMALLINT DEFAULT 0,
-                            created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                        )"""
-                    )
-                    cur.execute(
-                        """CREATE INDEX IF NOT EXISTS idx_images_article
-                           ON news_images (article_id)"""
+                        """ALTER TABLE agent_messages
+                           ADD COLUMN agent_id TEXT NOT NULL DEFAULT '0',
+                           ADD COLUMN model_version TEXT NOT NULL DEFAULT ''"""
                     )
                     conn.commit()
-                    print("[DB] Migration complete: news_images table created.")
+                    print("[DB] Migration complete: agent_messages extended with agent_id + model_version.")
 
         finally:
             self._pool.putconn(conn)
@@ -406,6 +395,8 @@ class PostgreSQL:
                         id SERIAL PRIMARY KEY,
                         session_id INTEGER NOT NULL REFERENCES agent_sessions(id) ON DELETE CASCADE,
                         role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+                        agent_id TEXT NOT NULL DEFAULT '0',
+                        model_version TEXT NOT NULL DEFAULT '',
                         content TEXT NOT NULL,
                         created_at TIMESTAMPTZ DEFAULT NOW()
                     );
@@ -496,22 +487,7 @@ class PostgreSQL:
                         END IF;
                     END $$;
                 """)
-                # ── 新闻源管理 ──────────────────────────────────────
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS news_sources (
-                        id          TEXT PRIMARY KEY,
-                        source_type TEXT NOT NULL DEFAULT 'rss',
-                        name        TEXT NOT NULL,
-                        source_id   TEXT NOT NULL DEFAULT '',
-                        url         TEXT NOT NULL DEFAULT '',
-                        tier        INTEGER NOT NULL DEFAULT 4,
-                        priority    INTEGER NOT NULL DEFAULT 0,
-                        enabled     BOOLEAN NOT NULL DEFAULT true,
-                        config      JSONB NOT NULL DEFAULT '{}'::jsonb,
-                        created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                        updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-                    );
-                """)
+                # ── 新闻源（已废弃，数据来自 config.yaml） ──────────────
             conn.commit()
             print("[DB] Agent schema initialized")
         finally:
@@ -577,7 +553,7 @@ class PostgreSQL:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    """SELECT id, session_id, role, content, created_at
+                    """SELECT id, session_id, role, agent_id, model_version, content, created_at
                        FROM agent_messages
                        WHERE session_id = %s
                        ORDER BY created_at ASC
@@ -588,16 +564,24 @@ class PostgreSQL:
                 return [
                     {
                         "id": r[0], "session_id": r[1], "role": r[2],
-                        "content": r[3],
-                        "created_at": r[4].isoformat() if r[4] else None,
+                        "agent_id": r[3],
+                        "model_version": r[4],
+                        "content": r[5],
+                        "created_at": r[6].isoformat() if r[6] else None,
                     }
                     for r in rows
                 ]
         finally:
             self._pool.putconn(conn)
 
-    def save_agent_message(self, session_id: int, role: str, content: str) -> int:
-        """保存一条消息，返回 message_id。同时更新会话的 message_count 和 updated_at。"""
+    def save_agent_message(self, session_id: int, role: str, content: str,
+                           agent_id: str = "0", model_version: str = "") -> int:
+        """保存一条消息，返回 message_id。同时更新会话的 message_count 和 updated_at。
+
+        Args:
+            agent_id: 智能体 ID（0 = 默认助手）。
+            model_version: 模型版本字符串，如 "deepseek-v4-pro"。
+        """
         if role not in ("user", "assistant"):
             raise ValueError(f"role must be 'user' or 'assistant', got {role!r}")
         if not content or not content.strip():
@@ -608,9 +592,9 @@ class PostgreSQL:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    """INSERT INTO agent_messages (session_id, role, content)
-                       VALUES (%s, %s, %s) RETURNING id""",
-                    (session_id, role, content),
+                    """INSERT INTO agent_messages (session_id, role, content, agent_id, model_version)
+                       VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+                    (session_id, role, content, agent_id, model_version),
                 )
                 msg_id = cur.fetchone()[0]
                 cur.execute(
@@ -834,142 +818,6 @@ class PostgreSQL:
                 cur.execute("DELETE FROM knowledge_chunks WHERE namespace = %s", (kb.namespace,))
                 cur.execute("DELETE FROM agent_knowledge WHERE id = %s", (id,))
         return True
-
-    # ── News Sources CRUD ──────────────────────────────────────────────
-
-    def create_news_source(self, data: dict) -> str:
-        """创建新闻源，返回 id。"""
-        source_id = data.get("id") or str(uuid4())
-        with self.get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """INSERT INTO news_sources (id, source_type, name, source_id, url, tier, priority, enabled, config)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                    (
-                        source_id,
-                        data.get("source_type", "rss"),
-                        data.get("name", ""),
-                        data.get("source_id", ""),
-                        data.get("url", ""),
-                        data.get("tier", 4),
-                        data.get("priority", 0),
-                        data.get("enabled", True),
-                        json.dumps(data.get("config") or {}),
-                    ),
-                )
-        return source_id
-
-    def get_news_source(self, id: str) -> dict | None:
-        """按 ID 查询新闻源。"""
-        with self.get_conn() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute("SELECT * FROM news_sources WHERE id = %s", (id,))
-                row = cur.fetchone()
-        if not row:
-            return None
-        result = dict(row)
-        result["created_at"] = result["created_at"].isoformat() if result["created_at"] else None
-        result["updated_at"] = result["updated_at"].isoformat() if result["updated_at"] else None
-        if isinstance(result.get("config"), str):
-            result["config"] = json.loads(result["config"])
-        return result
-
-    def list_news_sources(self, source_type: str | None = None) -> list[dict]:
-        """列出所有新闻源，可按 source_type 过滤。"""
-        with self.get_conn() as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                if source_type:
-                    cur.execute(
-                        "SELECT * FROM news_sources WHERE source_type = %s ORDER BY tier ASC, priority DESC",
-                        (source_type,),
-                    )
-                else:
-                    cur.execute(
-                        "SELECT * FROM news_sources ORDER BY source_type, tier ASC, priority DESC"
-                    )
-                rows = cur.fetchall()
-        result = []
-        for row in rows:
-            d = dict(row)
-            d["created_at"] = d["created_at"].isoformat() if d["created_at"] else None
-            d["updated_at"] = d["updated_at"].isoformat() if d["updated_at"] else None
-            if isinstance(d.get("config"), str):
-                d["config"] = json.loads(d["config"])
-            result.append(d)
-        return result
-
-    def update_news_source(self, id: str, data: dict) -> bool:
-        """更新新闻源。返回是否成功。"""
-        fields = []
-        params = []
-        for key in ("source_type", "name", "source_id", "url", "tier", "priority", "enabled"):
-            if key in data:
-                fields.append(f"{key} = %s")
-                params.append(data[key])
-        if "config" in data:
-            fields.append("config = %s")
-            params.append(json.dumps(data["config"]))
-        if not fields:
-            return False
-        fields.append("updated_at = NOW()")
-        params.append(id)
-        with self.get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"UPDATE news_sources SET {', '.join(fields)} WHERE id = %s",
-                    params,
-                )
-                return cur.rowcount > 0
-
-    def delete_news_source(self, id: str) -> bool:
-        """删除新闻源。"""
-        with self.get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM news_sources WHERE id = %s", (id,))
-                return cur.rowcount > 0
-
-    def seed_news_sources(self, newsnow_sources: list[dict], rss_sources: list[dict]) -> int:
-        """从 config.yaml 种子数据到 news_sources 表（幂等，INSERT … ON CONFLICT DO NOTHING）。
-
-        返回实际插入的行数。
-        """
-        rows = []
-        for src in newsnow_sources:
-            rows.append((
-                src.get("id", ""),
-                "newsnow",
-                src.get("name", ""),
-                src.get("id", ""),
-                "",
-                src.get("tier", 4),
-                src.get("priority", 0),
-                True,
-                json.dumps({}),
-            ))
-        for src in rss_sources:
-            rows.append((
-                src.get("id", ""),
-                "rss",
-                src.get("name", ""),
-                src.get("id", ""),
-                src.get("url", ""),
-                src.get("tier", 4),
-                src.get("priority", 0),
-                src.get("enabled", True),
-                json.dumps({"max_age_days": src.get("max_age_days", 0)}),
-            ))
-        inserted = 0
-        with self.get_conn() as conn:
-            with conn.cursor() as cur:
-                for row in rows:
-                    cur.execute(
-                        """INSERT INTO news_sources (id, source_type, name, source_id, url, tier, priority, enabled, config)
-                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                           ON CONFLICT (id) DO NOTHING""",
-                        row,
-                    )
-                    inserted += cur.rowcount
-        return inserted
 
     # ── Agent sessions by agent_id ────────────────────────────────────
 
@@ -1340,6 +1188,55 @@ class PostgreSQL:
                 )
                 return cur.fetchall()
 
+    def search_news(
+        self,
+        query: str,
+        limit: int = 10,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """全量搜索新闻，按热度排序，无时间限制。匹配标题、摘要和正文。
+
+        CJK 查询按空白拆成多个关键词，OR 语义匹配（任一命中即返回），
+        避免 "WAIC 世界人工智能大会" 这类多词查询被当成单个精确子串
+        而漏掉只含部分关键词的相关新闻。
+
+        Args:
+            query: 搜索关键词
+            limit: 返回条数上限（默认 10）
+            offset: 偏移量
+        """
+        fields = (
+            "title || ' ' || COALESCE(summary, '')"
+            " || ' ' || COALESCE(content, '')"
+        )
+        if _contains_cjk(query):
+            keywords = [kw for kw in query.split() if kw] or [query]
+            or_clauses = " OR ".join([f"({fields}) ILIKE %s" for _ in keywords])
+            condition = f"({or_clauses})"
+            params: List[Any] = [f"%{kw}%" for kw in keywords]
+        else:
+            condition = (
+                f"to_tsvector('simple', {fields})"
+                " @@ plainto_tsquery('simple', %s)"
+            )
+            params = [query]
+
+        with self.get_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    f"""SELECT id, title, source_id, source_name, source_type,
+                               tier, priority, url, mobile_url, summary,
+                               tags, heat_score, sentiment_score,
+                               crawled_from, is_analyzed,
+                               published_at, created_at
+                        FROM news_articles
+                        WHERE {condition}
+                        ORDER BY heat_score DESC NULLS LAST, created_at DESC NULLS LAST
+                        LIMIT %s OFFSET %s""",
+                    params + [limit, offset],
+                )
+                return cur.fetchall()
+
     def get_news_count(
         self,
         tier: Optional[int] = None,
@@ -1606,7 +1503,7 @@ class PostgreSQL:
                 return None
 
     def get_news_by_id(self, article_id: int) -> Optional[Dict[str, Any]]:
-        """Return a single article by ID, including content and images."""
+        """Return a single article by ID, including content."""
         with self.get_conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute(
@@ -1615,11 +1512,7 @@ class PostgreSQL:
                 )
                 article = cur.fetchone()
                 if article:
-                    cur.execute(
-                        "SELECT * FROM news_images WHERE article_id = %s ORDER BY sort_order",
-                        (article_id,),
-                    )
-                    article["images"] = cur.fetchall()
+                    article["images"] = []
                 return article
 
     def get_stats(self, date_from: Optional[str] = None, date_to: Optional[str] = None,
@@ -1760,8 +1653,7 @@ class PostgreSQL:
                 return cur.rowcount > 0
 
     def delete_news(self, article_id: int) -> bool:
-        """Delete an article by ID. Associated images are removed via the
-        ``news_images.article_id`` ``ON DELETE CASCADE`` foreign key.
+        """Delete an article by ID.
 
         Returns True if a row was deleted, False if no article had that ID.
         """
@@ -1787,28 +1679,6 @@ class PostgreSQL:
                     (score, article_id),
                 )
                 return cur.rowcount > 0
-
-    def save_article_image(
-        self,
-        article_id: int,
-        image_url: str,
-        original_url: str = "",
-        width: Optional[int] = None,
-        height: Optional[int] = None,
-        file_size: Optional[int] = None,
-        sort_order: int = 0,
-    ) -> int:
-        """Insert a news_images row and return its ID."""
-        with self.get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """INSERT INTO news_images
-                       (article_id, image_url, original_url, width, height, file_size, sort_order)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s)
-                       RETURNING id""",
-                    (article_id, image_url, original_url, width, height, file_size, sort_order),
-                )
-                return cur.fetchone()[0]
 
     # ── Failed tasks (failure recording & lazy retry) ──────────────
 

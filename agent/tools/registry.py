@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from .base import BaseTool
 
 if TYPE_CHECKING:
-    from agent.mcp import MCPClient
+    from agent.mcp.client import MCPClient
 
 
 class Registry:
@@ -40,11 +40,11 @@ class Registry:
             raise ValueError(f"Tool '{name}' is already registered")
         self._tools[name] = tool
 
-    def add_mcp(self, client: MCPClient, level_map: dict[str, int] | None = None) -> None:
-        """将一个 MCP Client 的所有工具批量注册。
+    def add_mcp(self, session: MCPClient, level_map: dict[str, int] | None = None) -> None:
+        """将一个 MCPClient 的所有工具批量注册。
 
         Args:
-            client: 已连接的 MCPClient 实例
+            session: 已连接的 MCPClient 实例
             level_map: 可选，工具名到 level 的映射，未指定的工具默认 level=1
 
         Raises:
@@ -52,16 +52,16 @@ class Registry:
         """
         from agent.mcp import MCPTool
 
-        if not client.is_connected:
+        if not session.is_connected:
             raise RuntimeError(
-                f"MCPClient '{client.name}' is not connected. "
-                "Call connect_stdio() or connect_sse() first."
+                "MCPClient is not connected. "
+                "Call connect_sse() or connect_stdio() first."
             )
-        for t in client.get_tools():
+        for t in session.get_tools():
             name = t["name"]
             if name not in self._tools:
                 level = (level_map or {}).get(name, 1)
-                self._tools[name] = MCPTool(client, t, level=level)
+                self._tools[name] = MCPTool(session, t, level=level)
 
     def get_schemas(self) -> list[dict]:
         """返回所有工具的 OpenAI format schema 列表。

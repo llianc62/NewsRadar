@@ -84,7 +84,6 @@ class TestInitSchema:
             ["jsonb"], # migration 004: ranks column already JSONB
             [False],   # migration 006: idx_dedup_hotlist already on (url) only
             [False],   # migration 007: crawled_at column not yet added
-            [False],   # migration 008: news_images table not yet created
         ]
 
         pg_unconnected.init_schema()
@@ -108,19 +107,15 @@ class TestInitSchema:
             ["jsonb"], # migration 004: ranks column already JSONB
             [False],   # migration 006: idx_dedup_hotlist already on (url)
             [False],   # migration 007: crawled_at column not yet added
-            [False],   # migration 008: news_images table not yet created
         ]
 
         pg_unconnected.init_schema()
         executes = [str(c[0][0]) for c in mock_cursor.execute.call_args_list if c[0]]
         ddl_calls = [s for s in executes if "CREATE TABLE" in s]
-        # Schema DDL is skipped, but migration 008 may create news_images
-        # and _init_agent_schema() creates agent_sessions + agent_messages
-        # + agent_memories + knowledge_chunks (Phase 3 pgvector)
+        # Schema DDL is skipped, but _init_agent_schema() creates agent_sessions
+        # + agent_messages + agent_memories + knowledge_chunks (Phase 3 pgvector)
         # + agent_definitions + agent_knowledge (Role System)
-        # + news_sources (Source Management)
-        assert len(ddl_calls) == 8
-        assert any("news_images" in s for s in ddl_calls)
+        assert len(ddl_calls) == 7
         assert any("agent_sessions" in s for s in ddl_calls)
         assert any("agent_messages" in s for s in ddl_calls)
         assert any("agent_memories" in s for s in ddl_calls)
@@ -147,7 +142,6 @@ class TestRunMigrations:
             ["jsonb"],  # migration 004: ranks column already JSONB
             [False],   # migration 006: idx_dedup_hotlist already on (url)
             [False],   # migration 007: crawled_at column not yet added
-            [False],   # migration 008: news_images table not yet created
         ]
         return mock_cursor
 

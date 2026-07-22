@@ -19,6 +19,7 @@ The daemon runs until interrupted (SIGINT / SIGTERM).
 import sys
 import signal
 import asyncio
+from pathlib import Path
 
 from typing import Any
 from concurrent.futures import ThreadPoolExecutor
@@ -55,6 +56,7 @@ class NewsRadarDaemon:
         self._shutdown_event = asyncio.Event()
         self._bg_tasks: list[asyncio.Task] = []
         self._uvicorn_server = None
+        self._mcp_server_proc = None
         # Dedicated executor — we control its lifecycle
         self._executor = ThreadPoolExecutor(max_workers=4)
 
@@ -240,22 +242,39 @@ class NewsRadarDaemon:
         agent = None
         persona_manager = None
         persona_orchestrator = None
+        mcp_server_proc = None
         if self.config.get("models"):
             from agent.factory import (
                 create_agent,
                 create_persona_orchestrator,
+                start_mcp_server,
             )
 
+            # 读取系统级基座提示词 agent/Agent.md
+            base_prompt_path = Path(__file__).parent / "agent" / "Agent.md"
+            base_prompt = ""
+            if base_prompt_path.exists():
+                base_prompt = base_prompt_path.read_text(encoding="utf-8").strip()
+                print("[Daemon] Base prompt loaded from agent/Agent.md.")
+
+            # 启动 MCP Server（SSE 模式）
+            mcp_cfg = self.config.get("mcp_server", {})
+            if mcp_cfg.get("enabled"):
+                self._mcp_server_proc = await start_mcp_server(mcp_cfg)
+                print(f"[Daemon] MCP Server started ({mcp_cfg['transport']} mode, http://{mcp_cfg['host']}:{mcp_cfg['port']}).")
+
+            # 创建主 agent
             agent = await create_agent(
                 self.config["models"],
-                system_prompt="你是 NewsRadar 新闻助手，可以查询新闻、天气，以及使用其他工具。",
+                system_prompt=base_prompt,
                 register_mcp=True,
+                mcp_cfg=mcp_cfg,
             )
-            print("[Daemon] Agent built (with ReActExecutor + tools).")
+            print(f"[Daemon] Agent built (type={type(agent).__name__}, executor={type(agent.executor).__name__}, memory={type(agent.memory).__name__}, tools={agent.tools.list_tools() if agent.tools else 'None'}).")
 
             # 角色扮演：单角色懒构建管理器 + 多角色编排器（共享同一 manager）
             persona_orchestrator = await create_persona_orchestrator(
-                self.config, db=self.db
+                self.config, db=self.db, base_prompt=base_prompt, mcp_cfg=mcp_cfg,
             )
             persona_manager = persona_orchestrator._manager
             selectable = [s for s in persona_manager.available() if s.category != "editor"]
@@ -276,6 +295,7 @@ class NewsRadarDaemon:
                 self.config["models"],
                 self.db,
                 tool_registry,
+                base_prompt=base_prompt,
             )
 
         app = create_app(self.db, s3_config, queues=queues, crawler=crawler,
@@ -370,7 +390,17 @@ class NewsRadarDaemon:
         self._executor.shutdown(wait=False, cancel_futures=True)
         print("[Daemon] Thread pool stopped.")
 
-        # 5. Close database
+        # 5. Close MCP Server subprocess
+        if self._mcp_server_proc is not None:
+            try:
+                self._mcp_server_proc.terminate()
+                await asyncio.wait_for(self._mcp_server_proc.wait(), timeout=5)
+                print("[Daemon] MCP Server stopped.")
+            except Exception:
+                self._mcp_server_proc.kill()
+                print("[Daemon] MCP Server killed.")
+
+        # 6. Close database
         self.db.close()
         print("[Daemon] Shutdown complete.")
 

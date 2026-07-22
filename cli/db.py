@@ -114,7 +114,7 @@ def _clear_postgresql(
     end: Optional[str],
     force: bool,
 ) -> None:
-    """Delete rows from PostgreSQL ``news_articles`` + ``news_images`` + ``failed_tasks``."""
+    """Delete rows from PostgreSQL ``news_articles`` + ``failed_tasks``."""
     from storage.postgres import PostgreSQL
 
     db = PostgreSQL(config["postgresql"])
@@ -129,15 +129,6 @@ def _clear_postgresql(
                 cur.execute(f"SELECT COUNT(*) FROM news_articles {where}", params)
                 article_count = cur.fetchone()[0]
 
-                cur.execute(
-                    f"""SELECT COUNT(*) FROM news_images
-                        WHERE article_id IN (
-                            SELECT id FROM news_articles {where}
-                        )""",
-                    params,
-                )
-                image_count = cur.fetchone()[0]
-
                 task_count = 0
                 if delete_all:
                     cur.execute("SELECT COUNT(*) FROM failed_tasks")
@@ -148,7 +139,7 @@ def _clear_postgresql(
             return
 
         # ── Confirm ────────────────────────────────────────────────
-        parts = [f"{article_count} articles", f"{image_count} images"]
+        parts = [f"{article_count} articles"]
         if delete_all and task_count > 0:
             parts.append(f"{task_count} failed_tasks")
         print(f"[PostgreSQL] Matching: {', '.join(parts)}")
@@ -160,16 +151,6 @@ def _clear_postgresql(
         # ── Delete ─────────────────────────────────────────────────
         with db.get_conn() as conn:
             with conn.cursor() as cur:
-                # Images first (though CASCADE handles it, be explicit)
-                cur.execute(
-                    f"""DELETE FROM news_images
-                        WHERE article_id IN (
-                            SELECT id FROM news_articles {where}
-                        )""",
-                    params,
-                )
-                img_deleted = cur.rowcount
-
                 cur.execute(f"DELETE FROM news_articles {where}", params)
                 art_deleted = cur.rowcount
 
@@ -178,7 +159,7 @@ def _clear_postgresql(
                     cur.execute("DELETE FROM failed_tasks")
                     task_deleted = cur.rowcount
 
-        parts = [f"{art_deleted} articles", f"{img_deleted} images"]
+        parts = [f"{art_deleted} articles"]
         if task_deleted > 0:
             parts.append(f"{task_deleted} failed_tasks")
         print(f"[PostgreSQL] Deleted: {', '.join(parts)}")

@@ -1,6 +1,8 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    # pgvector/pgvector:pg16 = 官方 PG16 + pgvector 扩展（vanilla postgres:16-alpine 无 pgvector）
+    # 数据卷与 postgres:16 同主版本兼容，切换镜像无需迁移数据，仅需重建容器
+    image: pgvector/pgvector:pg16
     container_name: newsradar-pg
     ports:
       - "5432:5432"

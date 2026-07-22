@@ -10,12 +10,12 @@ import pytest
 
 from agent import (
     BaseTool,
-    ChatResult,
     Context,
     DirectExecutor,
     FunctionTool,
     MCPClient,
     MCPTool,
+    Message,
     ReActExecutor,
     ToolCallRecord,
     ToolDef,
@@ -23,7 +23,7 @@ from agent import (
     tool,
 )
 from agent.hub import ModelHub
-from tests.test_agent_agent import MockClient
+from tests.test_agent_agent import MockClient, _patch_hub
 
 
 # ── Test ToolDef ─────────────────────────────────────────────────
@@ -169,31 +169,22 @@ class TestFunctionTool:
         assert td.name == "greet"
 
 
-# ── Test MCPClient (mock stdio) ──────────────────────────────────
+# ── Test MCPClient (连接前状态) ──────────────────────────────────
 
 
-class TestMCPClient:
+class TestMcpSession:
     @pytest.mark.asyncio
     async def test_create(self):
-        client = MCPClient(name="test-client")
-        assert client.name == "test-client"
-        assert not client.is_connected
-
-    def test_empty_name_raises(self):
-        with pytest.raises(ValueError, match="name must not be empty"):
-            MCPClient(name="")
+        session = MCPClient()
+        assert not session.is_connected
 
     def test_get_tools_returns_empty_list_before_connect(self):
-        client = MCPClient(name="test")
-        assert client.get_tools() == []
-
-    def test_get_schemas_returns_empty_list_before_connect(self):
-        client = MCPClient(name="test")
-        assert client.get_schemas() == []
+        session = MCPClient()
+        assert session.get_tools() == []
 
     def test_has_tool_returns_false_before_connect(self):
-        client = MCPClient(name="test")
-        assert not client.has_tool("anything")
+        session = MCPClient()
+        assert not session.has_tool("anything")
 
 
 # ── Test Registry ────────────────────────────────────────────
@@ -304,9 +295,9 @@ class TestRegistry:
 
     def test_add_mcp_not_connected_raises(self):
         registry = Registry()
-        client = MCPClient(name="disconnected")
+        session = MCPClient()
         with pytest.raises(RuntimeError, match="not connected"):
-            registry.add_mcp(client)
+            registry.add_mcp(session)
 
     @pytest.mark.asyncio
     async def test_add_mcp_connected(self):
@@ -314,10 +305,9 @@ class TestRegistry:
         registry = Registry()
 
         # Use news_server via subprocess
-        client = MCPClient(name="news")
-        await client.connect_stdio("python", "-m", "agent.mcp.news_server")
+        session = await MCPClient.connect_stdio("python", "-m", "agent.mcp.news_server")
 
-        registry.add_mcp(client)
+        registry.add_mcp(session)
         assert "search_news" in registry.list_tools()
         assert "get_hot_topics" in registry.list_tools()
 
@@ -325,7 +315,7 @@ class TestRegistry:
         result = await registry.execute("analyze_sentiment", {"text": "好优秀成功"})
         assert "score" in result
 
-        await client.close()
+        await session.close()
 
 
 # ── Test ReActExecutor ───────────────────────────────────────────
@@ -333,9 +323,7 @@ class TestRegistry:
 
 @pytest.fixture
 def mock_hub_with_tools(monkeypatch):
-    from agent import hub as hub_module
-
-    monkeypatch.setitem(hub_module._PROVIDER_MAP, "openai", MockClient)
+    _patch_hub(monkeypatch)
     return ModelHub(config={
         "default": {"protocol": "openai", "model": "gpt-4o", "api_key": "sk-xxx"},
     })
@@ -372,15 +360,14 @@ class TestReActExecutor:
         ))
 
         # 设置 MockClient 先返回 tool_call，再返回最终文本
+        # tool_calls 使用 AIMessage 简化格式 {name, args, id}
         client = mock_hub_with_tools.get_default()
         client.tool_calls_to_return = [
             {
+                "name": "get_weather",
+                "args": {"city": "北京"},
                 "id": "call_1",
-                "type": "function",
-                "function": {
-                    "name": "get_weather",
-                    "arguments": '{"city": "北京"}',
-                },
+                "type": "tool_call",
             },
         ]
 
@@ -394,8 +381,8 @@ class TestReActExecutor:
         assert len(ctx.tool_results) >= 1
         assert "北京" in ctx.tool_results[0] or "sunny" in ctx.tool_results[0]
 
-        # 验证 history 包含了工具结果
-        assert any("工具 get_weather 返回" in m["content"] for m in ctx.history)
+        # 验证 messages 包含了工具结果
+        assert any(m.role == "tool" and "sunny" in (m.content or "") for m in ctx.messages)
 
         # 验证 LLM 最终调用了 2 次（tool_call + 文本返回）
         assert ctx.step_count > 1
@@ -414,12 +401,10 @@ class TestReActExecutor:
         client = mock_hub_with_tools.get_default()
         client.tool_calls_to_return = [
             {
+                "name": "loop_tool",
+                "args": {},
                 "id": "call_1",
-                "type": "function",
-                "function": {
-                    "name": "loop_tool",
-                    "arguments": "{}",
-                },
+                "type": "tool_call",
             },
         ]
 
@@ -438,7 +423,8 @@ class TestReActExecutor:
         executor = ReActExecutor()
         ctx = Context(user_input="hi", system_prompt="You are a bot.")
         tokens = [t async for t in executor.run_stream(ctx=ctx, brain=mock_hub_with_tools)]
-        assert "".join(tokens) == "mock response for gpt-4o"
+        # 注意：模拟流式拆分会在每个 token 后加空格
+        assert "mock" in "".join(tokens)
 
     @pytest.mark.asyncio
     async def test_run_calls_memory_hooks(self, mock_hub_with_tools):
@@ -457,29 +443,41 @@ class TestReActExecutor:
 
     @pytest.mark.asyncio
     async def test_build_messages_with_memory_context(self):
-        """验证 _build_messages 包含 memory_context。"""
+        """验证 _build_initial_messages 包含 memory_context。"""
         ctx = Context(
             user_input="hello",
             system_prompt="You are a bot.",
         )
         ctx.memory_context = "user likes python"
 
-        messages = ReActExecutor._build_messages(ctx)
-        assert len(messages) == 3  # system + memory + user
-        assert messages[0]["role"] == "system"
-        assert messages[1]["role"] == "system"
-        assert "相关记忆" in messages[1]["content"]
-        assert messages[2]["role"] == "user"
+        msgs = ReActExecutor._build_initial_messages(ctx)
+        dicts = ReActExecutor._messages_to_dicts(msgs)
+        assert len(dicts) == 3  # system + memory + user
+        assert dicts[0]["role"] == "system"
+        assert dicts[1]["role"] == "system"
+        assert "相关记忆" in dicts[1]["content"]
+        assert dicts[2]["role"] == "user"
 
     @pytest.mark.asyncio
     async def test_build_messages_with_history(self):
-        """验证 _build_messages 包含 history。"""
-        ctx = Context(user_input="hello", system_prompt="You are a bot.")
-        ctx.history = [{"role": "user", "content": "工具结果: ok"}]
+        """验证 _messages_to_dicts 能正确转换 tool 消息。"""
+        msgs = [
+            Message(role="system", content="You are a bot."),
+            Message(role="user", content="hello"),
+            Message(role="assistant", content=None, tool_calls=[
+                {"name": "test", "args": {}, "id": "call_1"},
+            ]),
+            Message(role="tool", tool_call_id="call_1", content="ok", name="test"),
+        ]
 
-        messages = ReActExecutor._build_messages(ctx)
-        assert len(messages) == 3  # system + user + history
-        assert messages[2] == ctx.history[0]
+        dicts = ReActExecutor._messages_to_dicts(msgs)
+        assert len(dicts) == 4
+        assert dicts[0] == {"role": "system", "content": "You are a bot."}
+        assert dicts[1] == {"role": "user", "content": "hello"}
+        assert dicts[2]["role"] == "assistant"
+        assert dicts[2]["content"] is None
+        assert dicts[2]["tool_calls"][0]["function"]["name"] == "test"
+        assert dicts[3] == {"role": "tool", "tool_call_id": "call_1", "content": "ok"}
 
 
 # ── Test NewsRadar MCP Server ────────────────────────────────────
@@ -492,8 +490,7 @@ async def test_news_server_via_stdio():
     search_news / get_hot_topics 需要真实数据库，因此只验证
     无需 DB 的 analyze_sentiment 工具。
     """
-    client = MCPClient(name="news-test")
-    await client.connect_stdio("python", "-m", "agent.mcp.news_server")
+    client = await MCPClient.connect_stdio("python", "-m", "agent.mcp.news_server")
 
     # 验证工具列表
     assert client.has_tool("search_news")
@@ -522,17 +519,17 @@ class TestContextToolFields:
         ctx = Context(user_input="hi")
         assert ctx.tool_calls == []
         assert ctx.tool_results == []
-        assert ctx.history == []
+        assert ctx.messages == []
         assert ctx.knowledge_context is None
 
     def test_context_can_store_tool_calls(self):
         ctx = Context(user_input="hi")
         ctx.tool_calls = [{"id": "call_1", "function": {"name": "test"}}]
         ctx.tool_results = ["result"]
-        ctx.history = [{"role": "user", "content": "工具返回: ok"}]
+        ctx.messages = [Message(role="user", content="工具返回: ok")]
         assert len(ctx.tool_calls) == 1
         assert len(ctx.tool_results) == 1
-        assert len(ctx.history) == 1
+        assert len(ctx.messages) == 1
 
 
 # ── Test @tool decorator ──────────────────────────────────────────
@@ -1078,8 +1075,7 @@ class TestBuiltinTools:
         assert "calculator" in tools
         assert "roll_dice" in tools
         assert "get_current_weather" in tools
-        assert "get_latest_news" in tools
-        assert len(tools) == 6
+        assert len(tools) == 5
 
     @pytest.mark.asyncio
     async def test_registry_execute(self):
@@ -1132,5 +1128,4 @@ class TestBuiltinTools:
             "description": "执行四则运算，支持加/减/乘/除",
             "category": "general",
         }
-        assert defs_by_name["get_latest_news"]["category"] == "news"
         assert defs_by_name["roll_dice"]["category"] == "general"

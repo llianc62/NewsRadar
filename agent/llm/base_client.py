@@ -1,53 +1,58 @@
+"""LLM Client 基类——提供共享的 chat() / chat_stream() 实现。
+
+继承 LangChain ``BaseChatModel`` 作为基类，``bind_tools`` / ``ainvoke`` / ``astream``
+来自 ``BaseChatModel``，由 MRO 解析到具体实现（``ChatOpenAI`` / ``ChatAnthropic`` /
+``ChatDeepSeek``）。直接返回 ``AIMessage`` / ``AIMessageChunk``，不额外包装。
+
+不再使用 ``ChatResult`` 中间格式。
+"""
+
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
 from typing import Any
 
-
-@dataclass
-class ChatResult:
-    """LLM chat 调用的结构化返回。
-
-    替代纯 str 返回，同时携带文本内容和工具调用信息。
-    当 LLM 决定调用工具时，content 可能为空，tool_calls 非空。
-    """
-    content: str = ""
-    tool_calls: list[dict] = field(default_factory=list)
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage, AIMessageChunk
 
 
-class BaseClient(ABC):
-    """所有 LLM Client 的基类。
+class BaseClient(BaseChatModel):
+    """LLM Client 基类。
 
-    构造只收连接级参数，model 在每次调用时传入。
-    同一个 Client 实例可切换不同模型。
+    与 LangChain 具体类（``ChatOpenAI`` / ``ChatAnthropic`` / ``ChatDeepSeek``）多继承使用：
+
+        class OpenAIClient(BaseClient, ChatOpenAI): ...
+
+    ``bind_tools`` / ``ainvoke`` / ``astream`` 来自 ``BaseChatModel``，由 MRO 解析到具体实现。
+
+    ``BaseClient`` 不定义 ``__init__``，MRO 自动路由到 LangChain 类的构造器。
     """
 
-    def __init__(self, api_key: str, base_url: str = ""):
-        self.api_key = api_key
-        self.base_url = base_url
-
-    @abstractmethod
     async def chat(
         self,
-        model: str,
-        messages: list[dict],
-        temperature: float = 0.7,
-        top_p: float = 1.0,
+        messages: list,
+        tools: list[dict] | None = None,
         **kwargs: Any,
-    ) -> ChatResult:
-        """非流式调用，返回结构化结果（文本 + 工具调用）。"""
-        ...
+    ) -> AIMessage:
+        """非流式调用，直接返回 ``AIMessage``。
 
-    @abstractmethod
-    async def chat_stream(
+        Args:
+            messages: OpenAI 格式的消息 dict 列表（或 LangChain 消息对象列表）。
+            tools: 可选工具 schema 列表（OpenAI format）。
+
+        Returns:
+            AIMessage: 包含 content、tool_calls、response_metadata、usage_metadata 等。
+        """
+        bound = self.bind_tools(tools) if tools else self
+        return await bound.ainvoke(messages)
+
+    def chat_stream(
         self,
-        model: str,
-        messages: list[dict],
-        temperature: float = 0.7,
-        top_p: float = 1.0,
+        messages: list,
         **kwargs: Any,
-    ) -> AsyncIterator[str]:
-        """流式调用，逐 token 返回。"""
-        ...
+    ) -> AsyncIterator[AIMessageChunk]:
+        """流式调用，逐 chunk 返回 ``AIMessageChunk``。
+
+        调用方需自行从 ``chunk.content`` 提取文本增量。
+        """
+        return self.astream(messages)

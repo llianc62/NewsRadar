@@ -99,8 +99,8 @@ class TestGetAgentMessages:
         now = datetime.datetime(2026, 7, 7, 12, 0, 0)
         mock_cursor = pg_agent._pool.getconn.return_value.cursor.return_value.__enter__.return_value
         mock_cursor.fetchall.return_value = [
-            (1, 1, "user", "Hello", now),
-            (2, 1, "assistant", "Hi there!", now),
+            (1, 1, "user", "0", "", "Hello", now),
+            (2, 1, "assistant", "0", "", "Hi there!", now),
         ]
         result = pg_agent.get_agent_messages(1)
         assert len(result) == 2
