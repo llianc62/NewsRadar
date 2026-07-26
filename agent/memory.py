@@ -11,6 +11,8 @@ import jieba.analyse
 import jieba.posseg
 import psycopg2.extras
 
+from .data import Context, Message
+
 # CJK 字符检测（与 storage/postgres.py 保持一致）
 _CJK_RE = re.compile(r"[一-鿿㐀-䶿豈-﫿]")
 
@@ -19,82 +21,50 @@ _CJK_RE = re.compile(r"[一-鿿㐀-䶿豈-﫿]")
 
 
 class MemoryModule(ABC):
-    """记忆模块基类。
-
-    Executor 在推理循环的适当时机调用 hook 方法。
-    """
+    """记忆模块基类 -- executor 在 _prepare/_finalize 调用 load/save。"""
 
     @abstractmethod
-    async def on_before_execute(self, ctx: Any) -> None:
-        """执行前：检索相关记忆，注入 Context.memory_context。"""
-        ...
+    async def load(self, ctx: "Context") -> None:
+        """注入前:加载历史对话 -> ctx.history_messages(LongTerm 额外填 ctx.memories)。"""
 
     @abstractmethod
-    async def on_after_execute(self, ctx: Any) -> None:
-        """执行后：存储本次交互到记忆。"""
-        ...
-
-    async def get_context(self, session_id: str, query: str = "") -> str | None:
-        """获取上下文文本，供 DefaultAgent._make_ctx 注入 memory_context。
-
-        基类返回 ``None``（无上下文）。子类可 override 以提供记忆检索。
-        """
-        return None
+    async def save(self, ctx: "Context") -> None:
+        """收尾后:保存当前对话(LongTerm 额外提炼关键信息)。"""
 
 
 class NullMemory(MemoryModule):
-    """空记忆——什么都不做，用于显式关闭记忆功能。"""
-
-    async def on_before_execute(self, ctx: Any) -> None:
-        pass
-
-    async def on_after_execute(self, ctx: Any) -> None:
-        pass
+    """空记忆 -- 什么都不做,显式关闭记忆。"""
+    async def load(self, ctx): pass
+    async def save(self, ctx): pass
 
 
 class ShortTermMemory(MemoryModule):
-    """短期记忆——内存级滑动窗口，重启即失。
-
-    存储原始消息列表 [{role, content}, ...]，直接注入 Context。
-    超出 window_size 轮后丢弃最旧的消息对。
-
-    适用于：不需要跨会话记忆的场景（单页 AI 助手、一次性对话）。
-    """
-
-    def __init__(self, window_size: int = 20):
+    """短期记忆 -- load 历史对话(agent_messages 表)。"""
+    def __init__(self, db, window_size: int = 20):
         if window_size < 1:
             raise ValueError("window_size must be >= 1")
-        self._window: list[dict] = []
+        self._db = db
         self._window_size = window_size
 
-    async def get_context(self, session_id: str, query: str = "") -> str | None:
-        """返回格式化后的窗口记忆文本。"""
-        if not self._window:
-            return None
-        lines = ["## 对话历史"]
-        for msg in self._window:
-            role = "用户" if msg.get("role") == "user" else "助手"
-            lines.append(f"{role}: {msg.get('content', '')}")
-        return "\n".join(lines)
+    async def load(self, ctx):
+        if not ctx.session_id or not self._db:
+            return
+        msgs = await asyncio.to_thread(
+            self._db.get_agent_messages, ctx.session_id, self._window_size
+        )
+        ctx.history_messages = [
+            Message(role=m["role"], content=m["content"]) for m in msgs
+        ]
 
-    async def on_before_execute(self, ctx: Any) -> None:
-        """将历史消息列表注入 Context。"""
-        ctx.memory_context = list(self._window)  # 浅拷贝，防止外部修改
-
-    async def on_after_execute(self, ctx: Any) -> None:
-        self._window.append({"role": "user", "content": ctx.user_input})
-        self._window.append({"role": "assistant", "content": ctx.assistant_output})
-        if len(self._window) > self._window_size * 2:
-            self._window = self._window[-(self._window_size * 2):]
-
-    @property
-    def turn_count(self) -> int:
-        """当前窗口中的对话轮数。"""
-        return len(self._window) // 2
-
-    def clear(self) -> None:
-        """清空记忆。"""
-        self._window.clear()
+    async def save(self, ctx):
+        if not ctx.session_id or not self._db:
+            return
+        await asyncio.to_thread(
+            self._db.save_agent_message, ctx.session_id, "user", ctx.user_input
+        )
+        await asyncio.to_thread(
+            self._db.save_agent_message, ctx.session_id, "assistant", ctx.final_output
+        )
 
 
 # ── Storage 层（LongTermMemory 专用） ──────────────────────────
