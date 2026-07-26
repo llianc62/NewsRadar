@@ -2,6 +2,7 @@ from agent.data import (
     AgentConfig,
     AgentDefinition,
     AgentKnowledge,
+    Context,
     MemoryBlock,
     Message,
     ToolResult,
@@ -77,3 +78,39 @@ def test_agent_knowledge_defaults():
     assert kb.namespace == ""
     assert kb.created_at == ""
     assert kb.updated_at == ""
+
+
+def test_context_input_zone():
+    ctx = Context(user_input="hi", session_id="s1", system_prompt="sys")
+    assert ctx.history_messages == []
+    assert ctx.memories == []
+
+
+def test_context_execution_zone():
+    ctx = Context()
+    assert ctx.messages == []
+    assert ctx.step_count == 0
+
+
+def test_context_final_output_from_messages():
+    ctx = Context()
+    ctx.messages = [
+        Message(role="user", content="q"),
+        Message(role="assistant", content="answer", model_used="m1"),
+    ]
+    assert ctx.final_output == "answer"
+
+
+def test_context_final_output_empty():
+    ctx = Context()
+    assert ctx.final_output == ""
+
+
+def test_context_removed_fields():
+    ctx = Context()
+    assert not hasattr(ctx, "memory_context")
+    assert not hasattr(ctx, "knowledge_context")
+    assert not hasattr(ctx, "assistant_output")
+    assert not hasattr(ctx, "model_used")
+    assert not hasattr(ctx, "tool_calls")
+    assert not hasattr(ctx, "total_tokens")

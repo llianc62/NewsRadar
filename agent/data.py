@@ -53,45 +53,38 @@ class ToolResult:
 
 @dataclass
 class Context:
-    """单次 agent 调用的共享上下文。
+    """单次 agent 调用的共享上下文 -- 输入区 + 执行区。"""
 
-    ``messages`` 为完整消息列表（包括 system + user + assistant + tool），
-    由 ReActExecutor 直接管理，替代旧的 ``history`` + ``memory_context`` + ``knowledge_context``
-    拼接方式。
-
-    旧字段（assistant_output, model_used, tool_calls, tool_results, step_count, total_tokens,
-    memory_context, knowledge_context）为兼容保留，新代码应优先使用 ``messages``。
-    """
-
-    # 输入
+    # ── 输入区 ─────────────────────────────────
     user_input: str = ""
     session_id: str = ""
     system_prompt: str = ""
     model_name: str = "default"
     running_mode: str = "normal"
+    history_messages: list[Message] = field(default_factory=list)
+    memories: list[MemoryBlock] = field(default_factory=list)
 
-    # 完整消息列表（ReActExecutor 直接管理）
+    # ── 执行区 ─────────────────────────────────
     messages: list[Message] = field(default_factory=list)
-
-    # ── 兼容字段（旧代码使用） ──────────────────────────────────
-    assistant_output: str = ""
-    model_used: str = ""
-    tool_calls: list[dict] = field(default_factory=list)
-    tool_results: list[str] = field(default_factory=list)
     step_count: int = 0
-    total_tokens: int = 0
-    memory_context: Any = None
-    knowledge_context: Any = None
 
-    # 上下文窗口管理
+    # ── token 状态 ─────────────────────────────
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     max_context_tokens: int = 128000
     reserve_tokens: int = 4000
 
     @property
+    def final_output(self) -> str:
+        """最终 assistant 输出(messages 最后一条 assistant 的 content)。"""
+        for msg in reversed(self.messages):
+            if msg.role == "assistant" and msg.content:
+                return msg.content
+        return ""
+
+    @property
     def context_usage_ratio(self) -> float:
-        """当前上下文使用率（0.0 ~ 1.0+）。"""
+        """当前上下文使用率(0.0 ~ 1.0+)。"""
         total = self.total_input_tokens + self.total_output_tokens
         limit = self.max_context_tokens - self.reserve_tokens
         return total / limit if limit > 0 else 0.0
