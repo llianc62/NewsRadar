@@ -1,4 +1,42 @@
-from agent.data import AgentConfig, AgentDefinition, AgentKnowledge
+from agent.data import (
+    AgentConfig,
+    AgentDefinition,
+    AgentKnowledge,
+    MemoryBlock,
+    Message,
+    ToolResult,
+)
+
+
+def test_message_has_model_used_and_tool_result():
+    msg = Message(role="assistant", content="hi", model_used="gpt-4o-mini-2024")
+    assert msg.model_used == "gpt-4o-mini-2024"
+    assert msg.tool_result is None
+
+
+def test_message_no_stop_reason():
+    msg = Message(role="assistant")
+    assert not hasattr(msg, "stop_reason")
+
+
+def test_message_tool_with_tool_result():
+    tr = ToolResult(name="search", args={"q": "x"})
+    msg = Message(role="tool", tool_call_id="c1", name="search", content="r", tool_result=tr)
+    assert msg.tool_result is tr
+
+
+def test_memory_block_defaults():
+    mb = MemoryBlock(title="相关记忆", content="text")
+    assert mb.source == ""
+    assert mb.order == 0
+
+
+def test_tool_result_defaults():
+    tr = ToolResult(name="n", args={})
+    assert tr.result == ""
+    assert tr.success is True
+    assert tr.timing_ms == 0
+    assert tr.tool_call_id == ""
 
 
 def test_agent_config_defaults():

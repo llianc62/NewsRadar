@@ -306,7 +306,6 @@ class ReActExecutor(Executor):
                 role="assistant",
                 content=result.content or None,
                 tool_calls=tool_calls or None,
-                stop_reason=None,  # 不再使用 stop_reason，由调用方通过 finish_reason + tool_calls 判断
                 usage=usage or None,
                 reasoning_content=reasoning or None,
             )
@@ -417,7 +416,6 @@ class ReActExecutor(Executor):
                 role="assistant",
                 content=result.content or None,
                 tool_calls=tool_calls or None,
-                stop_reason=None,
                 usage=usage or None,
                 reasoning_content=reasoning or None,
             )

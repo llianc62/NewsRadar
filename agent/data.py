@@ -9,28 +9,46 @@ from typing import Any
 
 @dataclass
 class Message:
-    """统一消息类型，替代临时 dict。
-
-    覆盖 system/user/assistant/tool 四种角色，携带完整的元信息。
-    ``stop_reason`` 和 ``usage`` 仅在 assistant 消息中有效。
-    """
-
+    """统一消息类型,覆盖 system/user/assistant/tool 四种角色。"""
     role: str  # "system" | "user" | "assistant" | "tool"
     content: str | None = None
     # assistant 专用
     tool_calls: list[dict] | None = None
-    stop_reason: str | None = None  # "stop" | "tool_use" | "length" | "error" | None
-    usage: dict | None = None  # {prompt_tokens, completion_tokens, total_tokens}
-    reasoning_content: str | None = None  # 思考模式（DeepSeek-reasoner 等）的推理过程，多轮需回传
+    usage: dict | None = None
+    reasoning_content: str | None = None
+    model_used: str | None = None                # 新增:模型版本
     # tool 专用
     tool_call_id: str | None = None
     name: str | None = None
+    tool_result: "ToolResult | None" = None      # 新增:执行详情(归 tool 消息)
     # 通用
     timestamp: float = 0.0
 
     def __post_init__(self):
         if self.timestamp == 0.0:
             self.timestamp = time.time()
+
+
+@dataclass
+class MemoryBlock:
+    """可注入 prompt 的背景块 -- 长期记忆/知识等。"""
+    title: str
+    content: str
+    source: str = ""    # "memory" / "knowledge"
+    order: int = 0
+
+
+@dataclass
+class ToolResult:
+    """单次工具执行的结构化记录 -- 归 tool 消息的 tool_result 字段(不存 ctx)。"""
+    name: str
+    args: dict
+    result: str = ""
+    error: str = ""
+    timing_ms: int = 0
+    retries: int = 0
+    success: bool = True
+    tool_call_id: str = ""
 
 
 @dataclass
