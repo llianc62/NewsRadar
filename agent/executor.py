@@ -602,7 +602,7 @@ class DirectExecutor(ReActExecutor):
                 # yield 由 _loop_stream 处理,这里只收集
             content = "".join(chunks)
         else:
-            ai = await client.chat(messages=llm_messages)
+            ai = await self._call_llm(client, llm_messages, None, ctx)
             content = ai.content or ""
             for h in self._hooks:
                 try: await h.after_chat(ctx, ai)

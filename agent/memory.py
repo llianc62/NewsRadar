@@ -280,7 +280,7 @@ class LongTermMemory(ShortTermMemory):
         """
         if self._has_notable_entities(ctx.user_input):
             return True
-        return len(ctx.assistant_output) > 100
+        return len(ctx.final_output) > 100
 
     @staticmethod
     def _has_notable_entities(text: str) -> bool:
@@ -295,7 +295,7 @@ class LongTermMemory(ShortTermMemory):
 
     async def _extract_and_store(self, ctx: Any) -> None:
         """提取关键信息并存储。"""
-        summary = ctx.assistant_output[:200]
+        summary = ctx.final_output[:200]
 
         await self._mem_storage.save(
             session_id=ctx.session_id,
@@ -307,7 +307,7 @@ class LongTermMemory(ShortTermMemory):
         """合并最近对话并存储摘要。"""
         await self._mem_storage.save(
             session_id=ctx.session_id,
-            content=ctx.assistant_output[:200],
+            content=ctx.final_output[:200],
             memory_type="summary",
         )
 

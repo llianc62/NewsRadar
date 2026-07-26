@@ -578,6 +578,7 @@ async def agent_websocket_endpoint(ws: WebSocket):
                         chat_agent.executor._approval_callback = approval_handler
                     else:
                         from agent.agent import DefaultAgent
+                        from agent.memory import ShortTermMemory
                         from agent.tools.tools import setup_builtin_tools
                         print("[Agent WS] Creating fallback ReActExecutor agent")
                         fallback_registry = setup_builtin_tools()
@@ -595,6 +596,7 @@ async def agent_websocket_endpoint(ws: WebSocket):
                         chat_agent = DefaultAgent(
                             model_cfg,
                             tools=fallback_registry,
+                            memory=ShortTermMemory(db, window_size=20),
                             running_mode=current_running_mode,
                             approval_callback=approval_handler,
                         )
