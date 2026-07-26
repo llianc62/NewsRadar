@@ -15,7 +15,7 @@
 - **存储用 pgvector**（复用现有 PG，装扩展；零新组件）。起步选型，量大再考虑 LlamaIndex KnowledgeGraph / GraphRAG。
 - **知识 render 进 prompt，不经过 tool call**（对齐 ai-hedge-fund snapshot 模式）。人格放 system prompt（静态），知识放 `## 知识库` 块（动态）。
 - **namespace 隔离**：巴菲特角色只检索 `investing/buffett` 命名空间，宏观角色检索 `macro-economics`。共享单表 + namespace 过滤，最干净。
-- **复用已存在的死字段**：`Context.knowledge_context`（`agent/models.py:20`，注释"由 Memory/Knowledge 在 on_before 中填充"）原作者预留但未接线。我们采用镜像 memory 注入的方式激活它。
+- **复用已存在的死字段**：`Context.knowledge_context`（`agent/data.py:20`，注释"由 Memory/Knowledge 在 on_before 中填充"）原作者预留但未接线。我们采用镜像 memory 注入的方式激活它。
 
 **与 Phase 2 记忆的区别**：
 | | 记忆（Phase 2） | 知识库（Phase 3） |

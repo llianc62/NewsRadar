@@ -225,7 +225,7 @@ fn_name = tc["name"]
 raw_args = tc["args"]  # 已经是 dict，不需要 json.loads
 ```
 
-### 3.7 修改 `agent/models.py` 中的 `Context`
+### 3.7 修改 `agent/data.py` 中的 `Context`
 
 **`stop_reason` 字段不再需要**，但为兼容保留默认值：
 
@@ -285,7 +285,7 @@ def _messages_to_dicts(self, messages):
 | `agent/llm/deepseek.py` | ◀️ 保留 | 0 | 不动 |
 | `agent/hub.py` | ✏️ 修改 | -30 | 返回类型改为 `ChatOpenAI`/`ChatAnthropic` |
 | `agent/executor.py` | ✏️ 修改 | -30 | `stop_reason` 判断逻辑调整 + `tool_calls` 格式调整 |
-| `agent/models.py` | ◀️ 保留 | 0 | 不动 |
+| `agent/data.py` | ◀️ 保留 | 0 | 不动 |
 | `agent/agent.py` | ◀️ 保留 | 0 | 不动 |
 | `agent/persona/` | ◀️ 保留 | 0 | 不动 |
 | `agent/factory.py` | ◀️ 保留 | 0 | 不动 |

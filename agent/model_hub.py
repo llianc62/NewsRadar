@@ -24,13 +24,13 @@ def _build_client(cfg: dict):
     }
     if protocol == "anthropic":
         return AnthropicClient(**common)
-    if protocol != "openai":
-        raise ValueError(
-            f"Unsupported protocol: {protocol!r} (supported: openai, anthropic)"
-        )
-    if _is_deepseek(cfg):
-        return DeepSeekClient(**common)
-    return OpenAIClient(**common)
+    if protocol == "openai":
+        if _is_deepseek(cfg):
+            return DeepSeekClient(**common)
+        return OpenAIClient(**common)
+    raise ValueError(
+        f"Unsupported protocol: {protocol!r} (supported: openai, anthropic)"
+    )
 
 
 class ModelHub:

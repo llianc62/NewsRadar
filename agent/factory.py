@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from .agent import DefaultAgent
 from .executor import ReActExecutor
 from .memory import LongTermMemory, PgMemoryStorage
-from .models import AgentDefinition
+from .data import AgentDefinition
 from .tools import Registry
 from .tools.tools import setup_builtin_tools
 

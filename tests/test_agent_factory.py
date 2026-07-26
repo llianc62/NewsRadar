@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.factory import AgentFactory, _register_mcp_tools, create_agent, create_persona
-from agent.models import AgentConfig, AgentDefinition, AgentKnowledge
+from agent.data import AgentConfig, AgentDefinition, AgentKnowledge
 from agent.tools import Registry
 from agent.tools.base import BaseTool, ToolDef
 

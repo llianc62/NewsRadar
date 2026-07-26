@@ -19,7 +19,7 @@ import psycopg2
 import psycopg2.extras
 from psycopg2.pool import ThreadedConnectionPool
 
-from agent.models import AgentDefinition, AgentKnowledge
+from agent.data import AgentDefinition, AgentKnowledge
 
 # Detect CJK characters for search routing:
 #   CJK search  → ILIKE + pg_trgm GIN index

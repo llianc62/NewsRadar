@@ -66,7 +66,7 @@ class DefaultAgent:
 
 ### 2.2 Context 加 persona_name
 
-`agent/models.py` 的 `Context` 加 `persona_name: str = ""`（向后兼容，纯 dataclass 默认值）。`knowledge_context` 字段已存在（:20）。
+`agent/data.py` 的 `Context` 加 `persona_name: str = ""`（向后兼容，纯 dataclass 默认值）。`knowledge_context` 字段已存在（:20）。
 
 ### 2.3 PersonaAgent
 
@@ -292,7 +292,7 @@ app = create_app(..., agent_instance=agent, persona_orchestrator=orchestrator)
 ## 实现检查清单
 
 ### Phase B（单角色）
-- [x] `agent/models.py`：`Context` 加 `persona_name`
+- [x] `agent/data.py`：`Context` 加 `persona_name`
 - [x] `agent/agent.py`：抽 `_make_ctx()` 方法
 - [x] `agent/executor.py`：两个 `_build_messages` 加 `## 知识库` 块
 - [x] `agent/persona/base.py`：`PersonaAgent(DefaultAgent)`

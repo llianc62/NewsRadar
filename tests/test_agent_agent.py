@@ -25,7 +25,7 @@ from agent import (
 
 def _patch_hub(monkeypatch):
     """用 MockClient 替换 hub._build_client，避免真实 API / LangChain 调用。"""
-    from agent import hub as hub_module
+    from agent import model_hub as hub_module
 
     def _fake_build(cfg):
         return MockClient(api_key=cfg.get("api_key", ""), base_url=cfg.get("base_url", ""))
@@ -450,7 +450,7 @@ class TestReActExecutor:
     @pytest.mark.asyncio
     async def test_build_messages_with_history(self):
         """验证 _messages_to_dicts 能正确转换 tool 消息。"""
-        from agent.models import Message
+        from agent.data import Message
 
         msgs = [
             Message(role="system", content="You are a bot."),

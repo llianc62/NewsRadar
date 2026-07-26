@@ -66,7 +66,7 @@ def create(
 
     system_prompt 内容...
     """
-    from agent.models import AgentDefinition
+    from agent.data import AgentDefinition
     from storage.postgres import PostgreSQL
 
     if not input.is_file():

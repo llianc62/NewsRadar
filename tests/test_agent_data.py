@@ -1,4 +1,4 @@
-from agent.models import AgentConfig, AgentDefinition, AgentKnowledge
+from agent.data import AgentConfig, AgentDefinition, AgentKnowledge
 
 
 def test_agent_config_defaults():

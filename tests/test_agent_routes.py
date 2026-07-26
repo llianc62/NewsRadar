@@ -192,7 +192,7 @@ class TestAgentCRUD:
 
     def test_list_agents(self, agent_crud_client, mock_cursor):
         """GET /api/agents should return the agent list."""
-        from agent.models import AgentDefinition
+        from agent.data import AgentDefinition
         mock_cursor.fetchall.return_value = [
             {"id": "a1", "name": "Agent 1", "description": "Desc 1",
              "system_prompt": "prompt1", "tools": '["calc"]',

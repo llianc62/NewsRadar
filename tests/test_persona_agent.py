@@ -15,8 +15,8 @@ import pytest
 
 from agent.executor import DirectExecutor
 from agent.factory import create_persona
-from agent.hub import ModelHub
-from agent.models import Context
+from agent.model_hub import ModelHub
+from agent.data import Context
 from agent.persona import (
     PERSONA_REGISTRY,
     PersonaAgent,

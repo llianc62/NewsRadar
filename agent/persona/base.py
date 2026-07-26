@@ -13,7 +13,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 from ..agent import DefaultAgent
-from ..models import Context
+from ..data import Context
 
 if TYPE_CHECKING:
     from ..knowledge import KnowledgeEngine

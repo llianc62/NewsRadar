@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent.models import AgentDefinition, AgentKnowledge
+from agent.data import AgentDefinition, AgentKnowledge
 from storage.postgres import PostgreSQL
 from tests.conftest_db import capture_sql
 

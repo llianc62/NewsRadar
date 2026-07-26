@@ -1,4 +1,4 @@
-<aside class="app-sidebar expanded">
+<aside class="app-sidebar" id="app-sidebar">
   <!-- Logo -->
   <div class="sidebar-logo">
     <div class="logo-icon">
@@ -48,7 +48,7 @@
 
   <!-- Toggle -->
   <div class="sidebar-toggle">
-    <button class="sidebar-toggle-btn" title="收起侧栏" onclick="document.querySelector('.app-sidebar').classList.toggle('expanded')">
+    <button class="sidebar-toggle-btn" title="收起侧栏" id="sidebar-toggle-btn">
       <span class="sidebar-toggle-icon">
         <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <path d="M7 4l6 6-6 6"/><path d="M13 4l6 6-6 6"/>
@@ -57,4 +57,26 @@
       <span class="sidebar-toggle-label">收起</span>
     </button>
   </div>
+
 </aside>
+<script>
+(function() {
+  var sidebar = document.getElementById('app-sidebar');
+  var toggleBtn = document.getElementById('sidebar-toggle-btn');
+  if (!sidebar) return;
+
+  // 恢复 localStorage 中保存的折叠状态
+  var saved = localStorage.getItem('newsradar_sidebar_collapsed');
+  if (saved === 'true') {
+    sidebar.classList.remove('expanded');
+  } else {
+    sidebar.classList.add('expanded');
+  }
+
+  // 点击切换 + 保存状态
+  toggleBtn.addEventListener('click', function() {
+    var nowCollapsed = sidebar.classList.toggle('expanded');
+    localStorage.setItem('newsradar_sidebar_collapsed', nowCollapsed ? 'false' : 'true');
+  });
+})();
+</script>

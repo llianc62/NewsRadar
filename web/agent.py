@@ -18,7 +18,7 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from agent.models import AgentDefinition, AgentKnowledge
+from agent.data import AgentDefinition, AgentKnowledge
 from web.config import render_template
 
 router = APIRouter()
@@ -613,7 +613,7 @@ async def agent_websocket_endpoint(ws: WebSocket):
                         if not prev:
                             pass
 
-                        from agent.models import Message as AgentMessage
+                        from agent.data import Message as AgentMessage
 
                         # 构建历史 Message 对象列表（作为实际 role 消息注入 messages）
                         history_msgs = []

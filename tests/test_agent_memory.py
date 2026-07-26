@@ -18,7 +18,7 @@ from agent import (
     NullMemory,
     ShortTermMemory,
 )
-from agent.hub import ModelHub
+from agent.model_hub import ModelHub
 from tests.test_agent_agent import MockClient, _patch_hub
 
 
