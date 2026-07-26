@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
@@ -62,6 +63,22 @@ class MockClient:
         self.last_messages = messages
         for token in ["mock ", "response"]:
             yield AIMessageChunk(content=token)
+
+
+def make_ai(content="", tool_calls=None):
+    """Create an AIMessage-like object for executor _loop tests.
+
+    Normalizes tool_calls to langchain ToolCall format (name/args/id/type).
+    """
+    tcs = []
+    for tc in (tool_calls or []):
+        tcs.append({
+            "name": tc["name"],
+            "args": tc.get("args", {}),
+            "id": tc.get("id", ""),
+            "type": "tool_call",
+        })
+    return AIMessage(content=content, tool_calls=tcs)
 
 
 # ── Test Context ─────────────────────────────────────────────────
@@ -479,9 +496,26 @@ class TestReActExecutor:
 
 
 @pytest.fixture
-def mock_brain(mock_hub):
-    """Alias of mock_hub for executor tests using the 'brain' parameter name."""
-    return mock_hub
+def mock_brain():
+    """Mock ModelHub for executor tests.
+
+    Self-referential: brain.get() returns brain itself, so brain.chat
+    is the client chat method. Tests set chat.return_value / chat.side_effect.
+    """
+    brain = MagicMock()
+    brain.get.return_value = brain
+    brain.get_model_version.return_value = "test-model-v1"
+    brain.chat = AsyncMock(return_value=make_ai(content="", tool_calls=[]))
+    return brain
+
+
+@pytest.fixture
+def mock_tools():
+    """Mock tool registry. execute() returns a string; get_schemas() returns None."""
+    tools = MagicMock()
+    tools.execute = AsyncMock(return_value="result text")
+    tools.get_schemas.return_value = None
+    return tools
 
 
 @pytest.mark.asyncio
@@ -511,3 +545,52 @@ def test_build_llm_messages_order():
     assert "K" in msgs[2]["content"]   # knowledge order=20 后
     assert msgs[3]["content"] == "old"  # history
     assert msgs[4]["content"] == "U"    # current messages
+
+
+# ── Test ReActExecutor _loop + _execute_tool (Task 8) ─────────────
+
+
+@pytest.mark.asyncio
+async def test_loop_single_text_response(mock_brain):
+    mock_brain.chat.return_value = make_ai(content="answer", tool_calls=[])
+    ex = ReActExecutor(brain=mock_brain, memory=NullMemory())
+    ctx = Context(user_input="hi")
+    await ex._prepare(ctx)
+    await ex._loop(ctx, stream=False)
+    assert ctx.final_output == "answer"
+    assert any(m.role == "assistant" for m in ctx.messages)
+
+
+@pytest.mark.asyncio
+async def test_loop_tool_then_answer(mock_brain, mock_tools):
+    mock_brain.chat.side_effect = [
+        make_ai(content="", tool_calls=[{"name": "search_news", "args": {}, "id": "c1"}]),
+        make_ai(content="final", tool_calls=[]),
+    ]
+    mock_tools.execute.return_value = "result text"
+    ex = ReActExecutor(brain=mock_brain, memory=NullMemory(), tools=mock_tools)
+    ctx = Context(user_input="hi")
+    await ex._prepare(ctx)
+    await ex._loop(ctx, stream=False)
+    assert ctx.final_output == "final"
+    tool_msgs = [m for m in ctx.messages if m.role == "tool"]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].tool_result.success is True
+    assert tool_msgs[0].tool_result.result == "result text"
+
+
+@pytest.mark.asyncio
+async def test_loop_tool_failure_continues(mock_brain, mock_tools):
+    mock_brain.chat.side_effect = [
+        make_ai(content="", tool_calls=[{"name": "bad", "args": {}, "id": "c1"}]),
+        make_ai(content="recovered", tool_calls=[]),
+    ]
+    mock_tools.execute.side_effect = RuntimeError("boom")
+    ex = ReActExecutor(brain=mock_brain, memory=NullMemory(), tools=mock_tools, tool_max_retries=0)
+    ctx = Context(user_input="hi")
+    await ex._prepare(ctx)
+    await ex._loop(ctx, stream=False)
+    assert ctx.final_output == "recovered"
+    tool_msgs = [m for m in ctx.messages if m.role == "tool"]
+    assert tool_msgs[0].tool_result.success is False
+    assert "boom" in tool_msgs[0].tool_result.error

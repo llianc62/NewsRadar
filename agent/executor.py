@@ -6,9 +6,11 @@ which returns ``AIMessage`` directly — no ``ChatResult`` intermediate format.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -17,7 +19,7 @@ from typing import Any
 
 from .model_hub import ModelHub
 from .memory import MemoryModule, NullMemory
-from .data import Context, Message
+from .data import Context, Message, ToolResult
 
 logger = logging.getLogger(__name__)
 
@@ -349,6 +351,113 @@ class ReActExecutor(Executor):
             d["content"] = m.content or ""
         return d
 
+    # ── 推理循环 (Task 8) ──────────────────────────────────────
+
+    async def _loop(self, ctx: Context, stream: bool) -> None:
+        tool_schemas = self._tools.get_schemas() if self._tools else None
+        client = self._brain.get(ctx.model_name or "default")
+        model_version = self._brain.get_model_version(ctx.model_name or "default")
+        tool_rounds = 0
+
+        for step in range(self.max_steps):
+            for h in self._hooks:
+                try: await h.before_chat(ctx)
+                except Exception as e: logger.warning("before_chat hook: %s", e)
+
+            llm_messages = self._build_llm_messages(ctx)
+            ai = await self._call_llm(client, llm_messages, tool_schemas, ctx)
+
+            for h in self._hooks:
+                try: await h.after_chat(ctx, ai)
+                except Exception as e: logger.warning("after_chat hook: %s", e)
+
+            tool_calls = list(ai.tool_calls) if ai.tool_calls else []
+            finish_reason = (ai.response_metadata or {}).get("finish_reason", "")
+            usage = _ai_usage_to_dict(ai)
+            reasoning = _ai_reasoning_content(ai)
+            if usage:
+                ctx.total_input_tokens += usage.get("prompt_tokens", 0)
+                ctx.total_output_tokens += usage.get("completion_tokens", 0)
+
+            assistant_msg = Message(
+                role="assistant", content=ai.content or None,
+                tool_calls=tool_calls or None, usage=usage or None,
+                reasoning_content=reasoning or None, model_used=model_version,
+            )
+            ctx.messages.append(assistant_msg)
+
+            if not tool_calls:
+                ctx.step_count = step + 1
+                return
+
+            if finish_reason in ("length", "max_tokens"):
+                for tc in tool_calls:
+                    ctx.messages.append(Message(
+                        role="tool", tool_call_id=tc.get("id", ""),
+                        content="[Error] 工具调用被截断", name=tc.get("name", ""),
+                    ))
+                ctx.step_count = step + 1
+                return
+
+            for tc in tool_calls:
+                msg = await self._execute_tool(tc, ctx)
+                ctx.messages.append(msg)
+
+            tool_rounds += 1
+            if tool_rounds >= self.max_tool_rounds:
+                tool_schemas = None
+        ctx.step_count = self.max_steps
+
+    async def _call_llm(self, client, messages, tool_schemas, ctx):
+        last = None
+        for attempt in range(self._llm_max_retries + 1):
+            try:
+                return await client.chat(messages=messages, tools=tool_schemas)
+            except Exception as e:
+                last = e
+                if attempt < self._llm_max_retries:
+                    await asyncio.sleep(2 ** attempt)
+                else:
+                    raise
+
+    # ── 工具执行 (Task 8) ──────────────────────────────────────
+
+    async def _execute_tool(self, tc: dict, ctx: Context) -> Message:
+        name, args = tc["name"], tc.get("args", {})
+        for h in self._hooks:
+            try:
+                new = await h.before_tool(name, args, ctx)
+                if new is not None: args = new
+            except Exception as e: logger.warning("before_tool hook: %s", e)
+
+        tr = ToolResult(name=name, args=args, tool_call_id=tc.get("id", ""))
+        start = time.monotonic()
+        for attempt in range(self._tool_max_retries + 1):
+            try:
+                raw = await self._exec_tool_with_policy(self._tools, name, args, ctx.running_mode)
+                tr.result = raw
+                tr.success = True
+                break
+            except Exception as e:
+                tr.error = str(e)
+                tr.retries = attempt
+                if attempt < self._tool_max_retries:
+                    await asyncio.sleep(2 ** attempt)
+                else:
+                    tr.success = False
+        tr.timing_ms = int((time.monotonic() - start) * 1000)
+
+        tr.result = self._normalize_tool_result(tr.result) if tr.success else tr.result
+        content = tr.result if tr.success else f"[Error] {tr.error}"
+        tool_msg = Message(
+            role="tool", tool_call_id=tr.tool_call_id,
+            content=content, name=name, tool_result=tr,
+        )
+        for h in self._hooks:
+            try: await h.after_tool(tool_msg, ctx)
+            except Exception as e: logger.warning("after_tool hook: %s", e)
+        return tool_msg
+
     async def run(
         self,
         ctx: Context,
@@ -567,59 +676,6 @@ class ReActExecutor(Executor):
             yield fallback
 
         await _memory.on_after_execute(ctx)
-
-    # ── 工具执行三阶段状态机 ──────────────────────────────────
-
-    async def _execute_tool(self, tc: dict, tools, ctx: Context) -> Message:
-        """执行一个工具调用，返回 tool 结果消息。
-
-        三阶段：
-        1. prepare: 解析参数 + 校验
-        2. execute: 调用工具函数
-        3. finalize: 构造结果消息
-
-        ``tc`` 为简化格式 ``{"name": ..., "args": ..., "id": ...}``
-        （``AIMessage.tool_calls`` 原生格式）。
-        """
-        # Phase 1: 准备（简化格式，直接取 name/args）
-        try:
-            fn_name = tc.get("name", "")
-            fn_args = tc.get("args", {})
-            if isinstance(fn_args, str):
-                fn_args = json.loads(fn_args)
-        except (json.JSONDecodeError, TypeError, ValueError) as e:
-            return Message(
-                role="tool",
-                tool_call_id=tc.get("id", ""),
-                content=f"[Error] 工具参数解析失败: {e}",
-                name=tc.get("name", ""),
-            )
-
-        # Phase 2: 执行
-        try:
-            tool_result_text = await self._exec_tool_with_policy(
-                tools, fn_name, fn_args, running_mode=ctx.running_mode,
-            )
-        except Exception as e:
-            return Message(
-                role="tool",
-                tool_call_id=tc.get("id", ""),
-                content=f"[Error] 工具执行失败: {e}",
-                name=fn_name,
-            )
-
-        # 记录到兼容字段
-        ctx.tool_calls.append(tc)
-        ctx.tool_results.append(tool_result_text)
-
-        # Phase 3: 归一化后终结
-        normalized = self._normalize_tool_result(tool_result_text)
-        return Message(
-            role="tool",
-            tool_call_id=tc.get("id", ""),
-            content=normalized,
-            name=fn_name,
-        )
 
     # ── 工具结果归一化 ──────────────────────────────────────────
 
