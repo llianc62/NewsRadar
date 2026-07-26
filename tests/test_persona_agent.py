@@ -216,18 +216,16 @@ class TestSentimentPersona:
         assert persona._pre_analyze("   ") is None
 
     @pytest.mark.asyncio
-    async def test_chat_injects_analysis_block(self):
+    async def test_chat_does_not_inject_analysis_block(self):
+        """spec 2.2: analysis_context 已删，硬编码分析不注入 ctx.memories。"""
         persona = SentimentPersona(
             _CONFIG, analyzer=FakeAnalyzer(score=72),
         )
         mock = _inject_mock(persona)
         await persona.chat("市场情绪极度乐观")
         systems = _system_texts(mock.last_messages)
-        # ## 专业分析 块含硬编码产出（用 startswith 排除 prompt 里的字面提及）
-        analysis_block = [s for s in systems if s.startswith("## 专业分析\n")]
-        assert len(analysis_block) == 1
-        assert "sentiment_score: 72" in analysis_block[0]
-        assert "利好" in analysis_block[0]
+        # _pre_analyze 仍可调用（子类定义），但结果不注入 chat 消息
+        assert not any(s.startswith("## 专业分析\n") for s in systems)
 
     @pytest.mark.asyncio
     async def test_chat_without_analyzer_no_analysis_block(self):

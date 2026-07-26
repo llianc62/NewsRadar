@@ -341,27 +341,32 @@ async def create_persona(
             namespace=spec.kb_namespace,
         )
 
-    # executor 未指定时创建空壳，brain/memory/tools 由 DefaultAgent 注入
-    # （确保 persona.brain 与 executor._brain 是同一对象，方便测试 mock）
-    if executor is None:
-        if spec.cls.prefer_direct_executor:
-            from .executor import DirectExecutor
-            executor = DirectExecutor()
-        else:
-            executor = ReActExecutor(max_steps=max_steps)
-
+    # executor 未指定时不传，由 DefaultAgent 构造 ReActExecutor（brain/memory 注入）
+    # 纯叙事角色（prefer_direct_executor）构造后替换为 DirectExecutor
     kwargs: dict = {
         "knowledge": knowledge,
         "kb_namespace": spec.kb_namespace,
-        "executor": executor,
         "tools": tools,
         "memory": memory,
         "running_mode": running_mode,
         "base_prompt": base_prompt,
     }
+    if executor is not None:
+        kwargs["executor"] = executor
     if spec.cls.requires_analyzer:
         kwargs["analyzer"] = analyzer
-    return spec.cls(config, **kwargs)
+    persona = spec.cls(config, **kwargs)
+
+    # 纯叙事角色用 DirectExecutor（真流式），替换默认 ReActExecutor
+    if spec.cls.prefer_direct_executor and executor is None:
+        from .executor import DirectExecutor
+        from .memory import NullMemory
+        persona.executor = DirectExecutor(
+            brain=persona.brain,
+            memory=persona.memory or NullMemory(),
+        )
+
+    return persona
 
 
 async def create_persona_manager(

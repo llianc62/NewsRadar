@@ -74,25 +74,16 @@ class DefaultAgent:
         self._knowledge = knowledge
         self.tools = tools
         self.system_prompt = system_prompt
-        # executor 构造时注入组件（或由调用方传入已装配的 executor）
-        if executor is not None:
-            self.executor = executor
-            # 注入 brain/memory/tools（允许调用方传未装配的 executor，由 DefaultAgent 补全）
-            if getattr(executor, "_brain", None) is None:
-                executor._brain = self.brain
-            if getattr(executor, "_memory", None) is None:
-                executor._memory = self.memory
-            if getattr(executor, "_tools", None) is None:
-                executor._tools = tools
-        else:
-            self.executor = ReActExecutor(
-                brain=self.brain,
-                memory=self.memory,
-                knowledge=knowledge,
-                tools=tools,
-                approval_callback=approval_callback,
-                hooks=None,
-            )
+        # executor 由调用方传入时要求已装配（brain/memory 已设）；
+        # 未传则 DefaultAgent 构造 ReActExecutor 并注入 brain/memory/tools。
+        self.executor = executor or ReActExecutor(
+            brain=self.brain,
+            memory=self.memory,
+            knowledge=knowledge,
+            tools=tools,
+            approval_callback=approval_callback,
+            hooks=None,
+        )
 
     @property
     def running_mode(self) -> str:

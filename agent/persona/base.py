@@ -9,11 +9,10 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, Any
 
 from ..agent import DefaultAgent
-from ..data import Context, MemoryBlock
+from ..data import Context
 
 if TYPE_CHECKING:
     from ..knowledge import KnowledgeEngine
@@ -89,17 +88,6 @@ class PersonaAgent(DefaultAgent):
     ) -> Context:
         ctx = await super()._make_ctx(user_input, session_id, model_name)
         ctx.system_prompt = self.get_system_prompt()
-
-        # 硬编码专业分析（sync CPU 工作 -> to_thread）-> MemoryBlock
-        # 注入 ctx.memories，executor 的 _build_llm_messages 会渲染成
-        # ``## 专业分析`` system 块（spec 3.5 注入规则）。
-        analysis = await asyncio.to_thread(self._pre_analyze, user_input)
-        if analysis:
-            ctx.memories.append(MemoryBlock(
-                title="专业分析", source="analysis",
-                content=self._render_analysis(analysis), order=10,
-            ))
-
         return ctx
 
     @staticmethod
