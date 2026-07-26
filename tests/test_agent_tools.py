@@ -22,7 +22,7 @@ from agent import (
     Registry,
     tool,
 )
-from agent.hub import ModelHub
+from agent.model_hub import ModelHub
 from tests.test_agent_agent import MockClient, _patch_hub
 
 
@@ -895,15 +895,14 @@ class TestPolicy:
     def test_builtin_tools_levels(self):
         """验证内置工具的 level 正确。"""
         from agent.tools.tools import (
-            calc, get_current_time, get_current_weather,
-            get_latest_news, get_random_number, roll_dice,
+            calc, get_current_time, get_weather,
+            get_random_number, roll_dice,
         )
         assert get_current_time.level == 1
         assert get_random_number.level == 1
         assert calc.level == 1
         assert roll_dice.level == 1
-        assert get_current_weather.level == 1
-        assert get_latest_news.level == 2
+        assert get_weather.level == 1
 
 
 # ── Test Tool Category ────────────────────────────────────────────
@@ -1099,16 +1098,15 @@ class TestBuiltinTools:
     def test_builtin_tools_categories(self):
         """验证内置工具的 category 正确。"""
         from agent.tools.tools import (
-            calc, get_current_time, get_current_weather,
-            get_latest_news, get_random_number, roll_dice,
+            calc, get_current_time, get_weather,
+            get_random_number, roll_dice,
         )
 
         assert get_current_time.category == "general"
         assert get_random_number.category == "general"
         assert calc.category == "general"
         assert roll_dice.category == "general"
-        assert get_current_weather.category == "general"
-        assert get_latest_news.category == "news"
+        assert get_weather.category == "general"
 
     def test_setup_registry_list_tool_defs(self):
         """验证 setup_builtin_tools() 的 list_tool_defs() 返回正确 category。"""

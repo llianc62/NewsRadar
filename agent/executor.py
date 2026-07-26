@@ -14,49 +14,9 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any
 
-from .hub import ModelHub
+from .model_hub import ModelHub
 from .memory import MemoryModule, NullMemory
-from .models import Context, Message
-
-
-def _parse_json_sequence(text: str) -> list[dict] | None:
-    """从可能包含多个 JSON 对象的文本中解析出所有对象。
-
-    处理类似 ``get_latest_news`` 返回的跨行 JSON 序列：
-    ``{"id":1}\n{"id":2}`` 或 ``{"id":1}\n\n{"id":2}``。
-    """
-    text = text.strip()
-    if not text:
-        return None
-
-    # 尝试直接解析为 JSON 数组
-    if text.startswith("["):
-        try:
-            arr = json.loads(text)
-            if isinstance(arr, list):
-                return arr
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-    # 按 "}\n{" 或 "}\n\n{" 分割多个 JSON 对象
-    objects = []
-    buf = ""
-    brace_depth = 0
-    for ch in text:
-        buf += ch
-        if ch == "{":
-            brace_depth += 1
-        elif ch == "}":
-            brace_depth -= 1
-            if brace_depth == 0:
-                try:
-                    obj = json.loads(buf)
-                    if isinstance(obj, dict):
-                        objects.append(obj)
-                except (json.JSONDecodeError, ValueError):
-                    pass
-                buf = ""
-    return objects if objects else None
+from .data import Context, Message
 
 
 def _tool_calls_to_api(tool_calls: list[dict]) -> list[dict]:
@@ -559,7 +519,7 @@ class ReActExecutor(Executor):
         ctx.tool_results.append(tool_result_text)
 
         # Phase 3: 归一化后终结
-        normalized = self._normalize_tool_result(fn_name, tool_result_text)
+        normalized = self._normalize_tool_result(tool_result_text)
         return Message(
             role="tool",
             tool_call_id=tc.get("id", ""),
@@ -570,31 +530,37 @@ class ReActExecutor(Executor):
     # ── 工具结果归一化 ──────────────────────────────────────────
 
     @staticmethod
-    def _normalize_tool_result(tool_name: str, raw: str) -> str:
+    def _normalize_tool_result(raw: str) -> str:
         """归一化工具返回结果，确保对 LLM 友好。
 
-        对已知返回 JSON 的工具做格式化，其他工具直接返回原文。
-        避免超大文本撑爆 context。
+        截断超长文本避免撑爆 context；对 JSON 数组/对象做展平，
+        其他情况直接返回原文。
         """
         MAX_LEN = 4096
         if len(raw) > MAX_LEN:
             raw = raw[:MAX_LEN] + f"\n\n[截断: 原始结果过长 ({len(raw)} 字符)，仅保留前 {MAX_LEN} 字符]"
 
-        # 尝试解析 JSON 序列（可能多个 JSON 对象以 } 换行 { 分隔）
-        items = _parse_json_sequence(raw)
-        if items:
-            parts = [f"共 {len(items)} 条结果:\n"]
-            for i, item in enumerate(items, 1):
+        try:
+            obj = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            obj = None
+
+        # JSON 数组 -> 逐条展平（MCP search_news 等返回 list[dict]）
+        if isinstance(obj, list):
+            parts = [f"共 {len(obj)} 条结果:\n"]
+            for i, item in enumerate(obj, 1):
+                if not isinstance(item, dict):
+                    parts.append(f"{i}. {item}")
+                    continue
                 title = item.get("title") or item.get("name") or f"条目 {i}"
                 source = item.get("source") or item.get("source_name") or ""
                 desc = item.get("summary") or item.get("description") or ""
-                line_parts = [f"{i}. {title}"]
+                line = f"{i}. {title}"
                 if source:
-                    line_parts[0] += f" ({source})"
-                parts.append(line_parts[0])
+                    line += f" ({source})"
+                parts.append(line)
                 if desc:
                     parts.append(f"   {desc[:300]}")
-                # 添加关键指标
                 for key in ("heat_score", "sentiment_score", "score", "price", "change"):
                     val = item.get(key)
                     if val is not None:
@@ -602,20 +568,16 @@ class ReActExecutor(Executor):
                 parts.append("")
             return "\n".join(parts)
 
-        # 单行 JSON 对象
-        try:
-            obj = json.loads(raw)
-            if isinstance(obj, dict):
-                parts = []
-                for k, v in obj.items():
-                    if isinstance(v, (list, dict)):
-                        v_str = json.dumps(v, ensure_ascii=False)[:200]
-                    else:
-                        v_str = str(v)
-                    parts.append(f"{k}: {v_str}")
-                return "\n".join(parts)
-        except (json.JSONDecodeError, ValueError):
-            pass
+        # 单个 JSON 对象 -> key: value 展平
+        if isinstance(obj, dict):
+            parts = []
+            for k, v in obj.items():
+                if isinstance(v, (list, dict)):
+                    v_str = json.dumps(v, ensure_ascii=False)[:200]
+                else:
+                    v_str = str(v)
+                parts.append(f"{k}: {v_str}")
+            return "\n".join(parts)
 
         return raw
 

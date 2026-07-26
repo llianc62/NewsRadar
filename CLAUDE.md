@@ -247,7 +247,7 @@ DefaultAgent (编排器)
 - **ReActExecutor** (`agent/executor.py`): 循环直到 LLM 返回文本或超 max_steps。工具结果注入 history 作为下一轮 user 消息。
 - **Policy-based tool security**: 工具分 level 1-4，`running_mode`（strict/normal/loose）决定自动/需审批。
 - **WebSocket 审批通道**: 前端通过 WebSocket 收 tool_approval_request，用户决定允许/拒绝，后端继续执行。
-- **MCP Client**: 自实现轻量 JSON-RPC 2.0 over stdio/SSE，无 mcp SDK 依赖。
+- **MCP Client**: 基于官方 mcp SDK 的 `ClientSession`，封装 stdio/SSE 传输层生命周期。
 
 ### MCP Server (`agent/mcp/`)
 
