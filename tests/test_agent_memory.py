@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from agent.data import Context
-from agent.memory import MemoryModule, NullMemory, ShortTermMemory
+from agent.memory import LongTermMemory, MemoryModule, NullMemory, ShortTermMemory
 
 
 # ── Fixtures ──────────────────────────────────────────────────
@@ -19,6 +19,15 @@ def mock_db():
     db = MagicMock()
     db.get_agent_messages.return_value = []
     return db
+
+
+@pytest.fixture
+def mock_mem_storage():
+    """Mock MemoryStorage with async search/save."""
+    storage = MagicMock()
+    storage.search = AsyncMock(return_value=[])
+    storage.save = AsyncMock(return_value=None)
+    return storage
 
 
 # ── Tests ─────────────────────────────────────────────────────
@@ -62,3 +71,28 @@ async def test_short_term_save(mock_db):
     ctx.messages = [__import__("agent.data", fromlist=["Message"]).Message(role="assistant", content="a")]
     await m.save(ctx)
     assert mock_db.save_agent_message.call_count == 2  # user + assistant
+
+
+# ── LongTermMemory tests ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_long_term_load_history_and_memories(mock_db, mock_mem_storage):
+    mock_db.get_agent_messages.return_value = [{"role": "user", "content": "q"}]
+    mock_mem_storage.search.return_value = [{"memory_type": "fact", "content": "remembered"}]
+    m = LongTermMemory(mock_db, mock_mem_storage)
+    ctx = Context(session_id="s1", user_input="hi")
+    await m.load(ctx)
+    assert len(ctx.history_messages) == 1
+    assert len(ctx.memories) == 1
+    assert ctx.memories[0].source == "memory"
+    assert ctx.memories[0].order == 10
+
+
+@pytest.mark.asyncio
+async def test_long_term_load_no_user_input(mock_db, mock_mem_storage):
+    mock_db.get_agent_messages.return_value = []
+    m = LongTermMemory(mock_db, mock_mem_storage)
+    ctx = Context(session_id="s1", user_input="")
+    await m.load(ctx)
+    assert ctx.memories == []

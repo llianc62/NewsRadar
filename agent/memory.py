@@ -11,7 +11,7 @@ import jieba.analyse
 import jieba.posseg
 import psycopg2.extras
 
-from .data import Context, Message
+from .data import Context, MemoryBlock, Message
 
 # CJK 字符检测（与 storage/postgres.py 保持一致）
 _CJK_RE = re.compile(r"[一-鿿㐀-䶿豈-﫿]")
@@ -214,57 +214,38 @@ class PgMemoryStorage(MemoryStorage):
 # ── LongTermMemory ─────────────────────────────────────────────
 
 
-class LongTermMemory(MemoryModule):
-    """长期记忆——持久化存储，跨会话保留。
+class LongTermMemory(ShortTermMemory):
+    """长期记忆 -- 继承 ShortTerm,叠加 agent_memories 检索/提炼。
 
     记忆提取策略:
     - 周期性: 每 N 轮对话后自动合并记忆
     - 触发性: 检测到关键信息时即时存储
-
-    extractor 是可选的 LLM 调用函数，用于从对话中提取可记忆的信息。
-    不传 extractor 时只做原始文本存储，不做智能提取。
     """
 
-    def __init__(
-        self,
-        storage: MemoryStorage,
-        extract_interval: int = 5,
-        extractor: callable | None = None,
-    ):
+    def __init__(self, db, mem_storage, window_size: int = 20, extract_interval: int = 5):
+        super().__init__(db, window_size)
         if extract_interval < 1:
             raise ValueError("extract_interval must be >= 1")
-        self._storage = storage
+        self._mem_storage = mem_storage
         self._extract_interval = extract_interval
-        self._extractor = extractor
         self._turn_count = 0
 
-    async def get_context(self, session_id: str, query: str = "") -> str | None:
-        """语义检索相关记忆，返回格式化文本。
-
-        供 ``DefaultAgent._make_ctx`` 调用，在 executor 执行前注入记忆。
-        """
-        if not query:
-            return None
-        search_query = self._build_search_query(query)
-        if not search_query:
-            return None
-        memories = await self._storage.search(search_query, top_k=5)
-        if memories:
-            return self._format_memories(memories)
-        return None
-
-    async def on_before_execute(self, ctx: Any) -> None:
-        """语义检索相关记忆（仅限同一会话，避免交叉会话记忆污染）。"""
-        if not ctx.user_input or not ctx.session_id:
+    async def load(self, ctx):
+        await super().load(ctx)
+        if not ctx.user_input:
             return
         query = self._build_search_query(ctx.user_input)
         if not query:
             return
-        memories = await self._storage.search(query, top_k=5, session_id=ctx.session_id)
-        if memories:
-            ctx.memory_context = self._format_memories(memories)
+        mems = await self._mem_storage.search(query, top_k=5, session_id=ctx.session_id)
+        if mems:
+            ctx.memories.append(MemoryBlock(
+                title="相关记忆", source="memory",
+                content=self._format_memories(mems), order=10,
+            ))
 
-    async def on_after_execute(self, ctx: Any) -> None:
+    async def save(self, ctx):
+        await super().save(ctx)
         self._turn_count += 1
         if self._should_extract(ctx):
             await self._extract_and_store(ctx)
@@ -283,11 +264,11 @@ class LongTermMemory(MemoryModule):
             return ""
 
         if _CJK_RE.search(cleaned):
-            # 中文 → jieba TF-IDF 提取关键词
+            # 中文 -> jieba TF-IDF 提取关键词
             keywords = jieba.analyse.tfidf(cleaned, topK=10, withWeight=False)
             return ' '.join(keywords) if keywords else stripped
         else:
-            # 英文 → 跳过 jieba，PG FTS 自己处理
+            # 英文 -> 跳过 jieba，PG FTS 自己处理
             return stripped
 
     def _should_extract(self, ctx: Any) -> bool:
@@ -314,12 +295,9 @@ class LongTermMemory(MemoryModule):
 
     async def _extract_and_store(self, ctx: Any) -> None:
         """提取关键信息并存储。"""
-        if self._extractor:
-            summary = await self._extractor(ctx)
-        else:
-            summary = ctx.assistant_output[:200]
+        summary = ctx.assistant_output[:200]
 
-        await self._storage.save(
+        await self._mem_storage.save(
             session_id=ctx.session_id,
             content=summary,
             memory_type="fact",
@@ -327,7 +305,7 @@ class LongTermMemory(MemoryModule):
 
     async def _batch_merge(self, ctx: Any) -> None:
         """合并最近对话并存储摘要。"""
-        await self._storage.save(
+        await self._mem_storage.save(
             session_id=ctx.session_id,
             content=ctx.assistant_output[:200],
             memory_type="summary",
