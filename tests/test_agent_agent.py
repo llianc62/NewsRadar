@@ -15,6 +15,7 @@ from agent import (
     DefaultAgent,
     DirectExecutor,
     Executor,
+    MemoryModule,
     ModelHub,
     NullMemory,
     OpenAIClient,
@@ -449,24 +450,6 @@ class TestReActExecutor:
         memory.on_after_execute.assert_awaited_once_with(ctx)
 
     @pytest.mark.asyncio
-    async def test_build_messages_with_memory_context(self):
-        """验证 _build_initial_messages 包含 memory_context。"""
-
-        ctx = Context(
-            user_input="hello",
-            system_prompt="You are a bot.",
-        )
-        ctx.memory_context = "user likes python"
-
-        msgs = ReActExecutor._build_initial_messages(ctx)
-        dicts = ReActExecutor._messages_to_dicts(msgs)
-        assert len(dicts) == 3  # system + memory + user
-        assert dicts[0]["role"] == "system"
-        assert dicts[1]["role"] == "system"
-        assert "相关记忆" in dicts[1]["content"]
-        assert dicts[2]["role"] == "user"
-
-    @pytest.mark.asyncio
     async def test_build_messages_with_history(self):
         """验证 _messages_to_dicts 能正确转换 tool 消息。"""
         from agent.data import Message
@@ -594,3 +577,65 @@ async def test_loop_tool_failure_continues(mock_brain, mock_tools):
     tool_msgs = [m for m in ctx.messages if m.role == "tool"]
     assert tool_msgs[0].tool_result.success is False
     assert "boom" in tool_msgs[0].tool_result.error
+
+
+# ── Test ReActExecutor _finalize + run/run_stream (Task 9) ────────
+
+
+def make_chat_stream(tokens):
+    """Create a mock chat_stream async-generator factory.
+
+    ``client.chat_stream(messages=...)`` returns an async iterator yielding
+    ``AIMessageChunk`` with the given token contents.
+    """
+    async def _stream(*args, **kwargs):
+        for tok in tokens:
+            yield AIMessageChunk(content=tok)
+    return _stream
+
+
+@pytest.fixture
+def mock_memory():
+    """Mock MemoryModule -- load/save are awaitable AsyncMocks."""
+    memory = MagicMock(spec=MemoryModule)
+    memory.load = AsyncMock(return_value=None)
+    memory.save = AsyncMock(return_value=None)
+    return memory
+
+
+@pytest.mark.asyncio
+async def test_run_normal(mock_brain):
+    mock_brain.chat.return_value = make_ai(content="answer", tool_calls=[])
+    ex = ReActExecutor(brain=mock_brain, memory=NullMemory())
+    ctx = Context(user_input="hi")
+    output = await ex.run(ctx)
+    assert output == "answer"
+
+
+@pytest.mark.asyncio
+async def test_run_llm_failure_returns_error_text(mock_brain):
+    mock_brain.chat.side_effect = RuntimeError("api down")
+    ex = ReActExecutor(brain=mock_brain, memory=NullMemory(), llm_max_retries=0)
+    ctx = Context(user_input="hi")
+    output = await ex.run(ctx)
+    assert "Executor 错误" in output
+    assert "api down" in output
+
+
+@pytest.mark.asyncio
+async def test_run_calls_memory_save(mock_brain, mock_memory):
+    mock_brain.chat.return_value = make_ai(content="a", tool_calls=[])
+    ex = ReActExecutor(brain=mock_brain, memory=mock_memory)
+    ctx = Context(user_input="hi", session_id="s1")
+    await ex.run(ctx)
+    mock_memory.save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_stream_yields_tokens(mock_brain):
+    mock_brain.chat.return_value = make_ai(content="hello world", tool_calls=[])
+    mock_brain.chat_stream = make_chat_stream(["hello ", "world"])
+    ex = ReActExecutor(brain=mock_brain, memory=NullMemory())
+    ctx = Context(user_input="hi")
+    tokens = [t async for t in ex.run_stream(ctx)]
+    assert "".join(tokens).startswith("hello")

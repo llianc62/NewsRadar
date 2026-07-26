@@ -1,7 +1,7 @@
-"""Executor hierarchy — DirectExecutor and ReActExecutor.
+"""Executor hierarchy - DirectExecutor and ReActExecutor.
 
 All executors use the LLMClient protocol (``client.chat()`` / ``client.chat_stream()``)
-which returns ``AIMessage`` directly — no ``ChatResult`` intermediate format.
+which returns ``AIMessage`` directly - no ``ChatResult`` intermediate format.
 """
 
 from __future__ import annotations
@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
@@ -96,7 +95,7 @@ class ExecutorHook(ABC):
 
 
 class Executor(ABC):
-    """执行器基类——定义 Agent 的执行策略。"""
+    """执行器基类--定义 Agent 的执行策略。"""
 
     def __init__(self, approval_callback=None, hooks: list[ExecutorHook] | None = None):
         self._approval_callback = approval_callback
@@ -174,7 +173,7 @@ class Executor(ABC):
 
 
 class DirectExecutor(Executor):
-    """简单直调执行器——没有 ReAct 循环，没有工具调用。
+    """简单直调执行器--没有 ReAct 循环，没有工具调用。
 
     适用于：简单问答、分类、不需要工具的纯文本场景。
     Phase 2: 已接入 MemoryModule hook。
@@ -250,11 +249,11 @@ class DirectExecutor(Executor):
 
 
 class ReActExecutor(Executor):
-    """ReAct 风格的推理循环——Agent 自主决定调工具还是回答。
+    """ReAct 风格的推理循环--Agent 自主决定调工具还是回答。
 
     两级循环设计（参考 Pi agent loop）：
-    - 内层循环：LLM → 工具调用 → LLM → ... → 文本回答
-    - 工具执行三阶段：prepare → execute → finalize，每个工具独立隔离
+    - 内层循环：LLM -> 工具调用 -> LLM -> ... -> 文本回答
+    - 工具执行三阶段：prepare -> execute -> finalize，每个工具独立隔离
 
     相较于旧版的核心改进：
     - ``_build_messages`` 只执行一次，不再每轮重复拼接 user_input
@@ -353,6 +352,43 @@ class ReActExecutor(Executor):
 
     # ── 推理循环 (Task 8) ──────────────────────────────────────
 
+    async def _react_step(self, ctx: Context, client, tool_schemas, model_version):
+        """单步 LLM 调用 -- hooks + 重试 + 字段提取 + token 累计。
+
+        不修改 ``ctx.messages``(由调用方决定如何 append assistant 消息)。
+        返回 ``(ai, tool_calls, finish_reason)``。
+        """
+        for h in self._hooks:
+            try: await h.before_chat(ctx)
+            except Exception as e: logger.warning("before_chat hook: %s", e)
+
+        llm_messages = self._build_llm_messages(ctx)
+        ai = await self._call_llm(client, llm_messages, tool_schemas, ctx)
+
+        for h in self._hooks:
+            try: await h.after_chat(ctx, ai)
+            except Exception as e: logger.warning("after_chat hook: %s", e)
+
+        tool_calls = list(ai.tool_calls) if ai.tool_calls else []
+        finish_reason = (ai.response_metadata or {}).get("finish_reason", "")
+        usage = _ai_usage_to_dict(ai)
+        if usage:
+            ctx.total_input_tokens += usage.get("prompt_tokens", 0)
+            ctx.total_output_tokens += usage.get("completion_tokens", 0)
+        return ai, tool_calls, finish_reason
+
+    @staticmethod
+    def _make_assistant_msg(ai, tool_calls, model_version, content=None):
+        """从 AIMessage 构建 assistant Message(可选覆盖 content,用于流式累积)。"""
+        return Message(
+            role="assistant",
+            content=content if content is not None else (ai.content or None),
+            tool_calls=tool_calls or None,
+            usage=_ai_usage_to_dict(ai) or None,
+            reasoning_content=_ai_reasoning_content(ai) or None,
+            model_used=model_version,
+        )
+
     async def _loop(self, ctx: Context, stream: bool) -> None:
         tool_schemas = self._tools.get_schemas() if self._tools else None
         client = self._brain.get(ctx.model_name or "default")
@@ -360,31 +396,12 @@ class ReActExecutor(Executor):
         tool_rounds = 0
 
         for step in range(self.max_steps):
-            for h in self._hooks:
-                try: await h.before_chat(ctx)
-                except Exception as e: logger.warning("before_chat hook: %s", e)
-
-            llm_messages = self._build_llm_messages(ctx)
-            ai = await self._call_llm(client, llm_messages, tool_schemas, ctx)
-
-            for h in self._hooks:
-                try: await h.after_chat(ctx, ai)
-                except Exception as e: logger.warning("after_chat hook: %s", e)
-
-            tool_calls = list(ai.tool_calls) if ai.tool_calls else []
-            finish_reason = (ai.response_metadata or {}).get("finish_reason", "")
-            usage = _ai_usage_to_dict(ai)
-            reasoning = _ai_reasoning_content(ai)
-            if usage:
-                ctx.total_input_tokens += usage.get("prompt_tokens", 0)
-                ctx.total_output_tokens += usage.get("completion_tokens", 0)
-
-            assistant_msg = Message(
-                role="assistant", content=ai.content or None,
-                tool_calls=tool_calls or None, usage=usage or None,
-                reasoning_content=reasoning or None, model_used=model_version,
+            ai, tool_calls, finish_reason = await self._react_step(
+                ctx, client, tool_schemas, model_version,
             )
-            ctx.messages.append(assistant_msg)
+            ctx.messages.append(
+                self._make_assistant_msg(ai, tool_calls, model_version)
+            )
 
             if not tool_calls:
                 ctx.step_count = step + 1
@@ -458,224 +475,119 @@ class ReActExecutor(Executor):
             except Exception as e: logger.warning("after_tool hook: %s", e)
         return tool_msg
 
-    async def run(
-        self,
-        ctx: Context,
-        brain: ModelHub,
-        memory: MemoryModule | None = None,
-        **kwargs: Any,
-    ) -> str:
-        from .tools import Registry
+    # ── 三阶段:finalize + run/run_stream (Task 9) ──────────────
 
-        _memory = memory or NullMemory()
-        tools: Registry | None = kwargs.get("tools")
-        tool_schemas = tools.get_schemas() if tools else None
-        model_name = ctx.model_name or "default"
-        client = brain.get(model_name)
-        model_version = brain.get_model_version(model_name)
+    async def _finalize(self, ctx: Context) -> None:
+        """收尾 -- 保存对话 + 提炼长期记忆。
 
-        # 构建初始消息（只执行一次！）
-        await _memory.on_before_execute(ctx)
-        ctx.messages = self._build_initial_messages(ctx)
-
-        # 注入历史 role 消息（由 WebSocket handler 从 DB 加载，作为实际对话轮次）
-        history_messages = kwargs.get("history_messages")
-        if history_messages:
-            last = ctx.messages.pop()
-            ctx.messages.extend(history_messages)
-            ctx.messages.append(last)
-
-        _result_text = ""
-        tool_rounds = 0
-
-        for step in range(self.max_steps):
-            # 1. 调 LLM（返回 AIMessage，直接使用其字段）
-            llm_messages = self._messages_to_dicts(ctx.messages)
-            result = await client.chat(
-                messages=llm_messages,
-                tools=tool_schemas,
-            )
-
-            # 2. 从 AIMessage 提取字段
-            tool_calls = list(result.tool_calls) if result.tool_calls else []
-            finish_reason = (
-                result.response_metadata.get("finish_reason", "")
-                if result.response_metadata
-                else ""
-            )
-            usage = _ai_usage_to_dict(result)
-            reasoning = _ai_reasoning_content(result)
-
-            # 3. 保存 assistant 消息（tool_calls 用简化格式存储）
-            assistant_msg = Message(
-                role="assistant",
-                content=result.content or None,
-                tool_calls=tool_calls or None,
-                usage=usage or None,
-                reasoning_content=reasoning or None,
-            )
-            ctx.messages.append(assistant_msg)
-
-            # 更新 token 追踪
-            if usage:
-                ctx.total_input_tokens += usage.get("prompt_tokens", 0)
-                ctx.total_output_tokens += usage.get("completion_tokens", 0)
-
-            # 4. 判断 LLM 做了什么
-            # 4a. 无工具调用 → 文本回答
-            if not tool_calls:
-                _result_text = result.content or ""
-                ctx.assistant_output = _result_text
-                ctx.model_used = model_version
-                ctx.step_count = step + 1
-                break
-
-            # 4b. 有工具调用但被截断 → 标记为不完整，不执行
-            if finish_reason in ("length", "max_tokens"):
-                for tc in tool_calls:
-                    ctx.messages.append(Message(
-                        role="tool",
-                        tool_call_id=tc.get("id", ""),
-                        content="[Error] 工具调用被截断: 输出达到 token 限制，参数可能不完整",
-                        name=tc.get("name", ""),
-                    ))
-                _result_text = result.content or ""
-                ctx.assistant_output = _result_text
-                ctx.model_used = model_version
-                ctx.step_count = step + 1
-                break
-
-            # 4c. 正常工具调用 → 执行
-            for tc in tool_calls:
-                tool_msg = await self._execute_tool(tc, tools, ctx)
-                ctx.messages.append(tool_msg)
-
-            # 5. 达到 max_tool_rounds 后移除 schemas，强制 LLM 用文本回答
-            tool_rounds += 1
-            if tool_rounds >= self.max_tool_rounds:
-                tool_schemas = None
-        else:
-            # 超过 max_steps
-            _result_text = ctx.messages[-1].content or "" if ctx.messages else "已达最大步数"
-            ctx.assistant_output = _result_text
-            ctx.step_count = self.max_steps
-
-        await _memory.on_after_execute(ctx)
-        return _result_text
-
-    async def run_stream(
-        self,
-        ctx: Context,
-        brain: ModelHub,
-        memory: MemoryModule | None = None,
-        **kwargs: Any,
-    ) -> AsyncIterator[str]:
-        """流式版本：ReAct 循环在内部执行，最后一步用 chat_stream 逐 token 输出。
-
-        工具调用步骤（非流式）：
-        1. LLM 返回 tool_call → 执行工具
-        2. 工具结果返回给 LLM
-        3. 最终步骤用 chat_stream 流式输出文本
+        ``memory.save`` 失败仅 log.warning,不影响已完成的返回值
+        (spec 6.2 / 9.1 异常矩阵)。
         """
-        from .tools import Registry
+        try:
+            await self._memory.save(ctx)
+        except Exception as e:
+            logger.warning("memory.save failed, not fatal: %s", e)
 
-        _memory = memory or NullMemory()
-        tools: Registry | None = kwargs.get("tools")
-        tool_schemas = tools.get_schemas() if tools else None
-        model_name = ctx.model_name or "default"
-        client = brain.get(model_name)
-        model_version = brain.get_model_version(model_name)
+    async def run(self, ctx: Context) -> str:
+        """非流式推理 -- ``_prepare`` -> ``_loop`` -> ``_finalize``。
 
-        # 构建初始消息
-        await _memory.on_before_execute(ctx)
-        ctx.messages = self._build_initial_messages(ctx)
+        异常兜底:``_loop`` 内未捕获的异常(如 LLM 重试耗尽)在此 catch,
+        记 ``log.exception`` + ``on_error`` hook,返回 ``[Executor 错误]`` 文本
+        (不进 messages,spec 9.2 原则)。``_finalize`` 始终执行。
+        """
+        await self._prepare(ctx)
+        try:
+            await self._loop(ctx, stream=False)
+            output = ctx.final_output
+        except Exception as e:
+            logger.exception("executor run failed")
+            for h in self._hooks:
+                try: await h.on_error(e, ctx)
+                except Exception: pass
+            output = f"[Executor 错误] {e}"
+        finally:
+            await self._finalize(ctx)
+        return output
 
-        # 注入历史 role 消息（由 WebSocket handler 从 DB 加载，作为实际对话轮次）
-        history_messages = kwargs.get("history_messages")
-        if history_messages:
-            last = ctx.messages.pop()
-            ctx.messages.extend(history_messages)
-            ctx.messages.append(last)
+    async def run_stream(self, ctx: Context) -> AsyncIterator[str]:
+        """流式推理 -- ``_prepare`` -> ``_loop_stream`` -> ``_finalize``。
 
+        工具调用步骤非流式,最终文本步用 ``chat_stream`` 逐 token yield。
+        异常兜底同 ``run``:catch 后 ``yield [Executor 错误]`` 文本,
+        ``_finalize`` 始终执行。
+        """
+        await self._prepare(ctx)
+        try:
+            async for tok in self._loop_stream(ctx):
+                yield tok
+        except Exception as e:
+            logger.exception("executor run_stream failed")
+            for h in self._hooks:
+                try: await h.on_error(e, ctx)
+                except Exception: pass
+            yield f"[Executor 错误] {e}"
+        finally:
+            await self._finalize(ctx)
+
+    async def _loop_stream(self, ctx: Context) -> AsyncIterator[str]:
+        """流式推理循环 -- 共享 ``_react_step`` 单步逻辑,最终文本步真流式。
+
+        与 ``_loop`` 的差异:无 tool_calls 的最终步先用非流式 ``chat`` 判定
+        无工具调用,再用 ``chat_stream`` 逐 token yield(assistant 消息以
+        流式累积内容入历史,确保 ``ctx.final_output`` 反映真实输出)。
+        """
+        tool_schemas = self._tools.get_schemas() if self._tools else None
+        client = self._brain.get(ctx.model_name or "default")
+        model_version = self._brain.get_model_version(ctx.model_name or "default")
         tool_rounds = 0
 
         for step in range(self.max_steps):
-            llm_messages = self._messages_to_dicts(ctx.messages)
-            result = await client.chat(
-                messages=llm_messages,
-                tools=tool_schemas,
+            ai, tool_calls, finish_reason = await self._react_step(
+                ctx, client, tool_schemas, model_version,
             )
 
-            # 从 AIMessage 提取字段
-            tool_calls = list(result.tool_calls) if result.tool_calls else []
-            finish_reason = (
-                result.response_metadata.get("finish_reason", "")
-                if result.response_metadata
-                else ""
-            )
-            usage = _ai_usage_to_dict(result)
-            reasoning = _ai_reasoning_content(result)
-
-            # 保存 assistant 消息
-            assistant_msg = Message(
-                role="assistant",
-                content=result.content or None,
-                tool_calls=tool_calls or None,
-                usage=usage or None,
-                reasoning_content=reasoning or None,
-            )
-            ctx.messages.append(assistant_msg)
-            if usage:
-                ctx.total_input_tokens += usage.get("prompt_tokens", 0)
-                ctx.total_output_tokens += usage.get("completion_tokens", 0)
-
-            # 文本回答（无工具调用）
             if not tool_calls:
-                ctx.assistant_output = result.content or ""
-                ctx.model_used = model_version
+                # 最终文本步:chat_stream 真流式(assistant 消息尚未入历史,
+                # 避免把答案回传给 LLM)
                 ctx.step_count = step + 1
-                if result.content:
-                    # 模拟流式输出
-                    text = result.content
-                    tokens = re.split(r'(?<=\s|，|。|！|？|；|、|）|」)', text)
-                    for tok in tokens:
-                        if tok:
-                            yield tok + " "
-                break
+                chunks: list[str] = []
+                async for chunk in client.chat_stream(
+                    messages=self._build_llm_messages(ctx),
+                ):
+                    token = chunk.content or ""
+                    if token:
+                        chunks.append(token)
+                        yield token
+                ctx.messages.append(
+                    self._make_assistant_msg(
+                        ai, tool_calls, model_version,
+                        content="".join(chunks) or None,
+                    )
+                )
+                return
 
-            # 截断 + 不完整工具调用
+            # 有工具调用:append assistant 消息(含 tool_calls)再执行工具
+            ctx.messages.append(
+                self._make_assistant_msg(ai, tool_calls, model_version)
+            )
+
             if finish_reason in ("length", "max_tokens"):
                 for tc in tool_calls:
                     ctx.messages.append(Message(
-                        role="tool",
-                        tool_call_id=tc.get("id", ""),
-                        content="[Error] 工具调用被截断: 输出达到 token 限制，参数可能不完整",
-                        name=tc.get("name", ""),
+                        role="tool", tool_call_id=tc.get("id", ""),
+                        content="[Error] 工具调用被截断", name=tc.get("name", ""),
                     ))
-                ctx.assistant_output = result.content or ""
-                ctx.model_used = model_version
                 ctx.step_count = step + 1
-                if result.content:
-                    yield result.content
-                break
+                return
 
-            # 正常工具调用
             for tc in tool_calls:
-                tool_msg = await self._execute_tool(tc, tools, ctx)
-                ctx.messages.append(tool_msg)
+                msg = await self._execute_tool(tc, ctx)
+                ctx.messages.append(msg)
 
-            # 达到 max_tool_rounds 后移除 schemas，强制 LLM 用文本回答
             tool_rounds += 1
             if tool_rounds >= self.max_tool_rounds:
                 tool_schemas = None
-        else:
-            # 超过 max_steps
-            fallback = ctx.messages[-1].content or "" if ctx.messages else "已达最大步数"
-            ctx.assistant_output = fallback
-            ctx.step_count = self.max_steps
-            yield fallback
-
-        await _memory.on_after_execute(ctx)
+        ctx.step_count = self.max_steps
 
     # ── 工具结果归一化 ──────────────────────────────────────────
 
@@ -732,24 +644,6 @@ class ReActExecutor(Executor):
         return raw
 
     # ── 消息构建 ──────────────────────────────────────────────
-
-    @staticmethod
-    def _build_initial_messages(ctx: Context) -> list[Message]:
-        """构建初始消息列表（只执行一次，后续通过 append 追加）。"""
-        messages: list[Message] = []
-        if ctx.system_prompt:
-            messages.append(Message(role="system", content=ctx.system_prompt))
-        if ctx.knowledge_context:
-            messages.append(Message(role="system", content=f"## 知识库\n{ctx.knowledge_context}"))
-        if ctx.memory_context:
-            memory_text = (
-                ctx.memory_context
-                if isinstance(ctx.memory_context, str)
-                else _format_memory_for_prompt(ctx.memory_context)
-            )
-            messages.append(Message(role="system", content=f"## 相关记忆\n{memory_text}"))
-        messages.append(Message(role="user", content=ctx.user_input))
-        return messages
 
     @staticmethod
     def _messages_to_dicts(messages: list[Message]) -> list[dict]:

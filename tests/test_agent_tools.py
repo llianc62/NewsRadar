@@ -442,23 +442,6 @@ class TestReActExecutor:
         memory.on_after_execute.assert_awaited_once_with(ctx)
 
     @pytest.mark.asyncio
-    async def test_build_messages_with_memory_context(self):
-        """验证 _build_initial_messages 包含 memory_context。"""
-        ctx = Context(
-            user_input="hello",
-            system_prompt="You are a bot.",
-        )
-        ctx.memory_context = "user likes python"
-
-        msgs = ReActExecutor._build_initial_messages(ctx)
-        dicts = ReActExecutor._messages_to_dicts(msgs)
-        assert len(dicts) == 3  # system + memory + user
-        assert dicts[0]["role"] == "system"
-        assert dicts[1]["role"] == "system"
-        assert "相关记忆" in dicts[1]["content"]
-        assert dicts[2]["role"] == "user"
-
-    @pytest.mark.asyncio
     async def test_build_messages_with_history(self):
         """验证 _messages_to_dicts 能正确转换 tool 消息。"""
         msgs = [
