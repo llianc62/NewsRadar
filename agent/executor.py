@@ -578,6 +578,8 @@ class ReActExecutor(Executor):
                         content="[Error] 工具调用被截断", name=tc.get("name", ""),
                     ))
                 ctx.step_count = step + 1
+                if ai.content:
+                    yield ai.content
                 return
 
             for tc in tool_calls:
@@ -588,6 +590,8 @@ class ReActExecutor(Executor):
             if tool_rounds >= self.max_tool_rounds:
                 tool_schemas = None
         ctx.step_count = self.max_steps
+        fallback = (ctx.messages[-1].content or "已达最大步数") if ctx.messages else "已达最大步数"
+        yield fallback
 
     # ── 工具结果归一化 ──────────────────────────────────────────
 

@@ -639,3 +639,34 @@ async def test_run_stream_yields_tokens(mock_brain):
     ctx = Context(user_input="hi")
     tokens = [t async for t in ex.run_stream(ctx)]
     assert "".join(tokens).startswith("hello")
+
+
+@pytest.mark.asyncio
+async def test_run_stream_max_steps_yields_fallback(mock_brain, mock_tools):
+    """max_steps 耗尽时 _loop_stream 应 yield fallback 文本(非空)。"""
+    mock_brain.chat.return_value = make_ai(
+        content="",
+        tool_calls=[{"name": "loop_tool", "args": {}, "id": "c1"}],
+    )
+    ex = ReActExecutor(
+        brain=mock_brain, memory=NullMemory(), tools=mock_tools, max_steps=2,
+    )
+    ctx = Context(user_input="hi")
+    tokens = [t async for t in ex.run_stream(ctx)]
+    assert tokens  # 非空 -- fallback 已 yield
+
+
+@pytest.mark.asyncio
+async def test_run_stream_truncated_yields_content(mock_brain, mock_tools):
+    """finish_reason=length 截断时 _loop_stream 应 yield content(非空)。"""
+    ai = make_ai(
+        content="partial answer",
+        tool_calls=[{"name": "search_news", "args": {}, "id": "c1"}],
+    )
+    ai.response_metadata = {"finish_reason": "length"}
+    mock_brain.chat.return_value = ai
+    ex = ReActExecutor(brain=mock_brain, memory=NullMemory(), tools=mock_tools)
+    ctx = Context(user_input="hi")
+    tokens = [t async for t in ex.run_stream(ctx)]
+    assert tokens  # 非空 -- 截断 content 已 yield
+    assert "partial" in "".join(tokens)
