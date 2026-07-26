@@ -269,6 +269,7 @@ class NewsRadarDaemon:
                 system_prompt=base_prompt,
                 register_mcp=True,
                 mcp_cfg=mcp_cfg,
+                db=self.db,
             )
             print(f"[Daemon] Agent built (type={type(agent).__name__}, executor={type(agent.executor).__name__}, memory={type(agent.memory).__name__}, tools={agent.tools.list_tools() if agent.tools else 'None'}).")
 
