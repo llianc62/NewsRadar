@@ -15,9 +15,11 @@ from agent import (
     DirectExecutor,
     Executor,
     ModelHub,
+    NullMemory,
     OpenAIClient,
     ReActExecutor,
 )
+from agent.data import MemoryBlock, Message
 
 
 # ── helpers ──────────────────────────────────────────────────────
@@ -471,3 +473,41 @@ class TestReActExecutor:
         assert len(dicts[2]["tool_calls"]) == 1
         assert dicts[2]["tool_calls"][0]["function"]["name"] == "test"
         assert dicts[3] == {"role": "tool", "tool_call_id": "call_1", "content": "ok"}
+
+
+# ── Test ReActExecutor _prepare + _build_llm_messages (Task 7) ────
+
+
+@pytest.fixture
+def mock_brain(mock_hub):
+    """Alias of mock_hub for executor tests using the 'brain' parameter name."""
+    return mock_hub
+
+
+@pytest.mark.asyncio
+async def test_prepare_loads_memory_and_assembles_messages(mock_brain):
+    memory = NullMemory()
+    ex = ReActExecutor(brain=mock_brain, memory=memory)
+    ctx = Context(user_input="hi", session_id="s1", system_prompt="sys")
+    await ex._prepare(ctx)
+    assert len(ctx.messages) == 1
+    assert ctx.messages[0].role == "user"
+    assert ctx.messages[0].content == "hi"
+
+
+def test_build_llm_messages_order():
+    ex = ReActExecutor(brain=None, memory=NullMemory())
+    ctx = Context(system_prompt="S", user_input="U")
+    ctx.memories = [
+        MemoryBlock(title="知识库", content="K", source="knowledge", order=20),
+        MemoryBlock(title="相关记忆", content="M", source="memory", order=10),
+    ]
+    ctx.history_messages = [Message(role="user", content="old")]
+    ctx.messages = [Message(role="user", content="U")]
+    msgs = ex._build_llm_messages(ctx)
+    # system_prompt -> memories(order 10, 20) -> history -> messages
+    assert msgs[0]["role"] == "system" and msgs[0]["content"] == "S"
+    assert "M" in msgs[1]["content"]   # memory order=10 先
+    assert "K" in msgs[2]["content"]   # knowledge order=20 后
+    assert msgs[3]["content"] == "old"  # history
+    assert msgs[4]["content"] == "U"    # current messages

@@ -7,6 +7,7 @@ which returns ``AIMessage`` directly — no ``ChatResult`` intermediate format.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
@@ -17,6 +18,8 @@ from typing import Any
 from .model_hub import ModelHub
 from .memory import MemoryModule, NullMemory
 from .data import Context, Message
+
+logger = logging.getLogger(__name__)
 
 
 def _tool_calls_to_api(tool_calls: list[dict]) -> list[dict]:
@@ -262,17 +265,89 @@ class ReActExecutor(Executor):
 
     def __init__(
         self,
+        brain: ModelHub,
+        memory: MemoryModule,
+        knowledge=None,
+        tools=None,
         max_steps: int = 10,
         max_tool_rounds: int = 5,
-        max_retries: int = 3,
+        llm_max_retries: int = 2,
+        tool_max_retries: int = 1,
         approval_callback=None,
+        hooks: list[ExecutorHook] | None = None,
     ):
         if max_steps < 1:
             raise ValueError("max_steps must be >= 1")
-        super().__init__(approval_callback=approval_callback)
+        super().__init__(approval_callback=approval_callback, hooks=hooks)
+        self._brain = brain
+        self._memory = memory
+        self._knowledge = knowledge
+        self._tools = tools
         self.max_steps = max_steps
         self.max_tool_rounds = max_tool_rounds
-        self.max_retries = max_retries
+        self._llm_max_retries = llm_max_retries
+        self._tool_max_retries = tool_max_retries
+
+    # ── 三阶段:prepare ─────────────────────────────────────────
+
+    async def _prepare(self, ctx: Context) -> None:
+        """调用前准备 -- 加载记忆 + 检索知识 + 初始化工作区 messages。
+
+        memory.load / knowledge.search 任一失败均 catch 降级(日志 warning),
+        不阻断执行流(spec 6.2 / 降级矩阵)。
+        """
+        try:
+            await self._memory.load(ctx)
+        except Exception as e:
+            logger.warning("memory.load failed, degrade: %s", e)
+        if self._knowledge:
+            try:
+                await self._knowledge.search(ctx)
+            except Exception as e:
+                logger.warning("knowledge.search failed, degrade: %s", e)
+        ctx.messages = [Message(role="user", content=ctx.user_input)]
+
+    # ── LLM 消息拼装 ───────────────────────────────────────────
+
+    def _build_llm_messages(self, ctx: Context) -> list[dict]:
+        """每轮 LLM 调用前拼装消息列表(spec 3.5 注入规则)。
+
+        顺序: system_prompt -> memories(按 order 升序,每个拼成 system 块)
+              -> history_messages(直接拼接) -> messages(工作区,含 tool_calls 转换)。
+        """
+        msgs: list[dict] = []
+        if ctx.system_prompt:
+            msgs.append({"role": "system", "content": ctx.system_prompt})
+        for mb in sorted(ctx.memories, key=lambda m: m.order):
+            msgs.append({"role": "system", "content": f"## {mb.title}\n{mb.content}"})
+        for m in ctx.history_messages:
+            msgs.append({"role": m.role, "content": m.content or ""})
+        for m in ctx.messages:
+            msgs.append(self._message_to_dict(m))
+        return msgs
+
+    @staticmethod
+    def _message_to_dict(m: Message) -> dict:
+        """将单条 Message 转为 LLM API dict。
+
+        处理 tool_calls 格式转换(存储格式 -> API 格式)、reasoning_content
+        回传(DeepSeek 思考模式兼容)、tool 消息的 tool_call_id。
+        """
+        d: dict = {"role": m.role}
+        if m.role == "assistant" and m.tool_calls:
+            # DeepSeek 思考模式要求 tool call 消息的 content 不能为 None
+            # （ OpenAI / Anthropic 均兼容空字符串，不影响 ）
+            d["content"] = m.content or ""
+            d["tool_calls"] = _tool_calls_to_api(m.tool_calls)
+            # DeepSeek 思考模式：reasoning_content 必须回传给 API
+            if m.reasoning_content:
+                d["reasoning_content"] = m.reasoning_content
+        elif m.role == "tool":
+            d["tool_call_id"] = m.tool_call_id or ""
+            d["content"] = m.content or ""
+        else:
+            d["content"] = m.content or ""
+        return d
 
     async def run(
         self,
@@ -624,26 +699,10 @@ class ReActExecutor(Executor):
     def _messages_to_dicts(messages: list[Message]) -> list[dict]:
         """将 Message 列表转为 LLM API 所需的 dict 列表。
 
-        转换时处理 tool_calls 格式：存储格式 ``[{name, args, id}]`` → API 格式 ``[{function: {name, arguments}}]``。
+        转换时处理 tool_calls 格式：存储格式 ``[{name, args, id}]`` -> API 格式 ``[{function: {name, arguments}}]``。
+        单条转换逻辑见 ``_message_to_dict``。
         """
-        result: list[dict] = []
-        for msg in messages:
-            d: dict = {"role": msg.role}
-            if msg.role == "assistant" and msg.tool_calls:
-                # DeepSeek 思考模式要求 tool call 消息的 content 不能为 None
-                # （ OpenAI / Anthropic 均兼容空字符串，不影响 ）
-                d["content"] = msg.content or ""
-                d["tool_calls"] = _tool_calls_to_api(msg.tool_calls)
-                # DeepSeek 思考模式：reasoning_content 必须回传给 API
-                if msg.reasoning_content:
-                    d["reasoning_content"] = msg.reasoning_content
-            elif msg.role == "tool":
-                d["tool_call_id"] = msg.tool_call_id or ""
-                d["content"] = msg.content or ""
-            else:
-                d["content"] = msg.content or ""
-            result.append(d)
-        return result
+        return [ReActExecutor._message_to_dict(m) for m in messages]
 
 
 def _format_memory_for_prompt(memories: list[dict]) -> str:
