@@ -13,7 +13,6 @@ from collections.abc import AsyncIterator
 
 import pytest
 
-from agent.executor import DirectExecutor
 from agent.factory import create_persona
 from agent.model_hub import ModelHub
 from agent.data import Context
@@ -65,17 +64,32 @@ class MockClient:
 
 
 class FakeKnowledge:
-    """假 KnowledgeEngine，记录调用、返回固定文本。"""
+    """假 KnowledgeEngine，记录调用、返回固定文本。
 
-    def __init__(self, text: str = "mock knowledge snippet"):
+    模拟 ``KnowledgeEngine.search(ctx)`` 接口：按 ``_namespace`` 检索，
+    非空结果追加 ``MemoryBlock(title="知识库")`` 到 ``ctx.memories``。
+    """
+
+    def __init__(self, text: str = "mock knowledge snippet", namespace: str = ""):
         self.text = text
         self.last_query: str = ""
         self.last_ns: str = ""
+        self._namespace = namespace
 
     def retrieve_render(self, query: str, namespace: str, top_k: int | None = None) -> str:
         self.last_query = query
         self.last_ns = namespace
         return self.text
+
+    async def search(self, ctx) -> None:
+        if not self._namespace or not ctx.user_input:
+            return
+        text = self.retrieve_render(ctx.user_input, self._namespace)
+        if text:
+            from agent.data import MemoryBlock
+            ctx.memories.append(MemoryBlock(
+                title="知识库", source="knowledge", content=text, order=20,
+            ))
 
 
 class FakeAnalyzer:
@@ -112,13 +126,12 @@ def _system_texts(messages: list[dict]) -> list[str]:
 class TestPersonaAgentBase:
     def test_empty_persona_name_raises(self):
         with pytest.raises(ValueError, match="persona_name"):
-            PersonaAgent(_CONFIG, persona_name="", executor=DirectExecutor())
+            PersonaAgent(_CONFIG, persona_name="")
 
     def test_get_system_prompt_default(self):
         """基类 get_system_prompt 返回构造时传入的 system_prompt。"""
         persona = PersonaAgent(
             _CONFIG, persona_name="x", system_prompt="hello",
-            executor=DirectExecutor(),
         )
         assert persona.get_system_prompt() == "hello"
 
@@ -133,14 +146,14 @@ class TestPersonaAgentBase:
 
 class TestBuffettPersona:
     def test_prompt_has_voice_and_checklist(self):
-        prompt = BuffettPersona(_CONFIG, executor=DirectExecutor()).get_system_prompt()
+        prompt = BuffettPersona(_CONFIG).get_system_prompt()
         assert "巴菲特" in prompt
         assert "护城河" in prompt
         assert "JSON" in prompt
 
     @pytest.mark.asyncio
     async def test_chat_injects_persona_prompt(self):
-        persona = BuffettPersona(_CONFIG, executor=DirectExecutor())
+        persona = BuffettPersona(_CONFIG)
         mock = _inject_mock(persona)
         result = await persona.chat("看这条新闻：某公司发布财报")
         assert result.content == "mock response for gpt-4o"
@@ -152,13 +165,14 @@ class TestBuffettPersona:
         assert not any(s.startswith("## 专业分析\n") for s in systems)
 
     @pytest.mark.asyncio
-    async def test_make_ctx_sets_persona_name(self):
-        persona = BuffettPersona(_CONFIG, executor=DirectExecutor())
+    async def test_make_ctx_sets_system_prompt(self):
+        persona = BuffettPersona(_CONFIG)
         ctx = await persona._make_ctx("hi", "sess", "")
-        assert ctx.persona_name == "buffett"
         assert ctx.system_prompt == persona.get_system_prompt()
-        assert ctx.knowledge_context is None
-        assert ctx.analysis_context is None
+        # Context 不再有 persona_name/analysis_context/knowledge_context 字段
+        assert not hasattr(ctx, "persona_name")
+        assert not hasattr(ctx, "analysis_context")
+        assert not hasattr(ctx, "knowledge_context")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -204,7 +218,7 @@ class TestSentimentPersona:
     @pytest.mark.asyncio
     async def test_chat_injects_analysis_block(self):
         persona = SentimentPersona(
-            _CONFIG, analyzer=FakeAnalyzer(score=72), executor=DirectExecutor()
+            _CONFIG, analyzer=FakeAnalyzer(score=72),
         )
         mock = _inject_mock(persona)
         await persona.chat("市场情绪极度乐观")
@@ -218,7 +232,7 @@ class TestSentimentPersona:
     @pytest.mark.asyncio
     async def test_chat_without_analyzer_no_analysis_block(self):
         persona = SentimentPersona(
-            _CONFIG, analyzer=None, executor=DirectExecutor()
+            _CONFIG, analyzer=None,
         )
         mock = _inject_mock(persona)
         await persona.chat("hi")
@@ -233,33 +247,11 @@ class TestSentimentPersona:
 
 class TestKnowledgeInjection:
     @pytest.mark.asyncio
-    async def test_make_ctx_injects_knowledge(self):
-        fake_kb = FakeKnowledge(text="巴菲特致股东信片段：护城河...")
-        persona = PersonaAgent(
-            _CONFIG, persona_name="buffett", knowledge=fake_kb,
-            kb_namespace="investing/buffett", executor=DirectExecutor(),
-        )
-        ctx = await persona._make_ctx("护城河", "sess", "")
-        assert ctx.knowledge_context == "巴菲特致股东信片段：护城河..."
-        assert fake_kb.last_query == "护城河"
-        assert fake_kb.last_ns == "investing/buffett"
-
-    @pytest.mark.asyncio
-    async def test_make_ctx_empty_knowledge_skipped(self):
-        fake_kb = FakeKnowledge(text="")
-        persona = PersonaAgent(
-            _CONFIG, persona_name="buffett", knowledge=fake_kb,
-            kb_namespace="investing/buffett", executor=DirectExecutor(),
-        )
-        ctx = await persona._make_ctx("query", "sess", "")
-        assert ctx.knowledge_context is None  # 空串不注入
-
-    @pytest.mark.asyncio
     async def test_chat_injects_knowledge_block(self):
-        fake_kb = FakeKnowledge(text="知识片段正文")
+        fake_kb = FakeKnowledge(text="知识片段正文", namespace="investing/buffett")
         persona = PersonaAgent(
             _CONFIG, persona_name="buffett", knowledge=fake_kb,
-            kb_namespace="investing/buffett", executor=DirectExecutor(),
+            kb_namespace="investing/buffett",
         )
         mock = _inject_mock(persona)
         await persona.chat("查询")
@@ -267,11 +259,26 @@ class TestKnowledgeInjection:
         kb_block = [s for s in systems if s.startswith("## 知识库\n")]
         assert len(kb_block) == 1
         assert "知识片段正文" in kb_block[0]
+        assert fake_kb.last_query == "查询"
+        assert fake_kb.last_ns == "investing/buffett"
+
+    @pytest.mark.asyncio
+    async def test_chat_empty_knowledge_skipped(self):
+        """知识引擎返回空串时不注入 ## 知识库 块。"""
+        fake_kb = FakeKnowledge(text="", namespace="investing/buffett")
+        persona = PersonaAgent(
+            _CONFIG, persona_name="buffett", knowledge=fake_kb,
+            kb_namespace="investing/buffett",
+        )
+        mock = _inject_mock(persona)
+        await persona.chat("查询")
+        systems = _system_texts(mock.last_messages)
+        assert not any(s.startswith("## 知识库\n") for s in systems)
 
     @pytest.mark.asyncio
     async def test_no_knowledge_engine_no_block(self):
         persona = PersonaAgent(
-            _CONFIG, persona_name="buffett", executor=DirectExecutor(),
+            _CONFIG, persona_name="buffett",
         )
         mock = _inject_mock(persona)
         await persona.chat("查询")
@@ -288,7 +295,7 @@ class TestCreatePersona:
     @pytest.mark.asyncio
     async def test_create_buffett(self):
         persona = await create_persona(
-            "buffett", _CONFIG, register_mcp=False, executor=DirectExecutor()
+            "buffett", _CONFIG, register_mcp=False,
         )
         assert isinstance(persona, BuffettPersona)
         assert persona.persona_name == "buffett"
@@ -299,7 +306,7 @@ class TestCreatePersona:
     @pytest.mark.asyncio
     async def test_create_sentiment_with_analyzer(self):
         persona = await create_persona(
-            "sentiment", _CONFIG, register_mcp=False, executor=DirectExecutor(),
+            "sentiment", _CONFIG, register_mcp=False,
             analyzer=FakeAnalyzer(score=72),
         )
         assert isinstance(persona, SentimentPersona)
@@ -314,7 +321,7 @@ class TestCreatePersona:
     @pytest.mark.asyncio
     async def test_created_persona_can_chat(self):
         persona = await create_persona(
-            "buffett", _CONFIG, register_mcp=False, executor=DirectExecutor()
+            "buffett", _CONFIG, register_mcp=False,
         )
         mock = _inject_mock(persona)
         result = await persona.chat("你好")
@@ -391,7 +398,7 @@ class TestPhase3Personas:
         (WoodPersona, "wood", "创新"),
     ])
     def test_pure_prompt_personas(self, cls, name, voice):
-        persona = cls(_CONFIG, executor=DirectExecutor())
+        persona = cls(_CONFIG)
         assert persona.persona_name == name
         assert persona.kb_namespace  # 均挂知识库命名空间
         prompt = persona.get_system_prompt()
@@ -401,7 +408,7 @@ class TestPhase3Personas:
 
     def test_industry_pre_analyze_with_keywords(self):
         persona = IndustryPersona(
-            _CONFIG, analyzer=FakeKeywordAnalyzer(["新能源", "锂电"]), executor=DirectExecutor()
+            _CONFIG, analyzer=FakeKeywordAnalyzer(["新能源", "锂电"]),
         )
         result = persona._pre_analyze("宁德时代发布新电池")
         assert result is not None
@@ -409,7 +416,7 @@ class TestPhase3Personas:
         assert result["text_sample"]
 
     def test_industry_pre_analyze_no_analyzer(self):
-        persona = IndustryPersona(_CONFIG, analyzer=None, executor=DirectExecutor())
+        persona = IndustryPersona(_CONFIG, analyzer=None)
         assert persona._pre_analyze("任何内容") is None
 
     def test_industry_requires_analyzer(self):
@@ -417,7 +424,7 @@ class TestPhase3Personas:
 
     def test_blackswan_extreme_panic(self):
         persona = BlackswanPersona(
-            _CONFIG, analyzer=FakeAnalyzer(score=10), executor=DirectExecutor()
+            _CONFIG, analyzer=FakeAnalyzer(score=10),
         )
         result = persona._pre_analyze("市场崩盘恐慌")
         assert result["情绪区间"] == "极端恐慌"
@@ -425,7 +432,7 @@ class TestPhase3Personas:
 
     def test_blackswan_normal_range(self):
         persona = BlackswanPersona(
-            _CONFIG, analyzer=FakeAnalyzer(score=50), executor=DirectExecutor()
+            _CONFIG, analyzer=FakeAnalyzer(score=50),
         )
         result = persona._pre_analyze("平稳震荡")
         assert result["极端异常"] == "否"
@@ -435,7 +442,7 @@ class TestPhase3Personas:
         assert BlackswanPersona.requires_analyzer is True
 
     def test_editor_pre_analyze_with_signals(self):
-        persona = EditorPersona(_CONFIG, executor=DirectExecutor())
+        persona = EditorPersona(_CONFIG)
         persona.set_signals([
             PersonaSignal(persona="buffett", display_name="巴菲特",
                           stance="看多", confidence=80, reasoning="护城河"),
@@ -446,11 +453,11 @@ class TestPhase3Personas:
         assert "看多" in result["各角色信号"]
 
     def test_editor_pre_analyze_no_signals(self):
-        persona = EditorPersona(_CONFIG, executor=DirectExecutor())
+        persona = EditorPersona(_CONFIG)
         assert persona._pre_analyze("hi") is None
 
     def test_editor_kb_namespace_empty(self):
-        persona = EditorPersona(_CONFIG, executor=DirectExecutor())
+        persona = EditorPersona(_CONFIG)
         assert persona.kb_namespace == ""
         assert persona.persona_name == "editor"
 

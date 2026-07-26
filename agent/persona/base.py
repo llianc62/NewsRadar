@@ -13,7 +13,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 from ..agent import DefaultAgent
-from ..data import Context
+from ..data import Context, MemoryBlock
 
 if TYPE_CHECKING:
     from ..knowledge import KnowledgeEngine
@@ -62,11 +62,11 @@ class PersonaAgent(DefaultAgent):
             tools=tools,
             running_mode=running_mode,
             knowledge=knowledge,
-            kb_namespace=kb_namespace,
         )
         if not persona_name:
             raise ValueError("persona_name 不能为空")
         self.persona_name = persona_name
+        self.kb_namespace = kb_namespace
         self._base_prompt = base_prompt
 
     def get_system_prompt(self) -> str:
@@ -88,12 +88,17 @@ class PersonaAgent(DefaultAgent):
         self, user_input: str, session_id: str, model_name: str
     ) -> Context:
         ctx = await super()._make_ctx(user_input, session_id, model_name)
-        ctx.persona_name = self.persona_name
         ctx.system_prompt = self.get_system_prompt()
 
-        # 硬编码专业分析（sync CPU 工作 -> to_thread）
+        # 硬编码专业分析（sync CPU 工作 -> to_thread）-> MemoryBlock
+        # 注入 ctx.memories，executor 的 _build_llm_messages 会渲染成
+        # ``## 专业分析`` system 块（spec 3.5 注入规则）。
         analysis = await asyncio.to_thread(self._pre_analyze, user_input)
-        ctx.analysis_context = self._render_analysis(analysis) if analysis else None
+        if analysis:
+            ctx.memories.append(MemoryBlock(
+                title="专业分析", source="analysis",
+                content=self._render_analysis(analysis), order=10,
+            ))
 
         return ctx
 

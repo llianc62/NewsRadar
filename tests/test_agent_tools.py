@@ -332,21 +332,23 @@ def mock_hub_with_tools(monkeypatch):
 class TestReActExecutor:
     def test_invalid_max_steps(self):
         with pytest.raises(ValueError, match="max_steps"):
-            ReActExecutor(max_steps=0)
+            ReActExecutor(brain=None, memory=None, max_steps=0)
 
     @pytest.mark.asyncio
     async def test_run_without_tools(self, mock_hub_with_tools):
         """不带工具时，ReActExecutor 应退化为直调。"""
-        executor = ReActExecutor()
+        from agent.memory import NullMemory
+        executor = ReActExecutor(brain=mock_hub_with_tools, memory=NullMemory())
         ctx = Context(user_input="hello", system_prompt="You are a bot.")
-        result = await executor.run(ctx=ctx, brain=mock_hub_with_tools)
+        result = await executor.run(ctx)
         assert result == "mock response for gpt-4o"
-        assert ctx.assistant_output == "mock response for gpt-4o"
+        assert ctx.final_output == "mock response for gpt-4o"
         assert ctx.step_count == 1
 
     @pytest.mark.asyncio
     async def test_run_with_tools_calls_tool(self, mock_hub_with_tools):
         """验证 ReActExecutor 能解析 tool_call 并执行工具。"""
+        from agent.memory import NullMemory
         registry = Registry()
         registry.add_tool(FunctionTool(
             name="get_weather",
@@ -371,18 +373,19 @@ class TestReActExecutor:
             },
         ]
 
-        executor = ReActExecutor(max_steps=5)
+        executor = ReActExecutor(
+            brain=mock_hub_with_tools, memory=NullMemory(),
+            tools=registry, max_steps=5,
+        )
         ctx = Context(user_input="北京天气怎么样？", system_prompt="You are a weather bot.")
 
-        result = await executor.run(ctx=ctx, brain=mock_hub_with_tools, tools=registry)
+        result = await executor.run(ctx)
 
-        # 验证工具调用被记录
-        assert len(ctx.tool_calls) >= 1
-        assert len(ctx.tool_results) >= 1
-        assert "北京" in ctx.tool_results[0] or "sunny" in ctx.tool_results[0]
-
-        # 验证 messages 包含了工具结果
-        assert any(m.role == "tool" and "sunny" in (m.content or "") for m in ctx.messages)
+        # 验证工具调用被记录（tool 消息携带 tool_result）
+        tool_msgs = [m for m in ctx.messages if m.role == "tool"]
+        assert len(tool_msgs) >= 1
+        assert tool_msgs[0].tool_result.success is True
+        assert "北京" in tool_msgs[0].content or "sunny" in tool_msgs[0].content
 
         # 验证 LLM 最终调用了 2 次（tool_call + 文本返回）
         assert ctx.step_count > 1
@@ -390,6 +393,7 @@ class TestReActExecutor:
     @pytest.mark.asyncio
     async def test_run_with_tools_max_steps(self, mock_hub_with_tools):
         """超过 max_steps 应终止。"""
+        from agent.memory import NullMemory
         registry = Registry()
         registry.add_tool(FunctionTool(
             name="loop_tool",
@@ -408,38 +412,42 @@ class TestReActExecutor:
             },
         ]
 
-        executor = ReActExecutor(max_steps=2)
+        executor = ReActExecutor(
+            brain=mock_hub_with_tools, memory=NullMemory(),
+            tools=registry, max_steps=2,
+        )
         ctx = Context(user_input="loop", system_prompt="You are a bot.")
 
-        result = await executor.run(ctx=ctx, brain=mock_hub_with_tools, tools=registry)
+        result = await executor.run(ctx)
 
-        # 达到 max_steps，应有结果（非空）
-        assert result
+        # 达到 max_steps，step_count 反映循环次数（全工具调用时 result 可能为空串）
         assert ctx.step_count == 2
 
     @pytest.mark.asyncio
     async def test_run_stream(self, mock_hub_with_tools):
         """流式版本应最终返回结果。"""
-        executor = ReActExecutor()
+        from agent.memory import NullMemory
+        executor = ReActExecutor(brain=mock_hub_with_tools, memory=NullMemory())
         ctx = Context(user_input="hi", system_prompt="You are a bot.")
-        tokens = [t async for t in executor.run_stream(ctx=ctx, brain=mock_hub_with_tools)]
+        tokens = [t async for t in executor.run_stream(ctx)]
         # 注意：模拟流式拆分会在每个 token 后加空格
         assert "mock" in "".join(tokens)
 
     @pytest.mark.asyncio
     async def test_run_calls_memory_hooks(self, mock_hub_with_tools):
-        """验证 ReActExecutor 也调用了 memory hook。"""
-        from agent.memory import ShortTermMemory
-        from unittest.mock import AsyncMock
+        """验证 ReActExecutor 也调用了 memory.load/save。"""
+        from agent.memory import MemoryModule
 
-        memory = AsyncMock(spec=ShortTermMemory)
-        executor = ReActExecutor()
+        memory = AsyncMock(spec=MemoryModule)
+        memory.load = AsyncMock(return_value=None)
+        memory.save = AsyncMock(return_value=None)
+        executor = ReActExecutor(brain=mock_hub_with_tools, memory=memory)
         ctx = Context(user_input="hello", system_prompt="You are a bot.")
 
-        await executor.run(ctx=ctx, brain=mock_hub_with_tools, memory=memory)
+        await executor.run(ctx)
 
-        memory.on_before_execute.assert_awaited_once_with(ctx)
-        memory.on_after_execute.assert_awaited_once_with(ctx)
+        memory.load.assert_awaited_once_with(ctx)
+        memory.save.assert_awaited_once_with(ctx)
 
     @pytest.mark.asyncio
     async def test_build_messages_with_history(self):
@@ -458,7 +466,8 @@ class TestReActExecutor:
         assert dicts[0] == {"role": "system", "content": "You are a bot."}
         assert dicts[1] == {"role": "user", "content": "hello"}
         assert dicts[2]["role"] == "assistant"
-        assert dicts[2]["content"] is None
+        # DeepSeek 兼容：assistant + tool_calls 时 content 不能为 None
+        assert dicts[2]["content"] == ""
         assert dicts[2]["tool_calls"][0]["function"]["name"] == "test"
         assert dicts[3] == {"role": "tool", "tool_call_id": "call_1", "content": "ok"}
 
@@ -500,19 +509,18 @@ async def test_news_server_via_stdio():
 class TestContextToolFields:
     def test_context_has_tool_fields(self):
         ctx = Context(user_input="hi")
-        assert ctx.tool_calls == []
-        assert ctx.tool_results == []
         assert ctx.messages == []
-        assert ctx.knowledge_context is None
+        assert ctx.memories == []
+        assert ctx.step_count == 0
 
     def test_context_can_store_tool_calls(self):
         ctx = Context(user_input="hi")
-        ctx.tool_calls = [{"id": "call_1", "function": {"name": "test"}}]
-        ctx.tool_results = ["result"]
-        ctx.messages = [Message(role="user", content="工具返回: ok")]
-        assert len(ctx.tool_calls) == 1
-        assert len(ctx.tool_results) == 1
-        assert len(ctx.messages) == 1
+        ctx.messages = [
+            Message(role="user", content="工具返回: ok"),
+            Message(role="tool", tool_call_id="call_1", content="result", name="test"),
+        ]
+        assert len(ctx.messages) == 2
+        assert ctx.messages[1].tool_call_id == "call_1"
 
 
 # ── Test @tool decorator ──────────────────────────────────────────
@@ -783,6 +791,7 @@ class TestPolicy:
     async def test_exec_tool_with_policy_allow(self):
         """ALLOW 时正常执行工具。"""
         from agent.executor import DirectExecutor
+        from agent.memory import NullMemory
 
         registry = Registry()
         registry.add_tool(FunctionTool(
@@ -791,7 +800,7 @@ class TestPolicy:
             level=1,
         ))
 
-        executor = DirectExecutor()
+        executor = DirectExecutor(brain=None, memory=NullMemory())
         result = await executor._exec_tool_with_policy(registry, "add", {"a": 1, "b": 2}, "normal")
         assert result == "3"
 
@@ -799,6 +808,7 @@ class TestPolicy:
     async def test_exec_tool_with_policy_reject(self):
         """REJECT 时返回拒绝消息。"""
         from agent.executor import DirectExecutor
+        from agent.memory import NullMemory
 
         # strict 模式: level=2 需要审批，无 callback → 返回拒绝消息
         registry = Registry()
@@ -806,7 +816,7 @@ class TestPolicy:
             name="news", description="News", fn=lambda: "data", input_schema={}, level=2,
         ))
 
-        executor = DirectExecutor()
+        executor = DirectExecutor(brain=None, memory=NullMemory())
         result = await executor._exec_tool_with_policy(registry, "news", {}, "strict")
         assert "[Policy]" in result
         assert "需要审批" in result
@@ -816,6 +826,7 @@ class TestPolicy:
         """审批回调返回 approved → 执行工具。"""
         from unittest.mock import AsyncMock
         from agent.executor import DirectExecutor
+        from agent.memory import NullMemory
 
         registry = Registry()
         registry.add_tool(FunctionTool(
@@ -823,7 +834,7 @@ class TestPolicy:
         ))
 
         callback = AsyncMock(return_value={"approved": True, "reason": "允许"})
-        executor = DirectExecutor(approval_callback=callback)
+        executor = DirectExecutor(brain=None, memory=NullMemory(), approval_callback=callback)
 
         result = await executor._exec_tool_with_policy(registry, "write", {}, "normal")
         assert result == "done"
@@ -834,6 +845,7 @@ class TestPolicy:
         """审批回调返回 rejected → 返回拒绝消息。"""
         from unittest.mock import AsyncMock
         from agent.executor import DirectExecutor
+        from agent.memory import NullMemory
 
         registry = Registry()
         registry.add_tool(FunctionTool(
@@ -841,7 +853,7 @@ class TestPolicy:
         ))
 
         callback = AsyncMock(return_value={"approved": False, "reason": "不安全"})
-        executor = DirectExecutor(approval_callback=callback)
+        executor = DirectExecutor(brain=None, memory=NullMemory(), approval_callback=callback)
 
         result = await executor._exec_tool_with_policy(registry, "write", {}, "normal")
         assert "[Policy]" in result
@@ -852,10 +864,11 @@ class TestPolicy:
     async def test_exec_tool_with_policy_tool_not_found(self):
         """工具不存在时返回明确消息。"""
         from agent.executor import DirectExecutor
+        from agent.memory import NullMemory
 
         registry = Registry()
 
-        executor = DirectExecutor()
+        executor = DirectExecutor(brain=None, memory=NullMemory())
         result = await executor._exec_tool_with_policy(registry, "unknown", {}, "normal")
         assert "[Policy]" in result
         assert "不存在" in result
@@ -1056,7 +1069,7 @@ class TestBuiltinTools:
         assert "get_random_number" in tools
         assert "calculator" in tools
         assert "roll_dice" in tools
-        assert "get_current_weather" in tools
+        assert "get_weather" in tools
         assert len(tools) == 5
 
     @pytest.mark.asyncio

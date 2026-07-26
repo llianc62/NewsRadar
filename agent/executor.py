@@ -190,8 +190,8 @@ class ReActExecutor(Executor):
 
     def __init__(
         self,
-        brain: ModelHub,
-        memory: MemoryModule,
+        brain: ModelHub | None = None,
+        memory: MemoryModule | None = None,
         knowledge=None,
         tools=None,
         max_steps: int = 10,

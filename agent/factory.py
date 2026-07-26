@@ -330,6 +330,19 @@ async def create_persona(
         tools = setup_builtin_tools()
         if register_mcp and mcp_cfg:
             await _register_mcp_tools(tools, mcp_cfg)
+
+    # 每个角色绑定独立 namespace 的 KnowledgeEngine（共享 store+embedding）
+    if knowledge is not None and spec.kb_namespace:
+        from .knowledge import KnowledgeEngine
+        knowledge = KnowledgeEngine(
+            store=knowledge._store,
+            embedding=knowledge._embedding,
+            top_k=knowledge._top_k,
+            namespace=spec.kb_namespace,
+        )
+
+    # executor 未指定时创建空壳，brain/memory/tools 由 DefaultAgent 注入
+    # （确保 persona.brain 与 executor._brain 是同一对象，方便测试 mock）
     if executor is None:
         if spec.cls.prefer_direct_executor:
             from .executor import DirectExecutor

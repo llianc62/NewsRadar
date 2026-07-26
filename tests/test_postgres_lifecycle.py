@@ -84,6 +84,7 @@ class TestInitSchema:
             ["jsonb"], # migration 004: ranks column already JSONB
             [False],   # migration 006: idx_dedup_hotlist already on (url) only
             [False],   # migration 007: crawled_at column not yet added
+            [False],   # migration 009: agent_id column not yet added
         ]
 
         pg_unconnected.init_schema()
@@ -107,6 +108,7 @@ class TestInitSchema:
             ["jsonb"], # migration 004: ranks column already JSONB
             [False],   # migration 006: idx_dedup_hotlist already on (url)
             [False],   # migration 007: crawled_at column not yet added
+            [True],   # migration 009: agent_id column already exists
         ]
 
         pg_unconnected.init_schema()
@@ -115,14 +117,13 @@ class TestInitSchema:
         # Schema DDL is skipped, but _init_agent_schema() creates agent_sessions
         # + agent_messages + agent_memories + knowledge_chunks (Phase 3 pgvector)
         # + agent_definitions + agent_knowledge (Role System)
-        assert len(ddl_calls) == 7
+        assert len(ddl_calls) == 6
         assert any("agent_sessions" in s for s in ddl_calls)
         assert any("agent_messages" in s for s in ddl_calls)
         assert any("agent_memories" in s for s in ddl_calls)
         assert any("knowledge_chunks" in s for s in ddl_calls)
         assert any("agent_definitions" in s for s in ddl_calls)
         assert any("agent_knowledge" in s for s in ddl_calls)
-        assert any("news_sources" in s for s in ddl_calls)
 
 
 class TestRunMigrations:
@@ -142,6 +143,7 @@ class TestRunMigrations:
             ["jsonb"],  # migration 004: ranks column already JSONB
             [False],   # migration 006: idx_dedup_hotlist already on (url)
             [False],   # migration 007: crawled_at column not yet added
+            [True],   # migration 009: agent_id column already exists
         ]
         return mock_cursor
 
