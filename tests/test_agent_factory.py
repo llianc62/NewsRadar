@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from agent.factory import AgentFactory, _register_mcp_tools, create_agent, create_persona
-from agent.data import AgentConfig, AgentDefinition, AgentKnowledge
+from agent.agent import DefaultAgent
+from agent.executor import ReActExecutor
+from agent.memory import NullMemory
+from agent.data import AgentConfig, AgentDefinition, AgentKnowledge, Context
 from agent.tools import Registry
 from agent.tools.base import BaseTool, ToolDef
 
@@ -46,6 +50,33 @@ def make_registry(tool_names: list[str]) -> Registry:
     for name in tool_names:
         reg.add_tool(_FakeTool(name, f"Desc of {name}"))
     return reg
+
+
+def make_ai(content="", tool_calls=None):
+    """Create an AIMessage-like object for executor tests."""
+    tcs = []
+    for tc in (tool_calls or []):
+        tcs.append({
+            "name": tc["name"],
+            "args": tc.get("args", {}),
+            "id": tc.get("id", ""),
+            "type": "tool_call",
+        })
+    return AIMessage(content=content, tool_calls=tcs)
+
+
+@pytest.fixture
+def mock_brain():
+    """Mock ModelHub for executor tests.
+
+    Self-referential: brain.get() returns brain itself, so brain.chat
+    is the client chat method.
+    """
+    brain = MagicMock()
+    brain.get.return_value = brain
+    brain.get_model_version.return_value = "test-model-v1"
+    brain.chat = AsyncMock(return_value=make_ai(content="", tool_calls=[]))
+    return brain
 
 
 # ── AgentFactory tests ───────────────────────────────────────────
@@ -216,10 +247,10 @@ class TestAgentFactoryBuild:
             )
             agent = factory.build(defn)
 
-        # DefaultAgent stores knowledge in brain or we can check it was created
+        # DefaultAgent stores knowledge; namespace is bound to KnowledgeEngine
         assert agent is not None
         assert agent._knowledge is not None
-        assert agent._kb_namespace == "kb_test"
+        assert agent._knowledge._namespace == "kb_test"
 
     def test_build_with_no_tools(self):
         """build() works with an AgentDefinition that has no tools."""
@@ -278,3 +309,45 @@ class TestBackwardCompatibility:
     def test_register_mcp_tools_signature(self):
         """_register_mcp_tools is still importable and callable."""
         assert callable(_register_mcp_tools)
+
+
+# ── DefaultAgent + executor integration (Task 11) ───────────────
+
+
+class TestDefaultAgentExecutorIntegration:
+    """Verify DefaultAgent delegates to executor.run(ctx) correctly."""
+
+    @pytest.mark.asyncio
+    async def test_chat_uses_executor_run(self, mock_brain):
+        """DefaultAgent.chat calls executor.run(ctx) and returns AgentResult."""
+        mock_brain.chat.return_value = make_ai(content="a", tool_calls=[])
+        ex = ReActExecutor(brain=mock_brain, memory=NullMemory())
+        agent = DefaultAgent(
+            config={"default": {"protocol": "openai", "model": "gpt-4o", "api_key": "sk-test"}},
+            executor=ex,
+            memory=NullMemory(),
+        )
+        result = await agent.chat("hi", session_id="s1")
+        assert result.content == "a"
+        assert isinstance(result.step_count, int)
+
+    @pytest.mark.asyncio
+    async def test_chat_stream_uses_executor_run_stream(self, mock_brain):
+        """DefaultAgent.chat_stream delegates to executor.run_stream(ctx)."""
+        from langchain_core.messages import AIMessageChunk
+
+        mock_brain.chat.return_value = make_ai(content="hello world", tool_calls=[])
+
+        async def _stream(*args, **kwargs):
+            for tok in ["hello ", "world"]:
+                yield AIMessageChunk(content=tok)
+
+        mock_brain.chat_stream = _stream
+        ex = ReActExecutor(brain=mock_brain, memory=NullMemory())
+        agent = DefaultAgent(
+            config={"default": {"protocol": "openai", "model": "gpt-4o", "api_key": "sk-test"}},
+            executor=ex,
+            memory=NullMemory(),
+        )
+        tokens = [t async for t in agent.chat_stream("hi", session_id="s1")]
+        assert "".join(tokens).startswith("hello")

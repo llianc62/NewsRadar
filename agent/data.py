@@ -97,8 +97,6 @@ class AgentResult:
     content: str
     model_used: str = ""
     total_tokens: int = 0
-    tool_calls: list[dict] = field(default_factory=list)
-    tool_results: list[str] = field(default_factory=list)
     step_count: int = 0
 
 

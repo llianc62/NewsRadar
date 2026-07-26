@@ -92,10 +92,10 @@ class TestContext:
         assert ctx.session_id == ""
         assert ctx.system_prompt == ""
         assert ctx.model_name == "default"
-        assert ctx.assistant_output == ""
+        assert ctx.final_output == ""
         assert ctx.step_count == 0
-        assert ctx.model_used == ""
-        assert ctx.total_tokens == 0
+        assert ctx.total_input_tokens == 0
+        assert ctx.total_output_tokens == 0
 
     def test_custom_values(self):
         ctx = Context(
@@ -117,26 +117,12 @@ class TestAgentResult:
         assert r.content == "hello world"
         assert r.model_used == ""
         assert r.total_tokens == 0
-        assert r.tool_calls == []
-        assert r.tool_results == []
         assert r.step_count == 0
 
     def test_with_metadata(self):
         r = AgentResult(content="hi", model_used="gpt-4o", total_tokens=100)
         assert r.model_used == "gpt-4o"
         assert r.total_tokens == 100
-
-    def test_with_tool_calls(self):
-        r = AgentResult(
-            content="done",
-            tool_calls=[{"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": '{"city":"北京"}'}}],
-            tool_results=["北京 今日天气: Sunny 25°C"],
-            step_count=2,
-        )
-        assert len(r.tool_calls) == 1
-        assert r.tool_calls[0]["function"]["name"] == "get_weather"
-        assert "Sunny" in r.tool_results[0]
-        assert r.step_count == 2
 
 
 # ── Test Client 构造 ──────────────────────────────────────────
@@ -211,8 +197,9 @@ class TestModelHub:
 
 
 @pytest.fixture
-def executor():
-    return DirectExecutor()
+def executor(mock_hub):
+    from agent.memory import NullMemory
+    return DirectExecutor(brain=mock_hub, memory=NullMemory())
 
 
 @pytest.fixture
@@ -228,14 +215,14 @@ class TestDirectExecutor:
     @pytest.mark.asyncio
     async def test_run_returns_response(self, executor, mock_hub):
         ctx = Context(user_input="hello", system_prompt="You are a bot.")
-        result = await executor.run(ctx, mock_hub)
+        result = await executor.run(ctx)
         assert result == "mock response for gpt-4o"
-        assert ctx.assistant_output == "mock response for gpt-4o"
+        assert ctx.final_output == "mock response for gpt-4o"
 
     @pytest.mark.asyncio
     async def test_run_builds_messages_correctly(self, executor, mock_hub):
         ctx = Context(user_input="hello", system_prompt="You are a bot.")
-        await executor.run(ctx, mock_hub)
+        await executor.run(ctx)
         client = mock_hub._clients["default"]
         assert client.last_messages == [
             {"role": "system", "content": "You are a bot."},
@@ -245,7 +232,7 @@ class TestDirectExecutor:
     @pytest.mark.asyncio
     async def test_run_without_system_prompt(self, executor, mock_hub):
         ctx = Context(user_input="hello")
-        await executor.run(ctx, mock_hub)
+        await executor.run(ctx)
         client = mock_hub._clients["default"]
         assert client.last_messages == [
             {"role": "user", "content": "hello"},
@@ -254,14 +241,14 @@ class TestDirectExecutor:
     @pytest.mark.asyncio
     async def test_run_stream_yields_tokens(self, executor, mock_hub):
         ctx = Context(user_input="hello", system_prompt="You are a bot.")
-        tokens = [t async for t in executor.run_stream(ctx, mock_hub)]
+        tokens = [t async for t in executor.run_stream(ctx)]
         assert tokens == ["mock ", "response"]
-        assert ctx.assistant_output == "mock response"
+        assert ctx.final_output == "mock response"
 
     @pytest.mark.asyncio
     async def test_run_stream_without_system_prompt(self, executor, mock_hub):
         ctx = Context(user_input="hello")
-        tokens = [t async for t in executor.run_stream(ctx, mock_hub)]
+        tokens = [t async for t in executor.run_stream(ctx)]
         assert tokens == ["mock ", "response"]
         client = mock_hub._clients["default"]
         assert client.last_messages == [
@@ -294,8 +281,9 @@ class TestDefaultAgent:
 
     @pytest.mark.asyncio
     async def test_chat_with_custom_model_name(self, agent):
-        with pytest.raises(KeyError):
-            await agent.chat("hello", model_name="nonexistent")
+        """未知模型名由 executor 捕获，返回错误文本而非抛出。"""
+        result = await agent.chat("hello", model_name="nonexistent")
+        assert "Executor 错误" in result.content
 
     @pytest.mark.asyncio
     async def test_chat_stream_yields_tokens(self, agent):
@@ -319,7 +307,7 @@ class TestDefaultAgent:
         assert hub._config == {}
 
     def test_default_executor(self, monkeypatch):
-        """不传 executor 时自动使用 DirectExecutor。"""
+        """不传 executor 时自动使用 ReActExecutor。"""
         _patch_hub(monkeypatch)
 
         agent = DefaultAgent(
@@ -327,7 +315,7 @@ class TestDefaultAgent:
                 "default": {"protocol": "openai", "model": "gpt-4o", "api_key": "sk-xxx"},
             },
         )
-        assert isinstance(agent.executor, DirectExecutor)
+        assert isinstance(agent.executor, ReActExecutor)
 
     def test_agent_requires_config(self):
         """config 是必传参数。"""
@@ -364,9 +352,9 @@ class TestReActExecutor:
     @pytest.mark.asyncio
     async def test_run_without_tools(self, mock_hub_with_tools):
         """无工具时直接返回文本。"""
-        executor = ReActExecutor()
+        executor = ReActExecutor(brain=mock_hub_with_tools, memory=NullMemory())
         ctx = Context(user_input="hello", system_prompt="You are a bot.")
-        result = await executor.run(ctx=ctx, brain=mock_hub_with_tools)
+        result = await executor.run(ctx)
         assert result == "mock response for gpt-4o"
         assert ctx.step_count == 1
 
@@ -385,16 +373,17 @@ class TestReActExecutor:
 
         # 设置 MockClient 第一阶段返回工具调用，第二阶段返回文本
         client = mock_hub_with_tools.get_default()
-        client.tool_calls_to_return = [
-            {"name": "test_tool", "args": {}, "id": "call_1", "type": "tool_call"},
-        ]
+        client.chat = AsyncMock(side_effect=[
+            make_ai(content="", tool_calls=[{"name": "test_tool", "args": {}, "id": "call_1"}]),
+            make_ai(content="final answer", tool_calls=[]),
+        ])
 
-        executor = ReActExecutor(max_steps=3)
+        executor = ReActExecutor(brain=mock_hub_with_tools, memory=NullMemory(), tools=registry, max_steps=3)
         ctx = Context(user_input="hello", system_prompt="You are a bot.")
-        result = await executor.run(ctx=ctx, brain=mock_hub_with_tools, tools=registry)
+        result = await executor.run(ctx)
 
         # 应执行工具并最终返回文本
-        assert result
+        assert result == "final answer"
         assert ctx.step_count > 1
 
     @pytest.mark.asyncio
@@ -411,43 +400,41 @@ class TestReActExecutor:
         ))
 
         client = mock_hub_with_tools.get_default()
-        client.tool_calls_to_return = [
-            {"name": "loop_tool", "args": {}, "id": "call_1", "type": "tool_call"},
-        ]
+        client.chat = AsyncMock(return_value=make_ai(
+            content="", tool_calls=[{"name": "loop_tool", "args": {}, "id": "c1"}],
+        ))
 
-        executor = ReActExecutor(max_steps=2)
+        executor = ReActExecutor(brain=mock_hub_with_tools, memory=NullMemory(), tools=registry, max_steps=2)
         ctx = Context(user_input="loop", system_prompt="You are a bot.")
 
-        result = await executor.run(ctx=ctx, brain=mock_hub_with_tools, tools=registry)
+        await executor.run(ctx)
 
-        # 达到 max_steps，应有结果（非空）
-        assert result
+        # 达到 max_steps，step_count 反映循环次数
         assert ctx.step_count == 2
 
     @pytest.mark.asyncio
     async def test_run_stream(self, mock_hub_with_tools):
         """流式版本应最终返回结果。"""
-
-        executor = ReActExecutor()
+        executor = ReActExecutor(brain=mock_hub_with_tools, memory=NullMemory())
         ctx = Context(user_input="hi", system_prompt="You are a bot.")
-        tokens = [t async for t in executor.run_stream(ctx=ctx, brain=mock_hub_with_tools)]
-        # 注意：模拟流式拆分会在每个 token 后加空格
+        tokens = [t async for t in executor.run_stream(ctx)]
         assert "mock" in "".join(tokens)
 
     @pytest.mark.asyncio
     async def test_run_calls_memory_hooks(self, mock_hub_with_tools):
-        """验证 ReActExecutor 也调用了 memory hook。"""
-        from agent.memory import ShortTermMemory
-        from unittest.mock import AsyncMock
+        """验证 ReActExecutor 调用了 memory.load 和 memory.save。"""
+        from agent.memory import MemoryModule
 
-        memory = AsyncMock(spec=ShortTermMemory)
-        executor = ReActExecutor()
+        memory = AsyncMock(spec=MemoryModule)
+        memory.load = AsyncMock(return_value=None)
+        memory.save = AsyncMock(return_value=None)
+        executor = ReActExecutor(brain=mock_hub_with_tools, memory=memory)
         ctx = Context(user_input="hello", system_prompt="You are a bot.")
 
-        await executor.run(ctx=ctx, brain=mock_hub_with_tools, memory=memory)
+        await executor.run(ctx)
 
-        memory.on_before_execute.assert_awaited_once_with(ctx)
-        memory.on_after_execute.assert_awaited_once_with(ctx)
+        memory.load.assert_awaited_once_with(ctx)
+        memory.save.assert_awaited_once_with(ctx)
 
     @pytest.mark.asyncio
     async def test_build_messages_with_history(self):

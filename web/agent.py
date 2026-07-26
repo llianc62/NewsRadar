@@ -577,9 +577,7 @@ async def agent_websocket_endpoint(ws: WebSocket):
                         chat_agent.running_mode = current_running_mode
                         chat_agent.executor._approval_callback = approval_handler
                     else:
-                        from agent.executor import ReActExecutor
                         from agent.agent import DefaultAgent
-                        from agent.tools import Registry
                         from agent.tools.tools import setup_builtin_tools
                         print("[Agent WS] Creating fallback ReActExecutor agent")
                         fallback_registry = setup_builtin_tools()
@@ -596,45 +594,10 @@ async def agent_websocket_endpoint(ws: WebSocket):
                             print(f"[Agent WS] MCP fallback connect failed: {mcp_err}")
                         chat_agent = DefaultAgent(
                             model_cfg,
-                            executor=ReActExecutor(approval_callback=approval_handler),
                             tools=fallback_registry,
                             running_mode=current_running_mode,
+                            approval_callback=approval_handler,
                         )
-
-                try:
-                    db.save_agent_message(session_id, "user", message, agent_id=agent_id or "0")
-                except Exception:
-                    pass
-
-                # 加载会话历史到 agent 记忆（解决切换智能体后上下文丢失）
-                if chat_agent is not None:
-                    try:
-                        prev = db.get_agent_messages(session_id, limit=50)
-                        if not prev:
-                            pass
-
-                        from agent.data import Message as AgentMessage
-
-                        # 构建历史 Message 对象列表（作为实际 role 消息注入 messages）
-                        history_msgs = []
-                        for m in prev:
-                            history_msgs.append(AgentMessage(
-                                role=m["role"],
-                                content=m["content"],
-                            ))
-                        chat_agent._history_messages = history_msgs
-
-                        # ShortTermMemory 兼容：同时写入 _window
-                        from agent.memory import ShortTermMemory
-                        if isinstance(chat_agent.memory, ShortTermMemory) and chat_agent.memory.turn_count == 0:
-                            for m in prev:
-                                if m["role"] == "user":
-                                    chat_agent.memory._window.append({"role": "user", "content": m["content"]})
-                                elif m["role"] == "assistant" and m["content"]:
-                                    chat_agent.memory._window.append({"role": "assistant", "content": m["content"]})
-                    except Exception:
-                        import traceback
-                        traceback.print_exc()
 
                 full_reply = ""
 
@@ -669,13 +632,6 @@ async def agent_websocket_endpoint(ws: WebSocket):
                         traceback.print_exc()
                         await ws.send_json({"type": "error", "message": str(e)[:500]})
                         return
-                    try:
-                        model_version = (model_cfg.get(current_model) or {}).get("model", "")
-                        db.save_agent_message(session_id, "assistant", full_reply,
-                                              agent_id=agent_id or "0",
-                                              model_version=model_version)
-                    except Exception:
-                        pass
                     await ws.send_json({"type": "done", "session_id": session_id, "full_reply": full_reply})
 
                 current_task = asyncio.create_task(generate())

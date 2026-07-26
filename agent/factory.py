@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from .agent import DefaultAgent
 from .executor import ReActExecutor
 from .memory import LongTermMemory, PgMemoryStorage
+from .model_hub import ModelHub
 from .data import AgentDefinition
 from .tools import Registry
 from .tools.tools import setup_builtin_tools
@@ -68,7 +69,8 @@ class AgentFactory:
 
         自动解析工具（从全局 Registry 按名查找）、知识库（从 DB
         查询 ``AgentKnowledge`` -> 构建 ``KnowledgeEngine``），
-        并装配 ReActExecutor + LongTermMemory。
+        并装配 ReActExecutor + LongTermMemory。所有运行时组件在构造时
+        注入 executor，DefaultAgent 只持有引用。
 
         Args:
             defn: 角色定义（含 system_prompt、tools、knowledge_id 等）。
@@ -77,9 +79,13 @@ class AgentFactory:
             已装配的 :class:`DefaultAgent` 实例。
         """
         tools = self._resolve_tools(defn.tools)
-        knowledge, kb_namespace = self._resolve_knowledge(defn.knowledge_id)
-        executor = ReActExecutor(max_steps=10)
-        memory = LongTermMemory(PgMemoryStorage(self._db))
+        knowledge, _kb_namespace = self._resolve_knowledge(defn.knowledge_id)
+        brain = ModelHub(self._models_config)
+        memory = LongTermMemory(self._db, PgMemoryStorage(self._db))
+        executor = ReActExecutor(
+            brain=brain, memory=memory,
+            knowledge=knowledge, tools=tools,
+        )
 
         # 拼接基座提示词 + 角色个性
         full_prompt = defn.system_prompt
@@ -90,10 +96,9 @@ class AgentFactory:
             config=self._models_config,
             executor=executor,
             memory=memory,
+            knowledge=knowledge,
             tools=tools,
             system_prompt=full_prompt,
-            knowledge=knowledge,
-            kb_namespace=kb_namespace or "",
         )
         return agent
 
@@ -115,8 +120,8 @@ class AgentFactory:
         """从 DB 查询知识库定义，构建 :class:`KnowledgeEngine`。
 
         ``knowledge_id`` 为 ``None`` 或 DB 中未找到时返回 ``(None, None)``。
-        否则返回构建好的 ``KnowledgeEngine`` 与对应 ``AgentKnowledge.namespace``。
-        Embedding 配置从环境变量读取：
+        否则返回构建好的 ``KnowledgeEngine``（已绑定 ``namespace``）与
+        对应 ``AgentKnowledge.namespace``。Embedding 配置从环境变量读取：
         ``KNOWLEDGE_EMBEDDING_API_KEY`` / ``KNOWLEDGE_EMBEDDING_BASE_URL`` /
         ``KNOWLEDGE_EMBEDDING_MODEL``。
         """
@@ -135,6 +140,7 @@ class AgentFactory:
                 model=os.environ.get("KNOWLEDGE_EMBEDDING_MODEL", "text-embedding-3-small"),
             ),
             top_k=self._top_k,
+            namespace=kb.namespace or "",
         )
         return engine, kb.namespace or None
 
@@ -146,6 +152,7 @@ async def create_agent(
     max_steps: int = 10,
     register_mcp: bool = True,
     mcp_cfg: dict | None = None,
+    db=None,
 ) -> DefaultAgent:
     """创建配置完整的 DefaultAgent（ReActExecutor + 工具）。
 
@@ -155,11 +162,12 @@ async def create_agent(
         max_steps: ReAct 循环最大步数
         register_mcp: 是否注册 News MCP Server 的工具
         mcp_cfg: ``config["mcp_server"]``，为 None 时不注册 MCP 工具
+        db: 可选 PostgreSQL 实例，传入时使用 ShortTermMemory 持久化对话
 
     Returns:
         已装配好 ReActExecutor 和 Registry 的 DefaultAgent
 
-    用法:
+    用法::
         agent = await create_agent(config={
             "default": {"protocol": "openai", "model": "gpt-4o", "api_key": "..."},
         })
@@ -171,12 +179,15 @@ async def create_agent(
     if register_mcp and mcp_cfg:
         await _register_mcp_tools(registry, mcp_cfg)
 
-    # 3. 创建 ShortTermMemory 让对话有上下文
-    from .memory import ShortTermMemory
-    memory = ShortTermMemory(window_size=20)
+    # 3. 记忆：有 db 用 ShortTermMemory，否则 NullMemory
+    from .memory import ShortTermMemory, NullMemory
+    memory = ShortTermMemory(db, window_size=20) if db else NullMemory()
 
-    # 4. 创建 ReActExecutor
-    executor = ReActExecutor(max_steps=max_steps)
+    # 4. 创建 ReActExecutor（构造时注入 brain/memory/tools）
+    executor = ReActExecutor(
+        brain=ModelHub(config), memory=memory,
+        tools=registry, max_steps=max_steps,
+    )
 
     # 5. 创建 Agent
     agent = DefaultAgent(
