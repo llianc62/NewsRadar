@@ -1127,3 +1127,38 @@ class TestBuiltinTools:
             "category": "general",
         }
         assert defs_by_name["roll_dice"]["category"] == "general"
+
+
+# ── Test ExecutorHook ───────────────────────────────────────────
+
+import pytest
+from agent.executor import ExecutorHook
+from agent.data import Context
+
+
+class RecordingHook(ExecutorHook):
+    def __init__(self):
+        self.calls = []
+    async def before_chat(self, ctx): self.calls.append("before_chat")
+    async def after_chat(self, ctx, ai): self.calls.append("after_chat")
+    async def before_tool(self, name, args, ctx): self.calls.append("before_tool"); return None
+    async def after_tool(self, tool_msg, ctx): self.calls.append("after_tool")
+    async def on_error(self, error, ctx): self.calls.append("on_error")
+
+
+def test_hook_subclass_override():
+    h = RecordingHook()
+    assert hasattr(h, "before_chat")
+    assert hasattr(h, "after_chat")
+    assert hasattr(h, "before_tool")
+    assert hasattr(h, "after_tool")
+    assert hasattr(h, "on_error")
+
+
+def test_hook_before_tool_returns_none_default():
+    class H(ExecutorHook): pass
+    import asyncio
+    h = H()
+    ctx = Context()
+    result = asyncio.run(h.before_tool("n", {}, ctx))
+    assert result is None

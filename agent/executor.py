@@ -70,13 +70,34 @@ class PolicyResult:
     message: str = ""
 
 
+class ExecutorHook(ABC):
+    """executor 生命周期 hook -- 开放各关键时机,子类按需 override,默认 no-op。"""
+
+    async def before_chat(self, ctx: Context) -> None:
+        """每次 LLM 调用前(可检查/改 messages、限流、监控)。"""
+
+    async def after_chat(self, ctx: Context, ai: Any) -> None:
+        """每次 LLM 返回后(AIMessage 已解析)。"""
+
+    async def before_tool(self, name: str, args: dict, ctx: Context) -> dict | None:
+        """工具执行前,可返回新 args 改写参数(返回 None 不改)。"""
+        return None
+
+    async def after_tool(self, tool_msg: Message, ctx: Context) -> None:
+        """工具执行后(tool_msg 携带 tool_result 执行详情)。"""
+
+    async def on_error(self, error: Exception, ctx: Context) -> None:
+        """executor 捕获异常时。"""
+
+
 class Executor(ABC):
     """执行器基类——定义 Agent 的执行策略。"""
 
-    def __init__(self, approval_callback=None):
+    def __init__(self, approval_callback=None, hooks: list[ExecutorHook] | None = None):
         self._approval_callback = approval_callback
         # approval_callback signature:
         #   async (tool_def, args) -> {"approved": bool, "reason": str}
+        self._hooks = hooks or []
 
     @abstractmethod
     async def run(
