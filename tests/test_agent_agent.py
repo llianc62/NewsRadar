@@ -670,3 +670,17 @@ async def test_run_stream_truncated_yields_content(mock_brain, mock_tools):
     tokens = [t async for t in ex.run_stream(ctx)]
     assert tokens  # 非空 -- 截断 content 已 yield
     assert "partial" in "".join(tokens)
+
+
+# ── Test DirectExecutor 单次 chat (Task 10) ──────────────────────
+
+
+@pytest.mark.asyncio
+async def test_direct_executor_single_chat(mock_brain):
+    mock_brain.chat.return_value = make_ai(content="direct answer", tool_calls=[])
+    ex = DirectExecutor(brain=mock_brain, memory=NullMemory())
+    ctx = Context(user_input="hi", system_prompt="sys")
+    output = await ex.run(ctx)
+    assert output == "direct answer"
+    # 无工具调用,单次
+    mock_brain.chat.assert_awaited_once()

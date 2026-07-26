@@ -172,82 +172,6 @@ class Executor(ABC):
         return PolicyResult(PolicyDecision.ALLOW)
 
 
-class DirectExecutor(Executor):
-    """简单直调执行器--没有 ReAct 循环，没有工具调用。
-
-    适用于：简单问答、分类、不需要工具的纯文本场景。
-    Phase 2: 已接入 MemoryModule hook。
-    Phase 3: 忽略 tools 参数，直接返回 LLM 文本响应。
-    """
-
-    def __init__(self, approval_callback=None):
-        super().__init__(approval_callback=approval_callback)
-
-    async def run(
-        self,
-        ctx: Context,
-        brain: ModelHub,
-        memory: MemoryModule | None = None,
-        **kwargs: Any,
-    ) -> str:
-        _memory = memory or NullMemory()
-        _ = kwargs  # 预留：knowledge, tools 参数
-        await _memory.on_before_execute(ctx)
-
-        client = brain.get(ctx.model_name)
-        model_version = brain.get_model_version(ctx.model_name)
-        messages = self._build_messages(ctx)
-        result = await client.chat(messages=messages)
-
-        ctx.assistant_output = result.content or ""
-        ctx.model_used = model_version
-        if result.tool_calls:
-            ctx.tool_calls = result.tool_calls
-        await _memory.on_after_execute(ctx)
-        return ctx.assistant_output
-
-    async def run_stream(
-        self,
-        ctx: Context,
-        brain: ModelHub,
-        memory: MemoryModule | None = None,
-        **kwargs: Any,
-    ) -> AsyncIterator[str]:
-        _memory = memory or NullMemory()
-        _ = kwargs  # 预留：knowledge, tools 参数
-        await _memory.on_before_execute(ctx)
-
-        client = brain.get(ctx.model_name)
-        model_version = brain.get_model_version(ctx.model_name)
-        messages = self._build_messages(ctx)
-
-        chunks: list[str] = []
-        async for chunk in client.chat_stream(messages=messages):
-            token = chunk.content or ""
-            chunks.append(token)
-            yield token
-
-        ctx.assistant_output = "".join(chunks)
-        ctx.model_used = model_version
-        await _memory.on_after_execute(ctx)
-
-    @staticmethod
-    def _build_messages(ctx: Context) -> list[dict]:
-        messages: list[dict] = []
-        if ctx.system_prompt:
-            messages.append({"role": "system", "content": ctx.system_prompt})
-        if ctx.memory_context:
-            memory_text = (
-                ctx.memory_context
-                if isinstance(ctx.memory_context, str)
-                else _format_memory_for_prompt(ctx.memory_context)
-            )
-            messages.append({"role": "system", "content": f"## 对话历史\n{memory_text}"})
-        _append_context_blocks(messages, ctx)
-        messages.append({"role": "user", "content": ctx.user_input})
-        return messages
-
-
 class ReActExecutor(Executor):
     """ReAct 风格的推理循环--Agent 自主决定调工具还是回答。
 
@@ -659,37 +583,30 @@ class ReActExecutor(Executor):
         return [ReActExecutor._message_to_dict(m) for m in messages]
 
 
-def _format_memory_for_prompt(memories: list[dict]) -> str:
-    """将记忆消息列表格式化为 prompt 文本。"""
-    lines: list[str] = []
-    for msg in memories:
-        role = msg.get("role", "unknown")
-        content = msg.get("content", "")
-        label = "User" if role == "user" else "Assistant"
-        lines.append(f"{label}: {content}")
-    return "\n".join(lines[-10:])  # 最多最近 5 轮
+class DirectExecutor(ReActExecutor):
+    """简单直调执行器 -- 单次 chat,无工具循环。共享 _prepare/_finalize。"""
 
+    async def _loop(self, ctx: Context, stream: bool) -> None:
+        client = self._brain.get(ctx.model_name or "default")
+        model_version = self._brain.get_model_version(ctx.model_name or "default")
+        for h in self._hooks:
+            try: await h.before_chat(ctx)
+            except Exception as e: logger.warning("before_chat hook: %s", e)
 
-def _append_context_blocks(messages: list[dict], ctx: Context) -> None:
-    """注入知识库与专业分析上下文块（紧跟记忆块之后、user 之前）。
+        llm_messages = self._build_llm_messages(ctx)
+        if stream:
+            chunks: list[str] = []
+            async for chunk in client.chat_stream(messages=llm_messages):
+                tok = chunk.content or ""
+                chunks.append(tok)
+                # yield 由 _loop_stream 处理,这里只收集
+            content = "".join(chunks)
+        else:
+            ai = await client.chat(messages=llm_messages)
+            content = ai.content or ""
+            for h in self._hooks:
+                try: await h.after_chat(ctx, ai)
+                except Exception as e: logger.warning("after_chat hook: %s", e)
 
-    - ``ctx.knowledge_context`` -> ``## 知识库``（检索到的文档片段）
-    - ``ctx.analysis_context``  -> ``## 专业分析``（硬编码逻辑产出的结构化事实）
-
-    两个 ``_build_messages`` 共用此 helper，避免注入逻辑漂移。
-    """
-    if ctx.knowledge_context:
-        text = (
-            ctx.knowledge_context
-            if isinstance(ctx.knowledge_context, str)
-            else str(ctx.knowledge_context)
-        )
-        messages.append({"role": "system", "content": f"## 知识库\n{text}"})
-    analysis_context = getattr(ctx, "analysis_context", None)
-    if analysis_context:
-        text = (
-            analysis_context
-            if isinstance(analysis_context, str)
-            else str(analysis_context)
-        )
-        messages.append({"role": "system", "content": f"## 专业分析\n{text}"})
+        ctx.messages.append(Message(role="assistant", content=content or None, model_used=model_version))
+        ctx.step_count = 1
