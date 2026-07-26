@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from agent.data import Context
 from agent.knowledge import (
     EmbeddingClient,
     KnowledgeEngine,
@@ -269,3 +270,51 @@ class TestPgVectorKnowledgeStoreDelegation:
         db.count_knowledge.assert_called_with("ns")
         store.count()
         db.count_knowledge.assert_called_with("")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# KnowledgeEngine.search(ctx) -- Task 5
+# ═══════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def mock_engine():
+    """KnowledgeEngine with namespace + retrieve_render stubbed to return text."""
+    engine = KnowledgeEngine(
+        store=_FakeStore(),
+        embedding=_FakeEmbedding(),
+        namespace="investing/buffett",
+    )
+    engine.retrieve_render = MagicMock(
+        return_value="[doc.md] (相关度 0.90)\n知识片段"
+    )
+    return engine
+
+
+@pytest.fixture
+def mock_engine_no_ns():
+    """KnowledgeEngine without namespace -> search early-returns."""
+    engine = KnowledgeEngine(
+        store=_FakeStore(),
+        embedding=_FakeEmbedding(),
+    )
+    engine.retrieve_render = MagicMock(return_value="should-not-be-called")
+    return engine
+
+
+@pytest.mark.asyncio
+async def test_knowledge_search_fills_memories(mock_engine):
+    # mock_engine: KnowledgeEngine with namespace + retrieve_render stubbed
+    ctx = Context(user_input="投资策略")
+    await mock_engine.search(ctx)
+    assert len(ctx.memories) == 1
+    assert ctx.memories[0].source == "knowledge"
+    assert ctx.memories[0].order == 20
+    assert ctx.memories[0].title == "知识库"
+
+
+@pytest.mark.asyncio
+async def test_knowledge_search_no_namespace(mock_engine_no_ns):
+    ctx = Context(user_input="x")
+    await mock_engine_no_ns.search(ctx)
+    assert ctx.memories == []

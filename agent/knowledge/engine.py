@@ -7,6 +7,9 @@
 
 from __future__ import annotations
 
+import asyncio
+
+from ..data import MemoryBlock
 from .chunker import chunk_text
 from .embedding import EmbeddingClient
 from .store import KnowledgeStore
@@ -33,12 +36,14 @@ class KnowledgeEngine:
         store: KnowledgeStore,
         embedding: EmbeddingClient,
         top_k: int = 5,
+        namespace: str = "",
     ):
         if top_k < 1:
             raise ValueError("top_k must be >= 1")
         self._store = store
         self._embedding = embedding
         self._top_k = top_k
+        self._namespace = namespace      # 构造时绑定
 
     def ingest_documents(self, docs: list[dict], namespace: str) -> int:
         """``docs=[{source, content, metadata?}]`` -> 切片 -> embed -> 存库。
@@ -97,3 +102,20 @@ class KnowledgeEngine:
             for r in results
         ]
         return "\n\n---\n\n".join(blocks)
+
+    async def search(self, ctx) -> None:
+        """检索知识 -> ctx.memories.append(MemoryBlock, source="knowledge")。
+
+        无 ``namespace`` 或 ``ctx.user_input`` 时直接返回（不检索）。
+        检索到非空文本时追加 ``MemoryBlock(title="知识库", source="knowledge",
+        order=20)`` 到 ``ctx.memories``。
+        """
+        if not self._namespace or not ctx.user_input:
+            return
+        text = await asyncio.to_thread(
+            self.retrieve_render, ctx.user_input, self._namespace
+        )
+        if text:
+            ctx.memories.append(MemoryBlock(
+                title="知识库", source="knowledge", content=text, order=20,
+            ))
