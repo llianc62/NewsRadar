@@ -70,5 +70,5 @@ Agent 实例通过 `create_app(agent_instance=agent)` 注入 Web 应用，WebSoc
 |------|------|
 | `main.py` | Daemon 入口 — Queue Channel 事件循环 + Agent 条件构建 |
 | `agent/factory.py` | Agent 工厂函数 |
-| `config/loader.py` | 配置加载 — YAML + 环境变量合并 |
+| `config.py` | 配置加载 — YAML + 环境变量合并 |
 | `config.yaml` | 默认配置文件 |

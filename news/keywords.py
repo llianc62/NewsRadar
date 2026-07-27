@@ -2,7 +2,7 @@
 """
 Keyword matching engine for news titles.
 
-Reads ``frequency_words.txt`` and matches news titles against
+Reads ``config/frequency_words.txt`` and matches news titles against
 keyword groups.  Supports plain words, ``/regex/`` patterns,
 ``!filter`` words, ``+required`` words, ``@N`` max counts, and
 ``=> Display Name`` aliases.
@@ -15,7 +15,7 @@ Usage::
 
     from news.keywords import load_frequency_words, match_and_group
 
-    groups, filters, global_filters = load_frequency_words("frequency_words.txt")
+    groups, filters, global_filters = load_frequency_words("config/frequency_words.txt")
     grouped = match_and_group(items, groups, global_filters, max_per_group=10)
 """
 

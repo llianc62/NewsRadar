@@ -14,14 +14,14 @@ from copy import deepcopy
 import pytest
 
 from agent.memory import PgMemoryStorage
-from config.loader import load_config
+from config import load_config
 from storage.postgres import PostgreSQL
 
 
 @pytest.fixture(scope="module")
 def integration_pg_db():
     """PostgreSQL 测试数据库实例（模块级，所有测试共享）。"""
-    config = load_config("config.yaml")
+    config = load_config("config/config.yaml")
     pg_config = deepcopy(config["postgresql"])
     pg_config["database"] = os.environ.get("PG_TEST_DATABASE", "newsradar_test")
     db = PostgreSQL(pg_config)

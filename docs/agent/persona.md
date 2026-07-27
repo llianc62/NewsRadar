@@ -260,7 +260,7 @@ app = create_app(..., agent_instance=agent, persona_orchestrator=orchestrator)
 
 `app.state.persona_orchestrator = orchestrator`（若非 None）。`PersonaRegistry` 也挂 `app.state.persona_registry` 供前端 `/api/agent/personas` 拉取。
 
-### config（`config/loader.py`）
+### config（`config.py`）
 
 加 `_load_personas_config()`：list of `{name, type, model, enabled, kb_namespace, custom_prompt}`。注册到 `config = {...}` dict。
 
@@ -309,7 +309,7 @@ app = create_app(..., agent_instance=agent, persona_orchestrator=orchestrator)
 - [x] `agent/factory.py`：`create_persona_orchestrator()`
 - [x] `main.py` + `web/app.py`：挂 `app.state.persona_orchestrator`
 - [x] 前端：多选 + 团队会诊 + 面板实时状态
-- [x] `config/loader.py`：`_load_personas_config()`
+- [x] `config.py`：`_load_personas_config()`
 - [x] `tests/test_persona_orchestrator.py`：mock 多角色 fan-out + 聚合
 
 > Phase B/C 完成（2026-07-14）：角色模块覆盖率 96-100%，全量单测通过。10 个角色（4 投资人 + 5 专家 + 主编），单选单角色直答、多选团队会诊（并行 fan-out 信号 + 主编 DirectExecutor 真流式聚合）。Phase D 顺带修复 MCP `analyze_sentiment` 路由真分析器。

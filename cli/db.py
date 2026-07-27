@@ -11,7 +11,7 @@ from typing import Optional
 import typer
 
 from cli import app
-from config.loader import load_config
+from config import load_config
 
 db_app = typer.Typer(name="db", help="Database maintenance commands")
 app.add_typer(db_app, name="db")
@@ -352,7 +352,7 @@ def clear(
                 raise typer.Exit(code=1)
 
     # ── Load config ────────────────────────────────────────────────
-    config = load_config("config.yaml")
+    config = load_config("config/config.yaml")
 
     # ── Execute ────────────────────────────────────────────────────
     if backend in ("all", "postgresql"):

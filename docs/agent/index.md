@@ -45,7 +45,7 @@ Agent 子系统与现有 NewsRadar 代码隔离：
 │  └─ tools/          → 工具（预留）                     │
 ├─────────────────────────────────────────────────────┤
 │  共享基础设施                                          │
-│  config/loader.py    → 配置加载（扩展 llm 段）         │
+│  config.py    → 配置加载（扩展 llm 段）         │
 │  storage/postgres.py → PG 复用（用户/记忆/知识库存储）  │
 └─────────────────────────────────────────────────────┘
 ```
@@ -95,7 +95,7 @@ storage/
 ```
 
 **说明**：
-- 去掉 `agent/config.py`——配置加载统一在 `config/loader.py`
+- 去掉 `agent/config.py`——配置加载统一在 `config.py`
 - 新增 `agent/types.py`——存放所有 dataclass/TypedDict 类型定义
 - 存储层在 `storage/postgres.py` 中新增 agent 专用表的 schema 初始化
 

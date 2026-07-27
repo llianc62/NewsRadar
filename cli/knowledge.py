@@ -13,7 +13,7 @@ from typing import Optional
 import typer
 
 from cli import app
-from config.loader import load_config
+from config import load_config
 
 knowledge_app = typer.Typer(name="knowledge", help="Knowledge base (pgvector) management")
 app.add_typer(knowledge_app, name="knowledge")
@@ -37,7 +37,7 @@ def _build_engine(config: dict):
     if not kcfg.get("embedding_api_key"):
         typer.echo(
             "[Knowledge] embedding_api_key 未配置"
-            "（config.yaml 的 knowledge.embedding_api_key 或环境变量"
+            "（config/config.yaml 的 knowledge.embedding_api_key 或环境变量"
             " KNOWLEDGE_EMBEDDING_API_KEY）",
             err=True,
         )
@@ -108,7 +108,7 @@ def ingest(
     namespace: str = typer.Option(..., "--namespace", "-n", help="命名空间"),
 ) -> None:
     """导入文档到知识库（切片 + embedding + 存 pgvector）。"""
-    config = load_config("config.yaml")
+    config = load_config("config/config.yaml")
     engine, _store, db = _build_engine(config)
     try:
         docs = _collect_docs(path)
@@ -131,7 +131,7 @@ def search(
     top_k: int = typer.Option(5, "--top-k", "-k", help="返回片段数"),
 ) -> None:
     """语义检索测试。"""
-    config = load_config("config.yaml")
+    config = load_config("config/config.yaml")
     engine, _store, db = _build_engine(config)
     try:
         results = engine.retrieve(query, namespace=namespace, top_k=top_k)
@@ -155,7 +155,7 @@ def list_chunks(
     ),
 ) -> None:
     """查看切片数。"""
-    config = load_config("config.yaml")
+    config = load_config("config/config.yaml")
     _engine, store, db = _build_engine(config)
     try:
         n = store.count(namespace) if namespace else store.count()
@@ -171,7 +171,7 @@ def clear(
     force: bool = typer.Option(False, "--force", "-f", help="跳过确认"),
 ) -> None:
     """清空命名空间。"""
-    config = load_config("config.yaml")
+    config = load_config("config/config.yaml")
     _engine, store, db = _build_engine(config)
     try:
         n = store.count(namespace)

@@ -11,7 +11,7 @@ import typer
 import yaml
 
 from cli import app
-from config.loader import load_config
+from config import load_config
 
 agent_app = typer.Typer(name="agent", help="Agent definition management")
 app.add_typer(agent_app, name="agent")
@@ -96,7 +96,7 @@ def create(
     )
 
     # 连接数据库
-    config = load_config("config.yaml")
+    config = load_config("config/config.yaml")
     postgres_cfg = config.get("postgresql")
     if not postgres_cfg:
         typer.echo("错误: 配置文件中缺少 postgresql 配置", err=True)
@@ -134,7 +134,7 @@ def list_() -> None:
     """列出所有 agent 定义。"""
     from storage.postgres import PostgreSQL
 
-    config = load_config("config.yaml")
+    config = load_config("config/config.yaml")
     db = PostgreSQL(config.get("postgresql", {}))
     try:
         db.connect()
@@ -156,7 +156,7 @@ def delete(
     """按 ID 删除 agent 定义。"""
     from storage.postgres import PostgreSQL
 
-    config = load_config("config.yaml")
+    config = load_config("config/config.yaml")
     db = PostgreSQL(config.get("postgresql", {}))
     try:
         db.connect()

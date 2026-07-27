@@ -10,7 +10,7 @@ import sys
 import typer
 
 from cli import app
-from config.loader import load_config
+from config import load_config
 from news.crawler import Crawler, OutputStyle, StorageTarget
 
 
@@ -34,7 +34,7 @@ def grab_one(
     ``--images``: also download images referenced in the article.
     ``--no-content``: fetch metadata only, skip body download.
     """
-    config = load_config("config.yaml")
+    config = load_config("config/config.yaml")
     crawler = Crawler(config=config)
     try:
         crawler.fetch(url, output_style,

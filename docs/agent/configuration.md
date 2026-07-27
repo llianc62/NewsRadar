@@ -34,7 +34,7 @@ agent:
 
 ---
 
-## 2. config/loader.py 扩展
+## 2. config.py 扩展
 
 沿用现有 `_load_*_config()` 模式新增：
 

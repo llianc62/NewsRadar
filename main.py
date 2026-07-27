@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 from concurrent.futures import ThreadPoolExecutor
 
-from config.loader import load_config
+from config import load_config
 from storage.postgres import PostgreSQL
 from web.app import create_app
 from news.crawler import Crawler, OutputStyle
@@ -50,7 +50,7 @@ class NewsRadarDaemon:
     The *worker* takes items from the queue and executes the *job*.
     """
 
-    def __init__(self, config_path: str = "config.yaml"):
+    def __init__(self, config_path: str = "config/config.yaml"):
         self.config = load_config(config_path)
         self.db = PostgreSQL(self.config["postgresql"])
         self._shutdown_event = asyncio.Event()

@@ -26,7 +26,7 @@ mcp_server:
   port: 8001
 ```
 
-`config/loader.py` 新增 `_load_mcp_server_config()` 加载此段，并入 `config["mcp_server"]`。
+`config.py` 新增 `_load_mcp_server_config()` 加载此段，并入 `config["mcp_server"]`。
 
 ---
 

@@ -421,10 +421,10 @@ def integration_pg_db():
     """
     import os
     from copy import deepcopy
-    from config.loader import load_config
+    from config import load_config
     from storage.postgres import PostgreSQL
 
-    config = load_config("config.yaml")
+    config = load_config("config/config.yaml")
     pg_config = deepcopy(config["postgresql"])
     pg_config["database"] = os.environ.get("PG_TEST_DATABASE", "newsradar_test")
     db = PostgreSQL(pg_config)
@@ -440,10 +440,10 @@ def integration_crawler(integration_pg_db):
 
     Shares the same ``integration_pg_db`` instance that tests use for assertions.
     """
-    from config.loader import load_config
+    from config import load_config
     from news.crawler import Crawler
 
-    config = load_config("config.yaml")
+    config = load_config("config/config.yaml")
     c = Crawler(config, pg_db=integration_pg_db)
     yield c
     c.close()

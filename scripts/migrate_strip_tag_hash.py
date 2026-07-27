@@ -16,7 +16,7 @@ import psycopg2.extras
 
 
 def get_config():
-    from config.loader import load_config
+    from config import load_config
     return load_config()
 
 

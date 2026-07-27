@@ -178,7 +178,7 @@ class PgVectorKnowledgeStore(KnowledgeStore):
 
 ## 6. 配置
 
-`config/loader.py` 加 `_load_knowledge_config()`，注册到 `load_config()` 的 `config = {...}` dict（:247），env 覆盖用 `_get_env_str()` 同款：
+`config.py` 加 `_load_knowledge_config()`，注册到 `load_config()` 的 `config = {...}` dict（:247），env 覆盖用 `_get_env_str()` 同款：
 
 ```yaml
 knowledge:
@@ -227,7 +227,7 @@ python -m cli knowledge clear --namespace buffett --force         # 清空命名
 - [x] `agent/knowledge/chunker.py`：文本切片
 - [x] `agent/knowledge/store.py`：`KnowledgeStore` ABC + `PgVectorKnowledgeStore`
 - [x] `agent/knowledge/engine.py`：`KnowledgeEngine`
-- [x] `config/loader.py`：`_load_knowledge_config()`
+- [x] `config.py`：`_load_knowledge_config()`
 - [x] `cli/knowledge.py`：ingest / search / list / clear 子命令
 - [x] `tests/test_knowledge_engine.py`：单元（mock embedding + mock store）
 - [x] `tests/test_knowledge_integration.py -m integration`：真 PG + pgvector 往返

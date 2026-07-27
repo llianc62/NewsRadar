@@ -275,7 +275,7 @@ crawler:
         max_age_days: 1
 
 notification:
-  frequency_words: "frequency_words.txt"
+  frequency_words: "config/frequency_words.txt"
   keyword_limit_news: 0
   email:
     from_addr: ""

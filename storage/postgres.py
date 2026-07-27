@@ -33,7 +33,7 @@ def _contains_cjk(text: str) -> bool:
 
 
 # 知识库 embedding 维度（pgvector vector 列长度，建表时固化）。
-# 从 env KNOWLEDGE_EMBEDDING_DIM 读（与 config.loader 同源），默认对齐
+# 从 env KNOWLEDGE_EMBEDDING_DIM 读（与 config 同源），默认对齐
 # OpenAI text-embedding-3-small（1536）。切换维度需 DROP 重建表。
 KNOWLEDGE_EMBEDDING_DIM = int(os.environ.get("KNOWLEDGE_EMBEDDING_DIM", "1536"))
 

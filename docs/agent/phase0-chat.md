@@ -284,7 +284,7 @@ class Agent:
 ## 实现检查清单
 
 - [ ] `config.yaml` → `llm:` + `agent:` 段
-- [ ] `config/loader.py` → `_load_llm_instance()` + `_load_agent_config()`
+- [ ] `config.py` → `_load_llm_instance()` + `_load_agent_config()`
 - [ ] `pyproject.toml` → 新增 `langchain-anthropic`, `langchain-openai`
 - [ ] `storage/postgres.py` → `_init_agent_schema()` 会话+消息表
 - [ ] `agent/__init__.py`

@@ -42,10 +42,10 @@ def _sentiment_label(score: int) -> str:
     return "中性"
 
 
-def init_db(config_path: str = "config.yaml") -> None:
+def init_db(config_path: str = "config/config.yaml") -> None:
     """初始化数据库连接（FastMCP lifespan 中调用）。"""
     global _db, _analyzer
-    from config.loader import load_config
+    from config import load_config
     from news.analyzer import create_analyzer
 
     cfg = load_config(config_path)
@@ -236,8 +236,8 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8001, help="SSE 模式监听端口 (default: 8001)")
     parser.add_argument(
         "--config",
-        default="config.yaml",
-        help="配置文件路径 (default: config.yaml)",
+        default="config/config.yaml",
+        help="配置文件路径 (default: config/config.yaml)",
     )
     args = parser.parse_args()
 

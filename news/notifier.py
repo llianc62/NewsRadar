@@ -315,7 +315,7 @@ def run_notifier(
     if not s3:
         raise ValueError(
             "notify requires S3 storage. "
-            "Configure storage.cloud in config.yaml or set CLOUD_S3_* env vars."
+            "Configure storage.cloud in config/config.yaml or set CLOUD_S3_* env vars."
         )
     db_path = Path(data_dir) / "db" / f"{data_date}.db"
     if s3.object_exists(f"db/{data_date}.db"):
@@ -344,11 +344,8 @@ def run_notifier(
 
     # Load keywords and match
     freq_path = config.get("notification", {}).get(
-        "frequency_words", "frequency_words.txt"
+        "frequency_words", "config/frequency_words.txt"
     )
-    if not os.path.exists(freq_path):
-        # Fall back to root-level file for backward compatibility
-        freq_path = "frequency_words.txt"
     if os.path.exists(freq_path):
         word_groups, filter_words, global_filters = load_frequency_words(freq_path)
         max_per = config.get("notification", {}).get("keyword_limit_news", 0)

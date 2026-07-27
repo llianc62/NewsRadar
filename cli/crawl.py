@@ -7,7 +7,7 @@ manual testing use ``grab-one``.
 """
 
 from cli import app
-from config.loader import load_config
+from config import load_config
 from news.crawler import Crawler, OutputStyle
 
 
@@ -22,7 +22,7 @@ def crawl():
     from storage.s3 import S3Client
     from utils import format_date_today
 
-    config = load_config("config.yaml")
+    config = load_config("config/config.yaml")
     tz = config["app"]["timezone"]
     date = format_date_today(tz)
     data_dir = config["storage"]["local"].get("data_path", "output")
@@ -35,7 +35,7 @@ def crawl():
     if not s3:
         raise ValueError(
             "crawl requires S3 storage. "
-            "Configure storage.cloud in config.yaml or set CLOUD_S3_* env vars."
+            "Configure storage.cloud in config/config.yaml or set CLOUD_S3_* env vars."
         )
     if s3.object_exists(f"db/{date}.db"):
         db_path.parent.mkdir(parents=True, exist_ok=True)

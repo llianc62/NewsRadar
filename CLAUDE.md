@@ -165,7 +165,7 @@ All fetchers return `list[dict]` — flat list of standardised item dicts. Failu
 - `news/keywords.py` — parses `frequency_words.txt` format
 - `news/constants.py` — tier labels/colors, source types, sentiment thresholds
 - `utils.py` — time formatting (timezone-aware, default `Asia/Shanghai`), `normalize_url()`
-- `config/loader.py` — YAML + env vars, **env 优先级高于 YAML**
+- `config.py` — YAML + env vars, **env 优先级高于 YAML**
 
 ### Storage (详见 [docs/storage.md](docs/storage.md))
 

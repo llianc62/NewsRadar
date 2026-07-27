@@ -18,7 +18,7 @@ from copy import deepcopy
 import pytest
 
 from agent.knowledge import KnowledgeEngine, PgVectorKnowledgeStore
-from config.loader import load_config
+from config import load_config
 from storage.postgres import PostgreSQL
 
 
@@ -48,7 +48,7 @@ class FakeEmbeddingClient:
 @pytest.fixture(scope="module")
 def knowledge_pg_db():
     """PG 测试库（模块级）。不可用或无 pgvector 时 skip。"""
-    config = load_config("config.yaml")
+    config = load_config("config/config.yaml")
     pg_config = deepcopy(config["postgresql"])
     pg_config["database"] = os.environ.get("PG_TEST_DATABASE", "newsradar_test")
     db = PostgreSQL(pg_config)

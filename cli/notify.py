@@ -4,7 +4,7 @@
 import typer
 
 from cli import app
-from config.loader import load_config
+from config import load_config
 from news.notifier import run_notifier
 
 
@@ -29,7 +29,7 @@ def notify(
     Use ``--dry-run`` to preview the report without sending.
     Use ``--start-time`` / ``--end-time`` for incremental notifications.
     """
-    config = load_config("config.yaml")
+    config = load_config("config/config.yaml")
     run_notifier(
         config,
         dry_run=dry_run,

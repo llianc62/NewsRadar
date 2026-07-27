@@ -89,4 +89,4 @@ S3 配置有两套（均在 `config.yaml` 的 `storage` 段）：
 | `storage/sqlite.sql` | SQLite DDL |
 | `storage/s3.py` | S3/MinIO 客户端封装 |
 | `storage/files.py` | FileStorage ABC + Local/S3 实现 |
-| `config/loader.py` | `_load_storage_config()` — S3 配置两套 |
+| `config.py` | `_load_storage_config()` — S3 配置两套 |

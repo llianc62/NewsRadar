@@ -7,6 +7,11 @@ variables.  Follows the 12-factor pattern: environment variables take
 precedence over file values.
 
 Each config section has its own ``_load_*_config()`` function.
+
+Note: the sibling ``config/`` directory holds project data files
+(``config.yaml``, ``frequency_words.txt``) and must stay a plain data
+directory — never add an ``__init__.py`` or any ``.py`` to it, or it
+would shadow this module under the same ``config`` name.
 """
 
 from __future__ import annotations
@@ -95,7 +100,7 @@ def _load_notification_config(raw: Dict) -> Dict:
     notification = raw.get("notification", {})
     email = notification.get("email", {})
     return {
-        "frequency_words": notification.get("frequency_words", "frequency_words.txt"),
+        "frequency_words": notification.get("frequency_words", "config/frequency_words.txt"),
         "keyword_limit_news": notification.get("keyword_limit_news", 0),
         "black_list": notification.get("black_list", []),
         "email": {
@@ -299,7 +304,7 @@ def _load_mcp_server_config(raw: Dict) -> Dict:
 # Main loader
 # =========================================================================
 
-def load_config(path: str = "config.yaml") -> Dict[str, Any]:
+def load_config(path: str = "config/config.yaml") -> Dict[str, Any]:
     """Load configuration file, merging environment variables.
 
     Environment variables take precedence over file values (12-factor style).
