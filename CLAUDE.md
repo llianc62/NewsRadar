@@ -224,27 +224,31 @@ Manual trigger ──put(callback)──▶  (callback 用于 SSE 通知)
 ### Architecture
 
 ```
-DefaultAgent (编排器)
-├── Brain (ModelHub) — LLM Client 池
-│   ├── OpenAIClient      — OpenAI 兼容 API（含 tool calling）
-│   └── AnthropicClient   — Anthropic API
-├── Executor — 推理循环（可插拔）
-│   ├── DirectExecutor    — 直调，无工具（Phase 2）
-│   └── ReActExecutor     — ReAct 循环，自主调工具（Phase 3）
-├── MemoryModule — 记忆系统（可选）
-│   ├── NullMemory        — 无记忆
-│   ├── ShortTermMemory   — 内存级滑动窗口
-│   └── LongTermMemory    — PG 持久化 + 语义检索
-├── Registry — 工具注册中心
-│   ├── FunctionTool      — 内置函数（@tool 装饰器）
-│   └── MCPTool           — 外部 MCP 协议工具
-└── Context — 模块间数据总线
+DefaultAgent (编排器,构造时注入组件给 executor)
+├── Brain (ModelHub) - LLM Client 池
+│   ├── OpenAIClient      - OpenAI 兼容 API（含 tool calling）
+│   └── AnthropicClient   - Anthropic API
+├── Executor - 推理循环（构造注入 brain/memory/knowledge/tools,run(ctx) 只收数据）
+│   ├── DirectExecutor    - 单次 chat 无工具（继承 ReActExecutor 共享 _prepare/_finalize,override _loop）
+│   └── ReActExecutor     - ReAct 循环,三阶段 _prepare/_loop/_finalize
+├── MemoryModule - 记忆系统（可选,load/save 接口）
+│   ├── NullMemory        - 无记忆
+│   ├── ShortTermMemory   - 持 db,load 历史对话(agent_messages 表)
+│   └── LongTermMemory    - 继承 ShortTerm + agent_memories 检索/提炼
+├── Registry - 工具注册中心
+│   ├── FunctionTool      - 内置函数（@tool 装饰器）
+│   └── MCPTool           - 外部 MCP 协议工具
+├── ExecutorHook - 生命周期 hook（before_chat/after_chat/before_tool/after_tool/on_error）
+└── Context - 数据总线（输入区 history_messages/memories + 执行区 messages/step_count + final_output property）
 ```
 
 ### Key patterns
 
 - **@tool decorator** (`agent/tools/base.py`): 自动从类型注解 + Google-style docstring 生成 OpenAI format JSON Schema。支持 sync/async、默认值、可选参数。
-- **ReActExecutor** (`agent/executor.py`): 循环直到 LLM 返回文本或超 max_steps。工具结果注入 history 作为下一轮 user 消息。
+- **Executor 三阶段** (`agent/executor.py`): `_prepare`(memory.load + knowledge.search + 组装 messages) -> `_loop`(LLM 推理 + 工具执行循环) -> `_finalize`(memory.save)。`run(ctx)` 只收数据,组件构造注入。DirectExecutor 继承 ReActExecutor 共享骨架,只 override `_loop`(单次 chat)。
+- **ExecutorHook**: 生命周期 hook(`before_chat`/`after_chat`/`before_tool`/`after_tool`/`on_error`),子类按需 override,默认 no-op。`approval_callback`/`_normalize_tool_result` 内置策略,不混入 hook。
+- **鲁棒性**: LLM 调用重试(`llm_max_retries` + 退避)、单工具异常隔离(记 `ToolResult.error` 继续循环)、memory/knowledge 失败降级、整体 try/except 兜底(错误文本不进 messages,返回调用方)。executor 永不向调用方抛未捕获异常。
+- **ToolResult**: 结构化记录(name/args/result/error/timing/retries/success),归 tool 消息 `tool_result` 字段(不存 ctx),供 troubleshooting + memory 消费。
 - **Policy-based tool security**: 工具分 level 1-4，`running_mode`（strict/normal/loose）决定自动/需审批。
 - **WebSocket 审批通道**: 前端通过 WebSocket 收 tool_approval_request，用户决定允许/拒绝，后端继续执行。
 - **MCP Client**: 基于官方 mcp SDK 的 `ClientSession`，封装 stdio/SSE 传输层生命周期。
@@ -311,13 +315,15 @@ MCP Server 在 `news_server.py` 中使用 FastMCP，全局延迟初始化 DB 连
 
 ### Memory system
 
-| 记忆类型 | 存储 | 生命周期 | 提取策略 |
-|---------|------|---------|---------|
-| NullMemory | 无 | — | 什么都不做 |
-| ShortTermMemory | 内存 list | 重启即失 | 滑动窗口，最近 N 轮 |
-| LongTermMemory | PG (`agent_memories`) | 跨会话持久 | jieba TF-IDF 关键词 → PG FTS/CJK ILIKE 检索 |
+`MemoryModule` ABC 提供 `load(ctx)` / `save(ctx)` 接口,executor 在 `_prepare` 调 `load`(注入历史对话 + 长期记忆到 ctx)、`_finalize` 调 `save`(存当前对话 + 提炼长期记忆)。
 
-`PgMemoryStorage` 通过 `asyncio.to_thread` 桥接同步 psycopg2 到异步接口。CJK 搜索拆单字 ILIKE，ASCII 搜索用 PG `to_tsvector`。
+| 记忆类型 | 存储 | load 行为 | save 行为 |
+|---------|------|---------|---------|
+| NullMemory | 无 | no-op | no-op |
+| ShortTermMemory | PG (`agent_messages`) | load 历史对话 -> `ctx.history_messages` | 存 user/assistant(`ctx.final_output`) |
+| LongTermMemory | PG (`agent_messages` + `agent_memories`) | 继承 ShortTerm + 检索 `agent_memories` -> `ctx.memories`(MemoryBlock) | 继承 ShortTerm + 提炼关键信息 -> `agent_memories` |
+
+`ShortTermMemory` 持 db(构造注入),`web/agent.py` 不再自己加载 history,统一靠 `memory.load`。`PgMemoryStorage` 通过 `asyncio.to_thread` 桥接同步 psycopg2 到异步接口。CJK 搜索拆单字 ILIKE，ASCII 搜索用 PG `to_tsvector`。
 
 ### Knowledge Base (`agent/knowledge/`) — Phase A
 
@@ -331,7 +337,7 @@ pgvector 语义检索知识库，作为角色扮演 agent 的专业知识来源�
 | `store.py` | `KnowledgeStore` ABC + `PgVectorKnowledgeStore`（委托 `storage/postgres.py`） |
 
 - **表**：`knowledge_chunks`（`vector(N)` + HNSW `vector_cosine_ops` 索引），namespace 隔离（`investing/buffett`、`macro-economics`…）。DDL 在 `storage/postgres.py:_init_agent_schema()`，需 `pgvector/pgvector:pg16` 镜像。
-- **注入**：`PersonaAgent._make_ctx()` 调 `retrieve_render()` 写入 `ctx.knowledge_context` -> executor 在 system prompt 后插入 `## 知识库` 块（对称于 memory 的 `## 相关记忆`）。
+- **注入**：`KnowledgeEngine.search(ctx)` 由 executor 在 `_prepare` 调用 -> `ctx.memories.append(MemoryBlock(source="knowledge", order=20))`。`_build_llm_messages` 按 order 拼成 `## 知识库` system 块。KnowledgeEngine 构造时绑定 `namespace`。
 - **配置**：`knowledge:` 段（`enabled`/`embedding_*`/`top_k`/`table`）。`enabled: false` 时 KnowledgeEngine=None，角色退化为纯 prompt。
 - **CLI**：`python -m cli knowledge ingest <file> --namespace buffett` / `search` / `list` / `clear`。
 
@@ -339,7 +345,7 @@ pgvector 语义检索知识库，作为角色扮演 agent 的专业知识来源�
 
 角色扮演 + 多角色会诊，仿 ai-hedge-fund `LLMAgent` + `analyst_signals` + portfolio_manager 聚合。详见 [docs/agent/persona.md](docs/agent/persona.md)。
 
-- **PersonaAgent(DefaultAgent)**：基类，override `_make_ctx()` 注入知识 + `get_system_prompt()` 人格。`_pre_analyze(user_input) -> dict` 钩子注入硬编码领域逻辑（`## 专业分析` 块）。
+- **PersonaAgent(DefaultAgent)**：基类，override `get_system_prompt()` 人格。**persona 子系统已冻结**（`analysis_context`/`persona_name` 已删除,不再注入 ctx）；`_pre_analyze`/`_render_analysis` 保留但不纳入 executor 数据流。
 - **10 角色**：投资人 `buffett`/`graham`/`taleb`/`wood` + 专家 `macro`/`sentiment`/`industry`/`factcheck`/`blackswan` + 主编 `editor`。`registry.py` 统一注册（`PersonaSpec`，按 `order` 排序）。
 - **硬编码专业逻辑**：`sentiment`/`blackswan`/`industry` 调 `JiebaAnalyzer`（情感/关键词/热度异常），LLM 只叙事（铁律："LLM never touches the trade"）。
 - **PersonaManager**：惰性构建 + 缓存（`asyncio.Lock` 双检），每次 `get()` 应用 `running_mode` + `_approval_callback`（团队会诊的角色调用继承 WS 审批通道）。
@@ -350,19 +356,23 @@ pgvector 语义检索知识库，作为角色扮演 agent 的专业知识来源�
 
 ### Factory
 
-`agent/factory.create_agent()` 一键构建带 ReActExecutor + 内置工具 + MCP 工具的 Agent：
+`agent/factory.create_agent()` 一键构建 Agent（ReActExecutor 构造注入 brain/memory/knowledge/tools + 内置工具 + MCP 工具）。`db` 参数驱动持久化（传 db -> `ShortTermMemory(db)`；不传 -> `NullMemory`）：
 
 ```python
 agent = await create_agent(
     config["models"],
     system_prompt="你是 NewsRadar 新闻助手",
     register_mcp=True,
+    mcp_cfg=config["mcp_server"],
+    db=db,
 )
 ```
 
 Daemon 启动时条件构建 Agent（仅当 `config["models"]` 存在时），通过 `app.state.agent_instance` 注入 Web 应用。
 
-角色扮演子系统另有两个工厂：`create_persona()`（单角色）与 `create_persona_orchestrator(config, db)`（团队会诊编排器，内部建 `PersonaManager` + `KnowledgeEngine` + `Analyzer`，失败均降级为 None 不阻断）。Daemon 启动时构建 orchestrator 并挂 `app.state.persona_orchestrator` + `persona_manager`。
+`AgentFactory.build(defn)` 从 `AgentDefinition` 构建：`LongTermMemory(db, PgMemoryStorage(db))` + `KnowledgeEngine(namespace=kb.namespace)` + `ReActExecutor(brain, memory, knowledge, tools)`。
+
+角色扮演子系统另有两个工厂：`create_persona()`（单角色）与 `create_persona_orchestrator(config, db)`（团队会诊编排器，内部建 `PersonaManager` + `KnowledgeEngine` + `Analyzer`，失败均降级为 None 不阻断）。
 
 ## Web refactoring (`web/`)
 
