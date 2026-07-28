@@ -114,3 +114,105 @@ def test_parse_int_sid():
     assert _parse_int_sid("abc") is None
     assert _parse_int_sid("0") is None
     assert _parse_int_sid("") is None
+
+
+class _FakeAgent:
+    """假 agent：按预设 token 列表流式产出。"""
+    def __init__(self, tokens):
+        self._tokens = tokens
+
+    async def chat_stream(self, message, session_id="", model_name=""):
+        for t in self._tokens:
+            yield t
+
+
+@pytest.mark.asyncio
+async def test_run_chat_broadcasts_tokens_and_done(monkeypatch):
+    monkeypatch.setattr("web.agent._sessions", {})
+    sess = ChatSession(session_id=1)
+    ct = ChatTask(session_id=1)
+    q = ct.subscribe()
+    agent = _FakeAgent(["Hello", " World"])
+    from web.agent import _run_chat
+    await _run_chat(sess, ct, agent, "hi", 1, "quick")
+    items = []
+    while not q.empty():
+        items.append(q.get_nowait())
+    assert {"type": "token", "content": "Hello"} in items
+    assert {"type": "token", "content": " World"} in items
+    assert any(it.get("type") == "done" for it in items)
+    assert ct.full_reply == "Hello World"
+    assert ct.done is True
+
+
+@pytest.mark.asyncio
+async def test_run_chat_on_error_broadcasts_error(monkeypatch):
+    monkeypatch.setattr("web.agent._sessions", {})
+    sess = ChatSession(session_id=1)
+    ct = ChatTask(session_id=1)
+    q = ct.subscribe()
+
+    class _BoomAgent:
+        async def chat_stream(self, message, session_id="", model_name=""):
+            raise RuntimeError("boom")
+            yield  # noqa: never reached
+
+    from web.agent import _run_chat
+    await _run_chat(sess, ct, _BoomAgent(), "hi", 1, "quick")
+    items = []
+    while not q.empty():
+        items.append(q.get_nowait())
+    assert any(it.get("type") == "error" for it in items)
+    assert "boom" in ct.error
+    assert ct.done is True
+
+
+class _FakeWS:
+    """假 WebSocket：收集 send_json 的消息。"""
+    def __init__(self):
+        self.sent = []
+
+    async def send_json(self, item):
+        self.sent.append(item)
+
+
+@pytest.mark.asyncio
+async def test_forward_replays_full_reply_then_live_tokens(monkeypatch):
+    """重连场景：ct 已累积 full_reply，_forward 应补发 resume + 后续 token + done。"""
+    monkeypatch.setattr("web.agent._sessions", {})
+    ct = ChatTask(session_id=1)
+    ct.full_reply = "already"  # 模拟跳转期间已生成的内容
+    q = ct.subscribe()
+    # 模拟后台继续产出
+    await asyncio.sleep(0)  # 让 subscribe 生效
+    ws = _FakeWS()
+
+    async def produce():
+        await asyncio.sleep(0.01)
+        ct.full_reply += "!"
+        ct.broadcast({"type": "token", "content": "!"})
+        ct.done = True
+        ct.broadcast({"type": "done", "session_id": 1, "full_reply": ct.full_reply})
+
+    asyncio.create_task(produce())
+    from web.agent import _forward
+    await _forward(ws, ct, 1)
+    types = [m["type"] for m in ws.sent]
+    assert types[0] == "resume"
+    assert ws.sent[0]["full_reply"] == "already"  # subscribe 时刻快照
+    assert "token" in types and "done" in types
+    assert ws.sent[-1]["type"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_forward_done_task_sends_resume_and_done(monkeypatch):
+    """任务已完成的重连：一次性补发 resume + done。"""
+    monkeypatch.setattr("web.agent._sessions", {})
+    ct = ChatTask(session_id=1)
+    ct.full_reply = "complete answer"
+    ct.done = True
+    ws = _FakeWS()
+    from web.agent import _forward
+    await _forward(ws, ct, 1)
+    assert ws.sent[0] == {"type": "resume", "full_reply": "complete answer"}
+    assert ws.sent[1]["type"] == "done"

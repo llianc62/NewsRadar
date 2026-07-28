@@ -143,6 +143,75 @@ def _parse_int_sid(raw: str) -> int | None:
     return sid if sid >= 1 else None
 
 
+async def _run_chat(
+    sess: ChatSession,
+    ct: ChatTask,
+    agent,
+    message: str,
+    session_id: int,
+    model_name: str,
+) -> None:
+    """后台运行 agent.chat_stream，token 累积到 ct.full_reply 并广播给订阅者。
+
+    CancelledError（用户 stop）-> stopped=True + broadcast done(stopped) + return 不 re-raise
+    （executor 的 finally _finalize 已执行 memory.save）。
+    """
+    try:
+        async for token in agent.chat_stream(
+            message, session_id=str(session_id), model_name=model_name
+        ):
+            ct.full_reply += token
+            ct.broadcast({"type": "token", "content": token})
+    except asyncio.CancelledError:
+        ct.stopped = True
+        ct.done = True
+        ct.broadcast({
+            "type": "done", "session_id": session_id,
+            "full_reply": ct.full_reply, "stopped": True,
+        })
+        return
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        ct.error = str(e)[:500]
+        ct.done = True
+        ct.broadcast({"type": "error", "message": ct.error})
+        return
+    ct.done = True
+    ct.broadcast({
+        "type": "done", "session_id": session_id, "full_reply": ct.full_reply,
+    })
+
+
+async def _forward(ws: WebSocket, ct: ChatTask, session_id: int) -> None:
+    """订阅 ChatTask 并转发到 WebSocket -- 补发 + 实时续推。
+
+    subscribe 后立即读 full_reply（无 await 间隔）保证原子快照：
+    subscribe 之前的 token 在 full_reply，之后的在 queue，不重不漏。
+    """
+    q = ct.subscribe()
+    replay = ct.full_reply  # 原子快照
+    try:
+        if ct.done:
+            if replay:
+                await ws.send_json({"type": "resume", "full_reply": replay})
+            await ws.send_json({
+                "type": "done", "session_id": session_id,
+                "full_reply": replay, "stopped": ct.stopped,
+            })
+        else:
+            await ws.send_json({"type": "resume", "full_reply": replay})
+            while True:
+                item = await q.get()
+                await ws.send_json(item)
+                if item.get("type") in ("done", "error"):
+                    break
+    except Exception:
+        pass
+    finally:
+        ct.unsubscribe(q)
+
+
 # ── REST: 聊天页面 ──
 
 @router.get("/agent", response_class=HTMLResponse)
