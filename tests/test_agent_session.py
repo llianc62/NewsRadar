@@ -307,3 +307,122 @@ async def test_start_chat_reuses_running_task(monkeypatch):
         model_name="quick", running_mode="normal", app_state=state,
     )
     assert ct1 is ct2  # 同一任务
+
+
+# ── WS 集成测试（TestClient + mock agent） ──────────────────────────
+#
+# 注意：TestClient.websocket_connect 是同步的，跑在 anyio portal 自己的
+# event loop 上。chat_task.task 也创建在 portal loop 上，pytest-asyncio 的
+# loop 无法 await 它（"Task belongs to a different loop"）。所以这些测试
+# 改为同步：用轮询 sess.chat_task.done 代替 await sess.chat_task.task。
+
+
+class _MockDB:
+    """Mock db：is_connected=True 跳过 lifespan connect；delete_agent_session 成功。"""
+    def delete_agent_session(self, sid):
+        return True
+    def is_connected(self):
+        return True
+    def connect(self): pass
+    def init_schema(self): pass
+    def close(self): pass
+
+
+def _make_app_with_fake_agent(fake_agent):
+    """构建带 mock agent_instance 的 FastAPI app。"""
+    from web.app import create_app
+
+    config = {
+        "models": {"quick": {"protocol": "openai", "model": "x", "api_key": "k"}},
+        "agent": {"default_model": "quick"},
+    }
+    app = create_app(_MockDB(), {}, agent_config=config)
+    app.state.agent_instance = fake_agent
+    return app
+
+
+class _SlowFakeAgent:
+    """带延迟的假 agent，模拟流式产出。"""
+    def __init__(self, tokens, delay=0.0):
+        self._tokens = tokens
+        self._delay = delay
+        self.executor = _FakeExecutor()
+        self.running_mode = "normal"
+
+    async def chat_stream(self, message, session_id="", model_name=""):
+        for t in self._tokens:
+            if self._delay:
+                await asyncio.sleep(self._delay)
+            yield t
+
+
+def test_ws_disconnect_does_not_cancel_task(monkeypatch):
+    """跳转走：WS 断开后 agent 任务继续跑完，full_reply 完整。"""
+    import time
+    monkeypatch.setattr("web.agent._sessions", {})
+    from fastapi.testclient import TestClient
+
+    fake_agent = _SlowFakeAgent(["a", "b", "c"], delay=0.05)
+    app = _make_app_with_fake_agent(fake_agent)
+    # 用 with TestClient 保持 portal 跨 WS session 存活，否则 WS 断开时
+    # portal 关闭会连带 cancel 掉 chat_task
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/agent/ws?session_id=10") as ws:
+            ws.send_json({"type": "chat", "session_id": 10, "message": "hi", "model": "quick"})
+            ws.receive_json()  # 收到 resume 后断开（模拟跳转）
+
+        # WS 断开后，任务应继续（portal 仍活着）
+        sess = get_session(10)
+        assert sess and sess.chat_task
+        for _ in range(200):
+            if sess.chat_task.done:
+                break
+            time.sleep(0.01)
+        assert sess.chat_task.full_reply == "abc"
+        assert sess.chat_task.done is True
+
+
+def test_ws_reconnect_resumes(monkeypatch):
+    """跳转回：重连后补发 resume + 后续 token + done。"""
+    import time
+    monkeypatch.setattr("web.agent._sessions", {})
+    from fastapi.testclient import TestClient
+
+    fake_agent = _SlowFakeAgent(["x", "y", "z"], delay=0.05)
+    app = _make_app_with_fake_agent(fake_agent)
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/agent/ws?session_id=11") as ws:
+            ws.send_json({"type": "chat", "session_id": 11, "message": "hi", "model": "quick"})
+            ws.receive_json()  # resume
+
+        # 等任务跑完（WS 断开后 portal 仍活着，任务继续）
+        sess = get_session(11)
+        assert sess and sess.chat_task
+        for _ in range(200):
+            if sess.chat_task.done:
+                break
+            time.sleep(0.01)
+        assert sess.chat_task.done is True
+
+        # 重连，应补发 resume + done
+        with client.websocket_connect("/api/agent/ws?session_id=11") as ws2:
+            msg1 = ws2.receive_json()
+            assert msg1["type"] == "resume"
+            assert msg1["full_reply"] == "xyz"
+            msg2 = ws2.receive_json()
+            assert msg2["type"] == "done"
+
+
+def test_delete_session_route_calls_destroy(monkeypatch):
+    """DELETE /api/agent/sessions/{id} 应触发 destroy_session 清理内存。"""
+    import web.agent
+    monkeypatch.setattr("web.agent._sessions", {})
+    from fastapi.testclient import TestClient
+
+    app = _make_app_with_fake_agent(_FakeAgent([]))
+    # 预置一个 session
+    get_session(99)
+    client = TestClient(app)
+    resp = client.delete("/api/agent/sessions/99")
+    assert resp.json()["ok"] is True
+    assert 99 not in web.agent._sessions

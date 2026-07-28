@@ -339,6 +339,7 @@ async def delete_session(request: Request, session_id: int):
     deleted = db.delete_agent_session(session_id)
     if not deleted:
         return JSONResponse({"ok": False, "error": "会话不存在"}, status_code=404)
+    destroy_session(session_id)  # 清理内存 ChatSession + 取消任务
     return {"ok": True}
 
 
@@ -679,39 +680,25 @@ async def delete_model(_model_name: str, _request: Request):
 
 @router.websocket("/api/agent/ws")
 async def agent_websocket_endpoint(ws: WebSocket):
-    """WebSocket 端点，支持 ``agent_id`` 查询参数。
+    """WebSocket 端点 -- 纯传输层，任务由 ChatSession 托管。
 
-    当 ``agent_id`` 存在时，从 DB 加载 ``AgentDefinition`` 并通过
-    ``AgentFactory`` 构建角色化 Agent；否则回退到 ``app.state.default_agent``。
+    支持查询参数 ``?session_id=``（重连恢复）与 ``?agent_id=``（角色）。
     """
-    agent_id = ws.query_params.get("agent_id", "")
     await ws.accept()
     client_id = id(ws)
     _ws_clients[client_id] = ws
 
-    config = getattr(ws.app.state, "agent_config", None) or {}
-    db = ws.app.state.db
+    forward_task: asyncio.Task | None = None
+    current_chat_task: ChatTask | None = None
 
-    agent_cfg = config.get("agent", {})
-    current_model = agent_cfg.get("default_model", "quick")
-    current_running_mode = "normal"
-    current_task: asyncio.Task | None = None
-    pending_approvals: dict[str, asyncio.Future] = {}
-
-    # Resolve agent: agent_id → AgentDefinition → AgentFactory.build()
-    if agent_id:
-        factory = getattr(ws.app.state, "agent_factory", None)
-        defn = db.get_agent_definition(agent_id)
-        if defn and factory:
-            agent_instance = factory.build(defn)
-        elif not defn:
-            await ws.close(code=4004, reason="agent not found")
-            return
-        else:
-            await ws.close(code=4004, reason="agent_factory not configured")
-            return
-    else:
-        agent_instance = getattr(ws.app.state, "agent_instance", None)
+    # 连接时恢复：若该 session 有任务（进行中或已完成），立即续推/补发
+    session_param = ws.query_params.get("session_id", "")
+    sid = _parse_int_sid(session_param) if session_param else None
+    if sid is not None:
+        sess = _sessions.get(sid)
+        if sess and sess.chat_task:
+            current_chat_task = sess.chat_task
+            forward_task = asyncio.create_task(_forward(ws, current_chat_task, sid))
 
     try:
         while True:
@@ -728,125 +715,64 @@ async def agent_websocket_endpoint(ws: WebSocket):
                 message = (data.get("message") or "").strip()
                 if not message:
                     continue
-
                 session_id = data.get("session_id", 0)
                 if not isinstance(session_id, int) or session_id < 1:
                     await ws.send_json({"type": "error", "message": "session_id 必须为正整数"})
                     continue
-                if "model" in data:
-                    current_model = data["model"]
-                if "running_mode" in data:
-                    current_running_mode = data["running_mode"]
+                model_name = data.get("model") or "quick"
+                running_mode = data.get("running_mode") or "normal"
+                agent_id = ws.query_params.get("agent_id", "")
 
+                config = getattr(ws.app.state, "agent_config", None) or {}
                 model_cfg = config.get("models", {})
                 if not model_cfg:
                     await ws.send_json({"type": "error", "message": "模型未配置"})
                     continue
-                if current_model not in model_cfg:
-                    current_model = "quick" if "quick" in model_cfg else next(iter(model_cfg))
+                if model_name not in model_cfg:
+                    model_name = "quick" if "quick" in model_cfg else next(iter(model_cfg))
 
-                async def approval_handler(tool_def, args: dict) -> dict:
-                    req_id = str(uuid.uuid4())
-                    future = asyncio.get_event_loop().create_future()
-                    pending_approvals[req_id] = future
-                    try:
-                        if dataclasses.is_dataclass(tool_def) and not isinstance(tool_def, type):
-                            tool_data = dataclasses.asdict(tool_def)
-                        else:
-                            tool_data = tool_def
-                        await ws.send_json({
-                            "type": "tool_approval_request",
-                            "request_id": req_id,
-                            "tool": tool_data,
-                            "args": args,
-                        })
-                        result = await asyncio.wait_for(future, timeout=120.0)
-                        return result
-                    except asyncio.TimeoutError:
-                        pending_approvals.pop(req_id, None)
-                        return {"approved": False, "reason": "审批超时"}
-                    except Exception:
-                        pending_approvals.pop(req_id, None)
-                        return {"approved": False, "reason": "审批连接中断"}
-
-                chat_agent = agent_instance
-                if chat_agent is None:
-                    print("[Agent WS] agent_instance is None, creating fallback agent")
-                if chat_agent is not None:
-                    chat_agent.running_mode = current_running_mode
-                    chat_agent.executor._approval_callback = approval_handler
-                else:
-                    from agent.agent import DefaultAgent
-                    from agent.memory import ShortTermMemory
-                    from agent.tools.tools import setup_builtin_tools
-                    print("[Agent WS] Creating fallback ReActExecutor agent")
-                    fallback_registry = setup_builtin_tools()
-                    try:
-                        from agent.mcp import MCPClient
-                        mcp_session = await MCPClient.connect_stdio(
-                            "python", "-m", "agent.mcp.news_server",
-                        )
-                        fallback_registry.add_mcp(mcp_session, level_map={
-                            "search_news": 2, "get_hot_topics": 1,
-                            "get_news_detail": 2, "analyze_sentiment": 1, "get_source_stats": 1,
-                        })
-                    except Exception as mcp_err:
-                        print(f"[Agent WS] MCP fallback connect failed: {mcp_err}")
-                    chat_agent = DefaultAgent(
-                        model_cfg,
-                        tools=fallback_registry,
-                        memory=ShortTermMemory(db, window_size=20),
-                        running_mode=current_running_mode,
-                        approval_callback=approval_handler,
+                sess = get_session(session_id)
+                try:
+                    current_chat_task = await _start_chat(
+                        sess, message, session_id=session_id, agent_id=agent_id,
+                        model_name=model_name, running_mode=running_mode,
+                        app_state=ws.app.state,
                     )
+                except Exception as e:
+                    await ws.send_json({"type": "error", "message": f"启动失败: {e!s}"[:500]})
+                    continue
 
-                full_reply = ""
-
-                async def generate():
-                    nonlocal full_reply
-                    try:
-                        async for token in chat_agent.chat_stream(message, session_id=str(session_id), model_name=current_model):
-                            full_reply += token
-                            await ws.send_json({"type": "token", "content": token})
-                    except asyncio.CancelledError:
-                        await ws.send_json({"type": "done", "session_id": session_id, "full_reply": full_reply, "stopped": True})
-                        return
-                    except Exception as e:
-                        import traceback
-                        traceback.print_exc()
-                        await ws.send_json({"type": "error", "message": str(e)[:500]})
-                        return
-                    await ws.send_json({"type": "done", "session_id": session_id, "full_reply": full_reply})
-
-                current_task = asyncio.create_task(generate())
+                if forward_task and not forward_task.done():
+                    forward_task.cancel()
+                forward_task = asyncio.create_task(_forward(ws, current_chat_task, session_id))
 
             elif msg_type == "stop":
-                if current_task and not current_task.done():
-                    current_task.cancel()
+                if current_chat_task and not current_chat_task.done and current_chat_task.task:
+                    current_chat_task.task.cancel()
+                if forward_task and not forward_task.done():
+                    forward_task.cancel()
                     try:
-                        await current_task
-                    except asyncio.CancelledError:
+                        await forward_task
+                    except (asyncio.CancelledError, Exception):
                         pass
-                current_task = None
+                forward_task = None
 
             elif msg_type == "tool_approval_response":
-                req_id = data.get("request_id", "")
-                if req_id in pending_approvals:
-                    future = pending_approvals.pop(req_id)
-                    future.set_result({
-                        "approved": data.get("approved", False),
-                        "reason": data.get("reason", ""),
-                    })
+                if current_chat_task:
+                    current_chat_task.respond_approval(
+                        data.get("request_id", ""),
+                        data.get("approved", False),
+                        data.get("reason", ""),
+                    )
 
     except WebSocketDisconnect:
-        if current_task and not current_task.done():
-            current_task.cancel()
-        for future in pending_approvals.values():
-            if not future.done():
-                future.set_result({"approved": False, "reason": "连接断开"})
-        pending_approvals.clear()
+        # 仅停转发，绝不取消 agent 任务 / 不动 ChatSession
+        if forward_task and not forward_task.done():
+            forward_task.cancel()
     finally:
         _ws_clients.pop(client_id, None)
+        if forward_task and not forward_task.done():
+            forward_task.cancel()
 
 
 print("[Agent] Routes ready — WebSocket /api/agent/ws")
