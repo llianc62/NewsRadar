@@ -29,6 +29,68 @@ _ws_clients: dict[int, WebSocket] = {}
 SESSION_COOKIE = "newsradar_session"
 
 
+@dataclasses.dataclass
+class ChatTask:
+    """进行中的对话任务 -- 与 WebSocket 解耦。
+
+    token/done/error 通过 broadcast 推给当前在线的 WS 订阅者；
+    WS 断开只退订，不取消任务。审批也走订阅通道，不绑 WS。
+    """
+    session_id: int
+    task: "asyncio.Task | None" = None
+    full_reply: str = ""
+    error: str = ""
+    done: bool = False
+    stopped: bool = False
+    _subscribers: list = dataclasses.field(default_factory=list)
+    pending_approvals: dict = dataclasses.field(default_factory=dict)
+
+    def subscribe(self) -> "asyncio.Queue":
+        """注册一个订阅者队列，后续 broadcast 会 put 到该队列。"""
+        q: asyncio.Queue = asyncio.Queue()
+        self._subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: "asyncio.Queue") -> None:
+        if q in self._subscribers:
+            self._subscribers.remove(q)
+
+    def broadcast(self, item: dict) -> None:
+        """向所有在线订阅者推送一个事件（token/done/error/approval）。"""
+        for q in list(self._subscribers):
+            q.put_nowait(item)
+
+    async def request_approval(self, tool_def, args: dict) -> dict:
+        """发起工具审批：广播请求 + 等待 WS 响应（120s 超时拒绝）。"""
+        req_id = str(uuid4())
+        future = asyncio.get_event_loop().create_future()
+        self.pending_approvals[req_id] = future
+        try:
+            if dataclasses.is_dataclass(tool_def) and not isinstance(tool_def, type):
+                tool_data = dataclasses.asdict(tool_def)
+            else:
+                tool_data = tool_def
+            self.broadcast({
+                "type": "tool_approval_request",
+                "request_id": req_id,
+                "tool": tool_data,
+                "args": args,
+            })
+            return await asyncio.wait_for(future, timeout=120.0)
+        except asyncio.TimeoutError:
+            self.pending_approvals.pop(req_id, None)
+            return {"approved": False, "reason": "审批超时"}
+        except Exception:
+            self.pending_approvals.pop(req_id, None)
+            return {"approved": False, "reason": "审批连接中断"}
+
+    def respond_approval(self, req_id: str, approved: bool, reason: str = "") -> None:
+        """WS 收到 tool_approval_response 时回填 future。"""
+        fut = self.pending_approvals.pop(req_id, None)
+        if fut and not fut.done():
+            fut.set_result({"approved": approved, "reason": reason})
+
+
 # ── REST: 聊天页面 ──
 
 @router.get("/agent", response_class=HTMLResponse)
