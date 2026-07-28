@@ -116,10 +116,17 @@ def test_parse_int_sid():
     assert _parse_int_sid("") is None
 
 
+class _FakeExecutor:
+    """假 executor：仅承载 _approval_callback（_start_chat 绑定用）。"""
+    _approval_callback = None
+
+
 class _FakeAgent:
     """假 agent：按预设 token 列表流式产出。"""
     def __init__(self, tokens):
         self._tokens = tokens
+        self.executor = _FakeExecutor()
+        self.running_mode = "normal"
 
     async def chat_stream(self, message, session_id="", model_name=""):
         for t in self._tokens:
@@ -216,3 +223,87 @@ async def test_forward_done_task_sends_resume_and_done(monkeypatch):
     await _forward(ws, ct, 1)
     assert ws.sent[0] == {"type": "resume", "full_reply": "complete answer"}
     assert ws.sent[1]["type"] == "done"
+
+
+class _FakeAppState:
+    """模拟 app.state，持有 agent_instance / agent_factory / db。"""
+    def __init__(self, agent_instance=None, agent_factory=None, db=None):
+        self.agent_instance = agent_instance
+        self.agent_factory = agent_factory
+        self.db = db
+
+
+@pytest.mark.asyncio
+async def test_start_chat_uses_default_agent_and_caches(monkeypatch):
+    from web.agent import _start_chat
+    monkeypatch.setattr("web.agent._sessions", {})
+    sess = get_session(1)
+    fake_agent = _FakeAgent(["hi"])
+    state = _FakeAppState(agent_instance=fake_agent)
+    ct = await _start_chat(
+        sess, "hello", session_id=1, agent_id="",
+        model_name="quick", running_mode="normal", app_state=state,
+    )
+    # 第二次取 default 应命中缓存（agent_instance 同一对象）
+    assert sess.agents["default"] is fake_agent
+    assert ct.task is not None
+    await ct.task  # 跑完
+    assert ct.full_reply == "hi"
+    assert ct.done is True
+
+
+@pytest.mark.asyncio
+async def test_start_chat_agent_id_builds_via_factory(monkeypatch):
+    from web.agent import _start_chat
+    monkeypatch.setattr("web.agent._sessions", {})
+    sess = get_session(2)
+    fake_agent = _FakeAgent(["x"])
+    builds = {"n": 0}
+
+    class _FakeFactory:
+        def build(self, defn):
+            builds["n"] += 1
+            return fake_agent
+
+    class _FakeDefn:
+        pass
+
+    class _FakeDB:
+        pass
+
+    state = _FakeAppState(agent_factory=_FakeFactory(), db=_FakeDB())
+    # mock db.get_agent_definition 返回非 None
+    state.db.get_agent_definition = lambda aid: _FakeDefn()
+    ct = await _start_chat(
+        sess, "hi", session_id=2, agent_id="abc-123",
+        model_name="quick", running_mode="normal", app_state=state,
+    )
+    await ct.task
+    assert builds["n"] == 1
+    assert sess.agents["agent:abc-123"] is fake_agent
+    # 再次 start_chat 同 agent_id 命中缓存（不重复 build）
+    ct2 = await _start_chat(
+        sess, "hi2", session_id=2, agent_id="abc-123",
+        model_name="quick", running_mode="normal", app_state=state,
+    )
+    await ct2.task
+    assert builds["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_start_chat_reuses_running_task(monkeypatch):
+    """防重入：已有进行中任务则返回它，不启新任务。"""
+    from web.agent import _start_chat
+    monkeypatch.setattr("web.agent._sessions", {})
+    sess = get_session(3)
+    fake_agent = _FakeAgent(["a", "b", "c"])
+    state = _FakeAppState(agent_instance=fake_agent)
+    ct1 = await _start_chat(
+        sess, "hi", session_id=3, agent_id="",
+        model_name="quick", running_mode="normal", app_state=state,
+    )
+    ct2 = await _start_chat(
+        sess, "hi2", session_id=3, agent_id="",
+        model_name="quick", running_mode="normal", app_state=state,
+    )
+    assert ct1 is ct2  # 同一任务

@@ -212,6 +212,89 @@ async def _forward(ws: WebSocket, ct: ChatTask, session_id: int) -> None:
         ct.unsubscribe(q)
 
 
+async def _build_fallback_agent(
+    app_state, running_mode: str, approval_callback,
+):
+    """app.state.agent_instance 未配置时的防御性 fallback（搬自原 WS endpoint）。
+
+    构建 DefaultAgent + 内置工具 + News MCP Server。
+    """
+    from agent.agent import DefaultAgent
+    from agent.memory import ShortTermMemory
+    from agent.tools.tools import setup_builtin_tools
+
+    registry = setup_builtin_tools()
+    try:
+        from agent.mcp import MCPClient
+        mcp_session = await MCPClient.connect_stdio(
+            "python", "-m", "agent.mcp.news_server",
+        )
+        registry.add_mcp(mcp_session, level_map={
+            "search_news": 2, "get_hot_topics": 1,
+            "get_news_detail": 2, "analyze_sentiment": 1, "get_source_stats": 1,
+        })
+    except Exception as mcp_err:
+        print(f"[Agent] MCP fallback connect failed: {mcp_err}")
+    config = getattr(app_state, "agent_config", None) or {}
+    model_cfg = config.get("models", {})
+    db = getattr(app_state, "db", None)
+    return DefaultAgent(
+        model_cfg,
+        tools=registry,
+        memory=ShortTermMemory(db, window_size=20) if db else None,
+        running_mode=running_mode,
+        approval_callback=approval_callback,
+    )
+
+
+async def _start_chat(
+    sess: ChatSession,
+    message: str,
+    *,
+    session_id: int,
+    agent_id: str,
+    model_name: str,
+    running_mode: str,
+    app_state,
+) -> ChatTask:
+    """启动一次对话任务 -- 防重入 + 构建/复用 agent + 绑定 approval 通道。
+
+    若该 session 已有进行中任务，直接返回它（前端续推）。
+    """
+    if sess.chat_task and not sess.chat_task.done:
+        return sess.chat_task  # 防重入
+
+    ct = ChatTask(session_id=session_id)
+
+    if agent_id:
+        factory = getattr(app_state, "agent_factory", None)
+        db = getattr(app_state, "db", None)
+        defn = db.get_agent_definition(agent_id) if db else None
+        if not defn or not factory:
+            raise ValueError(f"agent {agent_id!r} 不可用")
+        agent = sess.get_agent(f"agent:{agent_id}", lambda: factory.build(defn))
+    else:
+        # 默认助手：命中缓存否则用 agent_instance，再否则 fallback 构建
+        if "default" in sess.agents:
+            agent = sess.agents["default"]
+        else:
+            default_agent = getattr(app_state, "agent_instance", None)
+            if default_agent is not None:
+                agent = default_agent
+            else:
+                agent = await _build_fallback_agent(app_state, running_mode, ct.request_approval)
+            sess.agents["default"] = agent
+
+    agent.running_mode = running_mode
+    agent.executor._approval_callback = ct.request_approval
+
+    ct.task = asyncio.create_task(
+        _run_chat(sess, ct, agent, message, session_id, model_name)
+    )
+    sess.chat_task = ct
+    return ct
+
+
 # ── REST: 聊天页面 ──
 
 @router.get("/agent", response_class=HTMLResponse)
