@@ -28,8 +28,8 @@ STATIC_DIR = WEB_DIR / "static"
 
 
 def create_app(db, s3_config: dict, queues=None, crawler=None,
-               agent_config=None, agent_instance=None, persona_manager=None,
-               persona_orchestrator=None, tool_registry=None, agent_factory=None):
+               agent_config=None, agent_instance=None,
+               tool_registry=None, agent_factory=None):
     """Create and configure the FastAPI application.
 
     Args:
@@ -43,10 +43,6 @@ def create_app(db, s3_config: dict, queues=None, crawler=None,
                 ``models``, agent routes are registered.
         agent_instance: Optional pre-built :class:`agent.agent.DefaultAgent`
                 with ReActExecutor + tools.
-        persona_manager: Optional :class:`agent.persona.PersonaManager`
-                for role-playing chat (lazy-builds ``PersonaAgent`` per role).
-        persona_orchestrator: Optional :class:`agent.persona.PersonaOrchestrator`
-                for multi-role team consultation (fan-out + editor aggregate).
 
     Returns:
         Configured FastAPI application.
@@ -108,10 +104,6 @@ def create_app(db, s3_config: dict, queues=None, crawler=None,
     app.state.agent_config = agent_config or {}
     if agent_instance is not None:
         app.state.agent_instance = agent_instance
-    if persona_manager is not None:
-        app.state.persona_manager = persona_manager
-    if persona_orchestrator is not None:
-        app.state.persona_orchestrator = persona_orchestrator
     if tool_registry is not None:
         app.state.tool_registry = tool_registry
     if agent_factory is not None:

@@ -85,45 +85,6 @@ async def get_messages(request: Request, session_id: int, limit: int = 50):
     return {"messages": messages}
 
 
-# ── REST: 角色列表（右侧团队面板） ──
-
-@router.get("/api/agent/personas")
-async def list_personas_api(request: Request):
-    """列出可用角色（供前端右侧团队面板渲染）。
-
-    未配置 ``persona_manager`` 时返回空列表 + ``enabled: false``，前端据此
-    隐藏团队面板。
-    """
-    manager = getattr(request.app.state, "persona_manager", None)
-    if manager is None:
-        return {"personas": [], "enabled": False, "default_team": []}
-    personas_cfg = (config_get(request, "personas") or {})
-    disabled = set(personas_cfg.get("disabled") or [])
-    # editor 是聚合者，不出现在可选团队面板
-    personas = [
-        {
-            "name": s.name,
-            "display_name": s.display_name,
-            "description": s.description,
-            "category": s.category,
-            "order": s.order,
-        }
-        for s in manager.available()
-        if s.category != "editor" and s.name not in disabled
-    ]
-    return {
-        "enabled": True,
-        "personas": personas,
-        "default_team": personas_cfg.get("default_team") or [],
-    }
-
-
-def config_get(request: Request, key: str):
-    """从 app.state.agent_config 取顶层段（容错）。"""
-    cfg = getattr(request.app.state, "agent_config", None) or {}
-    return cfg.get(key)
-
-
 # ── Helper: AgentDefinition → JSON-safe dict ──────────────────────
 
 
@@ -464,8 +425,6 @@ async def agent_websocket_endpoint(ws: WebSocket):
 
     config = getattr(ws.app.state, "agent_config", None) or {}
     db = ws.app.state.db
-    persona_manager = getattr(ws.app.state, "persona_manager", None)
-    persona_orchestrator = getattr(ws.app.state, "persona_orchestrator", None)
 
     agent_cfg = config.get("agent", {})
     current_model = agent_cfg.get("default_model", "quick")
@@ -544,88 +503,45 @@ async def agent_websocket_endpoint(ws: WebSocket):
                         pending_approvals.pop(req_id, None)
                         return {"approved": False, "reason": "审批连接中断"}
 
-                # ── 角色解析：支持单选（字符串）或多选（列表）──
-                raw_persona = data.get("persona")
-                if isinstance(raw_persona, str):
-                    persona_names = [raw_persona.strip()] if raw_persona.strip() else []
-                elif isinstance(raw_persona, list):
-                    persona_names = [p.strip() for p in raw_persona
-                                     if isinstance(p, str) and p.strip()]
+                chat_agent = agent_instance
+                if chat_agent is None:
+                    print("[Agent WS] agent_instance is None, creating fallback agent")
+                if chat_agent is not None:
+                    chat_agent.running_mode = current_running_mode
+                    chat_agent.executor._approval_callback = approval_handler
                 else:
-                    persona_names = []
-                if persona_manager:
-                    persona_names = [n for n in persona_names if persona_manager.has(n)]
-
-                is_team = len(persona_names) >= 2 and persona_orchestrator is not None
-
-                if persona_manager:
-                    persona_manager.set_running_config(current_running_mode, approval_handler)
-
-                chat_agent = None
-                if not is_team:
-                    if persona_manager and len(persona_names) == 1:
-                        try:
-                            chat_agent = await persona_manager.get(persona_names[0])
-                        except Exception as e:
-                            await ws.send_json({"type": "error", "message": f"角色构建失败: {e!s}"[:500]})
-                            continue
-                    if chat_agent is None:
-                        chat_agent = agent_instance
-                        if chat_agent is None:
-                            print("[Agent WS] agent_instance is None, creating fallback agent")
-                    if chat_agent is not None:
-                        chat_agent.running_mode = current_running_mode
-                        chat_agent.executor._approval_callback = approval_handler
-                    else:
-                        from agent.agent import DefaultAgent
-                        from agent.memory import ShortTermMemory
-                        from agent.tools.tools import setup_builtin_tools
-                        print("[Agent WS] Creating fallback ReActExecutor agent")
-                        fallback_registry = setup_builtin_tools()
-                        try:
-                            from agent.mcp import MCPClient
-                            mcp_session = await MCPClient.connect_stdio(
-                                "python", "-m", "agent.mcp.news_server",
-                            )
-                            fallback_registry.add_mcp(mcp_session, level_map={
-                                "search_news": 2, "get_hot_topics": 1,
-                                "get_news_detail": 2, "analyze_sentiment": 1, "get_source_stats": 1,
-                            })
-                        except Exception as mcp_err:
-                            print(f"[Agent WS] MCP fallback connect failed: {mcp_err}")
-                        chat_agent = DefaultAgent(
-                            model_cfg,
-                            tools=fallback_registry,
-                            memory=ShortTermMemory(db, window_size=20),
-                            running_mode=current_running_mode,
-                            approval_callback=approval_handler,
+                    from agent.agent import DefaultAgent
+                    from agent.memory import ShortTermMemory
+                    from agent.tools.tools import setup_builtin_tools
+                    print("[Agent WS] Creating fallback ReActExecutor agent")
+                    fallback_registry = setup_builtin_tools()
+                    try:
+                        from agent.mcp import MCPClient
+                        mcp_session = await MCPClient.connect_stdio(
+                            "python", "-m", "agent.mcp.news_server",
                         )
+                        fallback_registry.add_mcp(mcp_session, level_map={
+                            "search_news": 2, "get_hot_topics": 1,
+                            "get_news_detail": 2, "analyze_sentiment": 1, "get_source_stats": 1,
+                        })
+                    except Exception as mcp_err:
+                        print(f"[Agent WS] MCP fallback connect failed: {mcp_err}")
+                    chat_agent = DefaultAgent(
+                        model_cfg,
+                        tools=fallback_registry,
+                        memory=ShortTermMemory(db, window_size=20),
+                        running_mode=current_running_mode,
+                        approval_callback=approval_handler,
+                    )
 
                 full_reply = ""
 
                 async def generate():
                     nonlocal full_reply
                     try:
-                        if is_team:
-                            await ws.send_json({
-                                "type": "team_thinking",
-                                "personas": persona_names,
-                            })
-                            async for event in persona_orchestrator.chat_stream(
-                                message, persona_names, model_name=current_model
-                            ):
-                                if event["type"] == "signals":
-                                    await ws.send_json({
-                                        "type": "signals",
-                                        "signals": event["signals"],
-                                    })
-                                elif event["type"] == "token":
-                                    full_reply += event["content"]
-                                    await ws.send_json({"type": "token", "content": event["content"]})
-                        else:
-                            async for token in chat_agent.chat_stream(message, session_id=str(session_id), model_name=current_model):
-                                full_reply += token
-                                await ws.send_json({"type": "token", "content": token})
+                        async for token in chat_agent.chat_stream(message, session_id=str(session_id), model_name=current_model):
+                            full_reply += token
+                            await ws.send_json({"type": "token", "content": token})
                     except asyncio.CancelledError:
                         await ws.send_json({"type": "done", "session_id": session_id, "full_reply": full_reply, "stopped": True})
                         return

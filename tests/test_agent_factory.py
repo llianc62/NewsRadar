@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langchain_core.messages import AIMessage
 
-from agent.factory import AgentFactory, _register_mcp_tools, create_agent, create_persona
+from agent.factory import AgentFactory, _register_mcp_tools, create_agent
 from agent.agent import DefaultAgent
 from agent.executor import ReActExecutor
 from agent.memory import NullMemory
@@ -295,16 +295,12 @@ class TestAgentFactoryBuild:
 
 
 class TestBackwardCompatibility:
-    """Verify existing create_agent and create_persona remain intact."""
+    """Verify existing create_agent remains intact."""
 
     def test_create_agent_signature(self):
         """create_agent is still importable and callable."""
         # Just verify the function exists and is importable
         assert callable(create_agent)
-
-    def test_create_persona_signature(self):
-        """create_persona is still importable and callable."""
-        assert callable(create_persona)
 
     def test_register_mcp_tools_signature(self):
         """_register_mcp_tools is still importable and callable."""

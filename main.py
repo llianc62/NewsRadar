@@ -240,13 +240,10 @@ class NewsRadarDaemon:
 
         # 条件构建 Agent（仅当配置了 models 时）
         agent = None
-        persona_manager = None
-        persona_orchestrator = None
         mcp_server_proc = None
         if self.config.get("models"):
             from agent.factory import (
                 create_agent,
-                create_persona_orchestrator,
                 start_mcp_server,
             )
 
@@ -273,17 +270,6 @@ class NewsRadarDaemon:
             )
             print(f"[Daemon] Agent built (type={type(agent).__name__}, executor={type(agent.executor).__name__}, memory={type(agent.memory).__name__}, tools={agent.tools.list_tools() if agent.tools else 'None'}).")
 
-            # 角色扮演：单角色懒构建管理器 + 多角色编排器（共享同一 manager）
-            persona_orchestrator = await create_persona_orchestrator(
-                self.config, db=self.db, base_prompt=base_prompt, mcp_cfg=mcp_cfg,
-            )
-            persona_manager = persona_orchestrator._manager
-            selectable = [s for s in persona_manager.available() if s.category != "editor"]
-            print(
-                f"[Daemon] PersonaOrchestrator built "
-                f"({len(selectable)} selectable personas + editor)."
-            )
-
         # 创建 Web 应用（含条件注册 Agent 路由）
         tool_registry = None
         agent_factory = None
@@ -301,8 +287,6 @@ class NewsRadarDaemon:
 
         app = create_app(self.db, s3_config, queues=queues, crawler=crawler,
                           agent_config=self.config, agent_instance=agent,
-                          persona_manager=persona_manager,
-                          persona_orchestrator=persona_orchestrator,
                           tool_registry=tool_registry,
                           agent_factory=agent_factory)
 

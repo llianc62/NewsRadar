@@ -110,42 +110,6 @@ class TestAgentSessions:
         assert "AI 助手" in resp.text or "agent" in resp.text.lower()
 
 
-@pytest.mark.integration
-class TestPersonaRoutes:
-    def test_list_personas_disabled_without_manager(self, agent_client):
-        """无 persona_manager 时返回 enabled:false，前端据此隐藏面板。"""
-        resp = agent_client.get("/api/agent/personas")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["enabled"] is False
-        assert body["personas"] == []
-
-    def test_list_personas_returns_registry(self, db, config_with_llm, mock_cursor):
-        """有 PersonaManager 时返回注册表里的角色（buffett/sentiment）。"""
-        from agent.persona import PersonaManager
-        from web.app import create_app
-
-        manager = PersonaManager(config_with_llm["models"], register_mcp=False)
-        app = create_app(
-            db, {}, agent_config=config_with_llm, persona_manager=manager
-        )
-        client = TestClient(app)
-
-        resp = client.get("/api/agent/personas")
-        assert resp.status_code == 200
-        body = resp.json()
-        assert body["enabled"] is True
-        names = [p["name"] for p in body["personas"]]
-        assert "buffett" in names
-        assert "sentiment" in names
-        # 字段齐全
-        for p in body["personas"]:
-            assert {"name", "display_name", "description", "category", "order"} <= set(p)
-        # 按 order 排序
-        orders = [p["order"] for p in body["personas"]]
-        assert orders == sorted(orders)
-
-
 # ── Agent CRUD + KB + Tools 测试 ──────────────────────────────────
 
 
