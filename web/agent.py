@@ -14,6 +14,7 @@ import os
 import uuid
 
 from uuid import uuid4
+from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -89,6 +90,57 @@ class ChatTask:
         fut = self.pending_approvals.pop(req_id, None)
         if fut and not fut.done():
             fut.set_result({"approved": approved, "reason": reason})
+
+
+@dataclasses.dataclass
+class ChatSession:
+    """单会话运行时 -- 托管该会话用过的 agent 与进行中任务。
+
+    Agent 跟随 session 生命周期：session 不删除则 agent 不清理。
+    一个 session 可持有多个 agent（切换角色时各自构建并缓存）。
+    """
+    session_id: int
+    agents: dict[str, Any] = dataclasses.field(default_factory=dict)
+    chat_task: ChatTask | None = None
+
+    def get_agent(self, key: str, build_fn: Callable[[], Any]) -> Any:
+        """命中缓存返回，未命中静默构建并缓存。"""
+        if key not in self.agents:
+            self.agents[key] = build_fn()
+        return self.agents[key]
+
+    def destroy(self) -> None:
+        """session 删除时清理：取消进行中任务 + 清空 agent 缓存。"""
+        if self.chat_task and not self.chat_task.done and self.chat_task.task:
+            self.chat_task.task.cancel()
+        self.agents.clear()
+        self.chat_task = None
+
+
+_sessions: dict[int, ChatSession] = {}
+
+
+def get_session(session_id: int) -> ChatSession:
+    """命中返回，未命中新建空壳 ChatSession（agent 惰性构建）。"""
+    if session_id not in _sessions:
+        _sessions[session_id] = ChatSession(session_id=session_id)
+    return _sessions[session_id]
+
+
+def destroy_session(session_id: int) -> None:
+    """session 删除时调用：cancel 任务 + 清 agents + 移出表。"""
+    s = _sessions.pop(session_id, None)
+    if s:
+        s.destroy()
+
+
+def _parse_int_sid(raw: str) -> int | None:
+    """解析 session_id 字符串为正整数，非法返回 None。"""
+    try:
+        sid = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return sid if sid >= 1 else None
 
 
 # ── REST: 聊天页面 ──
