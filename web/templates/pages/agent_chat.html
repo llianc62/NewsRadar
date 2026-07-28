@@ -104,7 +104,7 @@
       </header>
       <div class="agent-list" id="agent-list"></div>
       <footer class="agent-sidebar-footer">
-        <span class="agent-hint" id="agent-hint">默认助手 · 或勾选角色</span>
+        <span class="agent-hint" id="agent-hint">默认助手 · 或选择角色</span>
       </footer>
     </aside>
   </div>
@@ -153,7 +153,6 @@
   var suggestions = document.querySelectorAll('.chat-suggestion');
   var currentModel = 'quick';
   var currentMode = 'normal';
-  var selectedPersonas = [];
   var currentAgentId = '';
   var sessionId = null;
   var ws = null;
@@ -168,9 +167,10 @@
   function connectWS() {
     var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     var url = protocol + '//' + location.host + '/api/agent/ws';
-    if (currentAgentId) {
-      url += '?agent_id=' + encodeURIComponent(currentAgentId);
-    }
+    var params = [];
+    if (currentAgentId) params.push('agent_id=' + encodeURIComponent(currentAgentId));
+    if (sessionId) params.push('session_id=' + encodeURIComponent(sessionId));
+    if (params.length) url += '?' + params.join('&');
     ws = new WebSocket(url);
 
     ws.onopen = function() { console.log('[WS] connected'); };
@@ -188,52 +188,11 @@
   function handleMessage(data) {
     switch (data.type) {
       case 'token': appendToken(data.content); break;
+      case 'resume': resumeMessage(data.full_reply || ''); break;
       case 'done':  finishMessage(data); break;
       case 'error': showError(data.message); break;
       case 'tool_approval_request': showApprovalDialog(data); break;
-      case 'team_thinking': showTeamThinking(data.personas || []); break;
-      case 'signals': renderSignals(data.signals || []); break;
     }
-  }
-
-  // ── 团队会诊 ──
-  function showTeamThinking(personas) {
-    var bubble = ensureBubble();
-    var content = bubble.querySelector('.bubble-content');
-    content.innerHTML = '<div class="team-thinking">'
-      + '<div class="typing-dots"><span></span><span></span><span></span></div>'
-      + '<span class="team-thinking-label">团队分析中（' + personas.length
-      + ' 个角色）…</span></div>';
-    scrollToBottom();
-  }
-
-  function stanceClass(stance) {
-    if (stance === '看多') return 'bull';
-    if (stance === '看空') return 'bear';
-    return 'neutral';
-  }
-
-  function renderSignals(signals) {
-    var bubble = ensureBubble();
-    var content = bubble.querySelector('.bubble-content');
-    content.innerHTML = '';
-    if (signals.length) {
-      var chips = document.createElement('div');
-      chips.className = 'signal-chips';
-      signals.forEach(function(s) {
-        var chip = document.createElement('span');
-        chip.className = 'signal-chip stance-' + stanceClass(s.stance);
-        var label = (s.display_name || s.persona || '?') + ' · ' + (s.stance || '?');
-        if (s.confidence) label += ' ' + s.confidence;
-        chip.textContent = label;
-        chips.appendChild(chip);
-      });
-      content.appendChild(chips);
-    }
-    var reply = document.createElement('div');
-    reply.className = 'reply-text';
-    content.appendChild(reply);
-    scrollToBottom();
   }
 
   // ── 消息渲染 ──
@@ -248,6 +207,21 @@
       '<div class="bubble-content"></div>';
     messagesEl.appendChild(currentBubble);
     return currentBubble;
+  }
+
+  function resumeMessage(fullReply) {
+    setGenerating(true);
+    var bubble = ensureBubble();
+    var content = bubble.querySelector('.bubble-content');
+    if (fullReply) {
+      content.innerHTML = '<div class="reply-text"></div>';
+      content.querySelector('.reply-text').textContent = fullReply;
+      scrollToBottom();
+    } else {
+      // 尚无内容，显示 typing 占位
+      content.innerHTML = '<div class="typing-dots"><span></span><span></span><span></span></div>';
+      scrollToBottom();
+    }
   }
 
   function showTyping() {
@@ -353,7 +327,6 @@
       message: text,
       model: currentModel,
       running_mode: currentMode,
-      persona: selectedPersonas,
     }));
   }
 
@@ -491,6 +464,7 @@
     messagesEl.appendChild(empty);
     currentBubble = null;
     loadMessages(sid);
+    reconnectWS();  // 带新 session_id 重连，触发进行中任务恢复
   }
 
   async function loadMessages(sid) {
@@ -548,8 +522,7 @@
   function refreshAgentCardStates() {
     agentListEl.querySelectorAll('.agent-card').forEach(function(c) {
       var aid = c.dataset.agentId;
-      var on = (!aid && selectedPersonas.length === 0)
-        || (aid && selectedPersonas.indexOf(aid) >= 0);
+      var on = (!aid && !currentAgentId) || (aid === currentAgentId);
       c.classList.toggle('active', on);
       c.setAttribute('aria-checked', on ? 'true' : 'false');
     });
@@ -558,13 +531,9 @@
   function updateAgentHint() {
     var hint = document.getElementById('agent-hint');
     if (!hint) return;
-    if (selectedPersonas.length === 0) {
-      hint.textContent = '默认助手 · 或勾选角色';
-    } else if (selectedPersonas.length === 1) {
-      hint.textContent = '单角色对话';
-    } else {
-      hint.textContent = '团队会诊 · ' + selectedPersonas.length + ' 个角色';
-    }
+    hint.textContent = currentAgentId
+      ? (agentNames[currentAgentId] || '智能体') + ' · 对话中'
+      : '默认助手 · 或选择角色';
   }
 
   async function loadAgents() {
@@ -592,18 +561,9 @@
       card.addEventListener('click', function() {
         if (isGenerating) return;
         var aid = card.dataset.agentId;
-        if (!aid) {
-          selectedPersonas = [];
-          if (currentAgentId) {
-            currentAgentId = '';
-            reconnectWS();
-          }
-        } else {
-          selectedPersonas = [aid];
-          if (currentAgentId !== aid) {
-            currentAgentId = aid;
-            reconnectWS();
-          }
+        if (currentAgentId !== aid) {
+          currentAgentId = aid;
+          reconnectWS();
         }
         refreshAgentCardStates();
         updateAgentHint();
