@@ -35,7 +35,7 @@ def mock_mem_storage():
 
 @pytest.mark.asyncio
 async def test_null_memory_noop():
-    ctx = Context(user_input="hi", session_id="s1")
+    ctx = Context(user_input="hi", session_id="1")
     m = NullMemory()
     await m.load(ctx)
     assert ctx.history_messages == []
@@ -49,7 +49,7 @@ async def test_short_term_load_from_db(mock_db):
         {"role": "assistant", "content": "old a"},
     ]
     m = ShortTermMemory(mock_db, window_size=20)
-    ctx = Context(session_id="s1")
+    ctx = Context(session_id="1")
     await m.load(ctx)
     assert len(ctx.history_messages) == 2
     assert ctx.history_messages[0].role == "user"
@@ -67,10 +67,69 @@ async def test_short_term_load_no_session():
 @pytest.mark.asyncio
 async def test_short_term_save(mock_db):
     m = ShortTermMemory(mock_db)
-    ctx = Context(session_id="s1", user_input="q")
+    ctx = Context(session_id="1", user_input="q")
     ctx.messages = [__import__("agent.data", fromlist=["Message"]).Message(role="assistant", content="a")]
     await m.save(ctx)
     assert mock_db.save_agent_message.call_count == 2  # user + assistant
+
+
+# ── session_id 类型边界（regression: 会话 title 不更新） ─────────
+
+
+@pytest.mark.asyncio
+async def test_short_term_save_converts_str_session_id_to_int(mock_db):
+    """str session_id（来自 WebSocket/Context）应转为 int 传给 DB。
+
+    Regression: ``Context.session_id`` 是 str（WebSocket 调 ``chat_stream``
+    时传 ``session_id=str(...)``），但 ``save_agent_message`` 期望 int。
+    未转换时 ``session_id < 1`` 对 str 抛 TypeError，被
+    ``executor._finalize`` 的 try/except 吞掉，导致 user 消息未落库、
+    会话 title 永远停留在"新会话"。
+    """
+    from agent.data import Message
+
+    m = ShortTermMemory(mock_db)
+    ctx = Context(session_id="5", user_input="你好")
+    ctx.messages = [Message(role="assistant", content="回复")]
+    await m.save(ctx)
+    assert mock_db.save_agent_message.call_count == 2
+    for call in mock_db.save_agent_message.call_args_list:
+        sid = call.args[0]
+        assert sid == 5
+        assert isinstance(sid, int), f"session_id 应为 int，实际 {type(sid).__name__}"
+
+
+@pytest.mark.asyncio
+async def test_short_term_load_converts_str_session_id_to_int(mock_db):
+    """load 同样需把 str session_id 转为 int 传给 get_agent_messages。"""
+    mock_db.get_agent_messages.return_value = []
+    m = ShortTermMemory(mock_db)
+    ctx = Context(session_id="5")
+    await m.load(ctx)
+    mock_db.get_agent_messages.assert_called_once_with(5, 20)
+    sid = mock_db.get_agent_messages.call_args.args[0]
+    assert isinstance(sid, int)
+
+
+@pytest.mark.asyncio
+async def test_short_term_save_skips_non_numeric_session_id(mock_db):
+    """非数字 session_id（无法对应 PG SERIAL）时静默降级，不调 DB、不抛。"""
+    from agent.data import Message
+
+    m = ShortTermMemory(mock_db)
+    ctx = Context(session_id="abc", user_input="你好")
+    ctx.messages = [Message(role="assistant", content="回复")]
+    await m.save(ctx)  # 不抛
+    mock_db.save_agent_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_short_term_load_skips_non_numeric_session_id(mock_db):
+    """非数字 session_id 时 load 静默降级，不调 DB、不抛。"""
+    m = ShortTermMemory(mock_db)
+    ctx = Context(session_id="abc")
+    await m.load(ctx)  # 不抛
+    mock_db.get_agent_messages.assert_not_called()
 
 
 # ── LongTermMemory tests ──────────────────────────────────────
@@ -81,7 +140,7 @@ async def test_long_term_load_history_and_memories(mock_db, mock_mem_storage):
     mock_db.get_agent_messages.return_value = [{"role": "user", "content": "q"}]
     mock_mem_storage.search.return_value = [{"memory_type": "fact", "content": "remembered"}]
     m = LongTermMemory(mock_db, mock_mem_storage)
-    ctx = Context(session_id="s1", user_input="hi")
+    ctx = Context(session_id="1", user_input="hi")
     await m.load(ctx)
     assert len(ctx.history_messages) == 1
     assert len(ctx.memories) == 1
@@ -93,7 +152,7 @@ async def test_long_term_load_history_and_memories(mock_db, mock_mem_storage):
 async def test_long_term_load_no_user_input(mock_db, mock_mem_storage):
     mock_db.get_agent_messages.return_value = []
     m = LongTermMemory(mock_db, mock_mem_storage)
-    ctx = Context(session_id="s1", user_input="")
+    ctx = Context(session_id="1", user_input="")
     await m.load(ctx)
     assert ctx.memories == []
 
@@ -112,7 +171,7 @@ async def test_long_term_save_extracts_on_long_output(mock_db, mock_mem_storage)
     from agent.data import Message
 
     m = LongTermMemory(mock_db, mock_mem_storage)
-    ctx = Context(session_id="s1", user_input="普通问题")
+    ctx = Context(session_id="1", user_input="普通问题")
     ctx.messages = [
         Message(role="assistant", content="A" * 101),  # >100 chars -> _should_extract True
     ]
@@ -121,7 +180,7 @@ async def test_long_term_save_extracts_on_long_output(mock_db, mock_mem_storage)
     mock_mem_storage.save.assert_awaited_once()
     args = mock_mem_storage.save.call_args
     assert args.kwargs.get("memory_type") == "fact"
-    assert args.kwargs.get("session_id") == "s1"
+    assert args.kwargs.get("session_id") == "1"
 
 
 @pytest.mark.asyncio
@@ -130,7 +189,7 @@ async def test_long_term_save_extracts_on_long_output_no_entity(mock_db, mock_me
     from agent.data import Message
 
     m = LongTermMemory(mock_db, mock_mem_storage)
-    ctx = Context(session_id="s1", user_input="普通问题没有命名实体")
+    ctx = Context(session_id="1", user_input="普通问题没有命名实体")
     ctx.messages = [Message(role="assistant", content="X" * 101)]  # >100 chars
     await m.save(ctx)
     mock_mem_storage.save.assert_awaited_once()
@@ -143,7 +202,7 @@ async def test_long_term_save_batch_merge_on_interval(mock_db, mock_mem_storage)
     from agent.data import Message
 
     m = LongTermMemory(mock_db, mock_mem_storage, extract_interval=2)
-    ctx = Context(session_id="s1", user_input="普通文本无实体")
+    ctx = Context(session_id="1", user_input="普通文本无实体")
     ctx.messages = [Message(role="assistant", content="短回复")]
 
     # Turn 1: no extraction (short output, no entity), not interval -> no save
@@ -168,7 +227,7 @@ async def test_long_term_save_no_attribute_error(mock_db, mock_mem_storage):
     from agent.data import Message
 
     m = LongTermMemory(mock_db, mock_mem_storage)
-    ctx = Context(session_id="s1", user_input="巴菲特投资苹果")
+    ctx = Context(session_id="1", user_input="巴菲特投资苹果")
     ctx.messages = [Message(role="assistant", content="B" * 150)]
     # Must not raise AttributeError
     await m.save(ctx)

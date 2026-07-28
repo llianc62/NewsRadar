@@ -293,6 +293,9 @@
     }
     currentBubble = null;
     setGenerating(false);
+    // 刷新会话列表：首轮对话后后端会把 title 从"新会话"更新为消息摘要，
+    // 此处 reload 让左侧列表实时反映新标题（done 事件在 _finalize 落库后发出）。
+    loadSessions();
   }
 
   function showError(msg) {

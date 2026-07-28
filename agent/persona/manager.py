@@ -27,6 +27,9 @@ class PersonaManager:
         register_mcp: 角色首用时是否注册 News MCP Server 工具。
         max_steps: ReAct 循环最大步数。
         mcp_cfg: ``config["mcp_server"]``，透传给每个角色 agent 用于 SSE 连接。
+        db: 可选 PostgreSQL 实例，传入时为角色注入 ``ShortTermMemory``，
+            单角色聊天持久化对话并更新会话 title；团队会诊因 orchestrator
+            不传 session_id（空），save 自动跳过，不影响多角色现状。
     """
 
     def __init__(
@@ -39,6 +42,7 @@ class PersonaManager:
         max_steps: int = 10,
         base_prompt: str = "",
         mcp_cfg: dict | None = None,
+        db=None,
     ):
         self._models = models_config
         self._knowledge = knowledge
@@ -47,11 +51,25 @@ class PersonaManager:
         self._max_steps = max_steps
         self._base_prompt = base_prompt
         self._mcp_cfg = mcp_cfg
+        self._db = db
         self._cache: dict = {}
         self._lock = asyncio.Lock()
         # 运行时配置：每次 get() 应用到返回的 persona（含缓存命中）
         self._running_mode = "strict"
         self._approval_callback = None
+
+    def _build_memory(self):
+        """构造短期记忆 -- 单角色聊天时持久化对话（触发 title 更新）。
+
+        团队会诊时 ``PersonaOrchestrator`` 调 ``persona.chat`` 不传 session_id
+        （空），``ShortTermMemory.save`` 对空 session_id 提前 return，故注入
+        memory 不会改变多角色会诊的现有行为。
+        """
+        if self._db is None:
+            return None
+        from ..memory import ShortTermMemory
+
+        return ShortTermMemory(self._db, window_size=20)
 
     def set_running_config(self, running_mode: str, approval_callback=None) -> None:
         """设置运行模式与工具审批回调，后续每次 ``get()`` 都会应用到角色。
@@ -106,6 +124,7 @@ class PersonaManager:
                 max_steps=self._max_steps,
                 base_prompt=self._base_prompt,
                 mcp_cfg=self._mcp_cfg,
+                memory=self._build_memory(),
             )
             self._cache[name] = persona
             self._apply_running_config(persona)

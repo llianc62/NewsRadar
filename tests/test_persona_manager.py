@@ -88,6 +88,48 @@ async def test_get_passes_knowledge_and_analyzer(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_injects_short_term_memory_when_db_provided(monkeypatch):
+    """有 db 时，get 给 persona 注入 ShortTermMemory（单角色聊天持久化对话 + title 更新）。
+
+    Regression: persona 默认用 NullMemory，user 消息从不落库，会话 title 永远
+    停留在"新会话"。注入 ShortTermMemory 后单角色路径会存消息并触发 title 更新；
+    团队会诊因 orchestrator 不传 session_id（空），save 自动跳过，现状不变。
+    """
+    from agent.memory import ShortTermMemory
+
+    captured = {}
+
+    async def fake_create(name, config, **kwargs):
+        captured.update(kwargs)
+        return FakePersona(name, **kwargs)
+
+    monkeypatch.setattr("agent.factory.create_persona", fake_create)
+
+    fake_db = object()
+    mgr = PersonaManager(_CONFIG, register_mcp=False, db=fake_db)
+    await mgr.get("buffett")
+    memory = captured.get("memory")
+    assert isinstance(memory, ShortTermMemory)
+    assert memory._db is fake_db
+
+
+@pytest.mark.asyncio
+async def test_get_no_memory_when_db_none(monkeypatch):
+    """无 db 时 memory=None（persona 退化为 NullMemory，不持久化）。"""
+    captured = {}
+
+    async def fake_create(name, config, **kwargs):
+        captured.update(kwargs)
+        return FakePersona(name, **kwargs)
+
+    monkeypatch.setattr("agent.factory.create_persona", fake_create)
+
+    mgr = PersonaManager(_CONFIG, register_mcp=False, db=None)
+    await mgr.get("buffett")
+    assert captured.get("memory") is None
+
+
+@pytest.mark.asyncio
 async def test_get_unknown_raises(monkeypatch):
     mgr = PersonaManager(_CONFIG, register_mcp=False)
     with pytest.raises(ValueError, match="未知角色"):
@@ -163,3 +205,16 @@ async def test_create_persona_manager_knowledge_disabled(monkeypatch):
     # 无 db -> knowledge 不构建
     mgr = await create_persona_manager(config, db=None)
     assert mgr._knowledge is None
+
+
+@pytest.mark.asyncio
+async def test_create_persona_manager_passes_db_to_manager(monkeypatch):
+    """create_persona_manager 把 db 透传给 PersonaManager（供角色记忆持久化）。"""
+    from agent.factory import create_persona_manager
+
+    monkeypatch.setattr("news.analyzer.create_analyzer", lambda cfg, db=None: None)
+    fake_db = object()
+    config = {"models": _CONFIG, "knowledge": {"enabled": False}}
+    mgr = await create_persona_manager(config, db=fake_db)
+    assert isinstance(mgr, PersonaManager)
+    assert mgr._db is fake_db

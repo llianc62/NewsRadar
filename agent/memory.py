@@ -40,17 +40,39 @@ class NullMemory(MemoryModule):
 
 class ShortTermMemory(MemoryModule):
     """短期记忆 -- load 历史对话(agent_messages 表)。"""
+
     def __init__(self, db, window_size: int = 20):
         if window_size < 1:
             raise ValueError("window_size must be >= 1")
         self._db = db
         self._window_size = window_size
 
+    @staticmethod
+    def _parse_session_id(session_id: str) -> int | None:
+        """将 ``ctx.session_id``(str)转为 DB 需要的 int。
+
+        agent 子系统约定 ``session_id`` 为 str(WebSocket 调 ``chat_stream``
+        时传 ``str(session_id)``)，而 ``agent_sessions.id`` 是 PG SERIAL
+        (int)。直接把 str 传给 ``save_agent_message`` 会在 ``session_id < 1``
+        处抛 TypeError，被 executor._finalize 吞掉，导致消息不落库、会话
+        title 永远停留在"新会话"。
+
+        非数字或非正整数返回 None，调用方据此降级(不调 DB)。
+        """
+        try:
+            sid = int(session_id)
+        except (TypeError, ValueError):
+            return None
+        return sid if sid >= 1 else None
+
     async def load(self, ctx):
         if not ctx.session_id or not self._db:
             return
+        sid = self._parse_session_id(ctx.session_id)
+        if sid is None:
+            return
         msgs = await asyncio.to_thread(
-            self._db.get_agent_messages, ctx.session_id, self._window_size
+            self._db.get_agent_messages, sid, self._window_size
         )
         ctx.history_messages = [
             Message(role=m["role"], content=m["content"]) for m in msgs
@@ -59,11 +81,14 @@ class ShortTermMemory(MemoryModule):
     async def save(self, ctx):
         if not ctx.session_id or not self._db:
             return
+        sid = self._parse_session_id(ctx.session_id)
+        if sid is None:
+            return
         await asyncio.to_thread(
-            self._db.save_agent_message, ctx.session_id, "user", ctx.user_input
+            self._db.save_agent_message, sid, "user", ctx.user_input
         )
         await asyncio.to_thread(
-            self._db.save_agent_message, ctx.session_id, "assistant", ctx.final_output
+            self._db.save_agent_message, sid, "assistant", ctx.final_output
         )
 
 

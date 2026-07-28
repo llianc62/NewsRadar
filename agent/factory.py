@@ -433,6 +433,7 @@ async def create_persona_manager(
         register_mcp=register_mcp,
         base_prompt=base_prompt,
         mcp_cfg=mcp_cfg,
+        db=db,
     )
 
 
