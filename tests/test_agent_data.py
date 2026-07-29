@@ -82,7 +82,7 @@ def test_agent_knowledge_defaults():
 
 def test_context_input_zone():
     ctx = Context(user_input="hi", session_id="s1", system_prompt="sys")
-    assert ctx.history_messages == []
+    assert ctx.messages == []
     assert ctx.memories == []
 
 

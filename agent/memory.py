@@ -25,7 +25,7 @@ class MemoryModule(ABC):
 
     @abstractmethod
     async def load(self, ctx: "Context") -> None:
-        """注入前:加载历史对话 -> ctx.history_messages(LongTerm 额外填 ctx.memories)。"""
+        """注入前:加载历史对话 -> ctx.messages(LongTerm 额外填 ctx.memories)。"""
 
     @abstractmethod
     async def save(self, ctx: "Context") -> None:
@@ -74,7 +74,7 @@ class ShortTermMemory(MemoryModule):
         msgs = await asyncio.to_thread(
             self._db.get_agent_messages, sid, self._window_size
         )
-        ctx.history_messages = [
+        ctx.messages = [
             Message(role=m["role"], content=m["content"]) for m in msgs
         ]
 

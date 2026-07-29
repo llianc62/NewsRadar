@@ -61,7 +61,6 @@ class Context:
     system_prompt: str = ""
     model_name: str = "default"
     running_mode: str = "normal"
-    history_messages: list[Message] = field(default_factory=list)
     memories: list[MemoryBlock] = field(default_factory=list)
 
     # ── 执行区 ─────────────────────────────────

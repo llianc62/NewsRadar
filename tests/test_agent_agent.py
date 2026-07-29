@@ -505,15 +505,14 @@ def test_build_llm_messages_order():
         MemoryBlock(title="知识库", content="K", source="knowledge", order=20),
         MemoryBlock(title="相关记忆", content="M", source="memory", order=10),
     ]
-    ctx.history_messages = [Message(role="user", content="old")]
-    ctx.messages = [Message(role="user", content="U")]
+    ctx.messages = [Message(role="user", content="old"), Message(role="user", content="U")]
     msgs = ex._build_llm_messages(ctx)
-    # system_prompt -> memories(order 10, 20) -> history -> messages
+    # system_prompt -> memories(order 10, 20) -> messages(跨轮累积 + 当前)
     assert msgs[0]["role"] == "system" and msgs[0]["content"] == "S"
     assert "M" in msgs[1]["content"]   # memory order=10 先
     assert "K" in msgs[2]["content"]   # knowledge order=20 后
-    assert msgs[3]["content"] == "old"  # history
-    assert msgs[4]["content"] == "U"    # current messages
+    assert msgs[3]["content"] == "old"  # messages[0]
+    assert msgs[4]["content"] == "U"    # messages[1]
 
 
 # ── Test ReActExecutor _loop + _execute_tool (Task 8) ─────────────

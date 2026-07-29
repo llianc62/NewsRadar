@@ -232,18 +232,16 @@ class ReActExecutor(Executor):
     # ── LLM 消息拼装 ───────────────────────────────────────────
 
     def _build_llm_messages(self, ctx: Context) -> list[dict]:
-        """每轮 LLM 调用前拼装消息列表(spec 3.5 注入规则)。
+        """每轮 LLM 调用前拼装消息列表。
 
         顺序: system_prompt -> memories(按 order 升序,每个拼成 system 块)
-              -> history_messages(直接拼接) -> messages(工作区,含 tool_calls 转换)。
+              -> messages(跨轮累积的完整对话,含 tool_calls 转换)。
         """
         msgs: list[dict] = []
         if ctx.system_prompt:
             msgs.append({"role": "system", "content": ctx.system_prompt})
         for mb in sorted(ctx.memories, key=lambda m: m.order):
             msgs.append({"role": "system", "content": f"## {mb.title}\n{mb.content}"})
-        for m in ctx.history_messages:
-            msgs.append({"role": m.role, "content": m.content or ""})
         for m in ctx.messages:
             msgs.append(self._message_to_dict(m))
         return msgs

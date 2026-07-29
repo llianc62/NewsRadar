@@ -38,7 +38,7 @@ async def test_null_memory_noop():
     ctx = Context(user_input="hi", session_id="1")
     m = NullMemory()
     await m.load(ctx)
-    assert ctx.history_messages == []
+    assert ctx.messages == []
     await m.save(ctx)  # 不抛
 
 
@@ -51,9 +51,9 @@ async def test_short_term_load_from_db(mock_db):
     m = ShortTermMemory(mock_db, window_size=20)
     ctx = Context(session_id="1")
     await m.load(ctx)
-    assert len(ctx.history_messages) == 2
-    assert ctx.history_messages[0].role == "user"
-    assert ctx.history_messages[0].content == "old q"
+    assert len(ctx.messages) == 2
+    assert ctx.messages[0].role == "user"
+    assert ctx.messages[0].content == "old q"
 
 
 @pytest.mark.asyncio
@@ -61,7 +61,7 @@ async def test_short_term_load_no_session():
     m = ShortTermMemory(db=None)
     ctx = Context(session_id="")
     await m.load(ctx)
-    assert ctx.history_messages == []
+    assert ctx.messages == []
 
 
 @pytest.mark.asyncio
@@ -142,7 +142,7 @@ async def test_long_term_load_history_and_memories(mock_db, mock_mem_storage):
     m = LongTermMemory(mock_db, mock_mem_storage)
     ctx = Context(session_id="1", user_input="hi")
     await m.load(ctx)
-    assert len(ctx.history_messages) == 1
+    assert len(ctx.messages) == 1
     assert len(ctx.memories) == 1
     assert ctx.memories[0].source == "memory"
     assert ctx.memories[0].order == 10
