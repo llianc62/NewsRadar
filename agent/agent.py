@@ -84,6 +84,7 @@ class DefaultAgent:
             approval_callback=approval_callback,
             hooks=None,
         )
+        self._ctx: "Context | None" = None
 
     @property
     def running_mode(self) -> str:
@@ -107,6 +108,28 @@ class DefaultAgent:
             running_mode=self._running_mode,
         )
 
+    async def _get_or_create_ctx(
+        self, user_input: str, session_id: str, model_name: str
+    ) -> Context:
+        """复用已有 ctx;首次创建 + memory.load 恢复历史。
+
+        后续轮只更新 user_input/model_name,不再 load(history 在 ctx.messages 累积)。
+        memory.load 失败降级(不阻断),与原 _prepare 行为一致。
+        """
+        if self._ctx is not None:
+            ctx = self._ctx
+            ctx.user_input = user_input
+            ctx.model_name = model_name or "default"
+            return ctx
+        ctx = await self._make_ctx(user_input, session_id, model_name)
+        try:
+            await self.memory.load(ctx)
+        except Exception as e:
+            import logging
+            logging.getLogger("agent").warning("memory.load failed, degrade: %s", e)
+        self._ctx = ctx
+        return ctx
+
     # ── public API ──────────────────────────────────────────────
 
     async def chat(
@@ -116,7 +139,7 @@ class DefaultAgent:
         model_name: str = "",
     ) -> AgentResult:
         """执行一次完整的 Agent 调用（非流式）。"""
-        ctx = await self._make_ctx(user_input, session_id, model_name)
+        ctx = await self._get_or_create_ctx(user_input, session_id, model_name)
         output = await self.executor.run(ctx)
         return AgentResult(
             content=output,
@@ -132,6 +155,6 @@ class DefaultAgent:
         model_name: str = "",
     ) -> AsyncIterator[str]:
         """流式版本 -- 逐 token 返回 LLM 输出。"""
-        ctx = await self._make_ctx(user_input, session_id, model_name)
+        ctx = await self._get_or_create_ctx(user_input, session_id, model_name)
         async for token in self.executor.run_stream(ctx):
             yield token

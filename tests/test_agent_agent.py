@@ -422,7 +422,7 @@ class TestReActExecutor:
 
     @pytest.mark.asyncio
     async def test_run_calls_memory_hooks(self, mock_hub_with_tools):
-        """验证 ReActExecutor 调用了 memory.load 和 memory.save。"""
+        """验证 ReActExecutor 调用 memory.save(memory.load 已移至 DefaultAgent)。"""
         from agent.memory import MemoryModule
 
         memory = AsyncMock(spec=MemoryModule)
@@ -433,7 +433,6 @@ class TestReActExecutor:
 
         await executor.run(ctx)
 
-        memory.load.assert_awaited_once_with(ctx)
         memory.save.assert_awaited_once_with(ctx)
 
     @pytest.mark.asyncio
@@ -671,3 +670,29 @@ async def test_direct_executor_single_chat(mock_brain):
     assert output == "direct answer"
     # 无工具调用,单次
     mock_brain.chat.assert_awaited_once()
+
+
+# ── Test DefaultAgent 跨轮复用 Context (Task 1) ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_agent_reuses_ctx_across_turns(monkeypatch):
+    """跨轮 chat 复用同一 Context,memory.load 只调一次,messages 累积 user。"""
+    _patch_hub(monkeypatch)
+    load_count = {"n": 0}
+
+    class CountingMemory(NullMemory):
+        async def load(self, ctx):
+            load_count["n"] += 1
+
+    agent = DefaultAgent(
+        {"default": {"protocol": "openai", "model": "x", "api_key": "k"}},
+        memory=CountingMemory(),
+    )
+    await agent.chat("第一轮", session_id="1")
+    await agent.chat("第二轮", session_id="1")
+
+    assert load_count["n"] == 1  # memory.load 只首次调一次
+    assert agent._ctx is not None
+    user_msgs = [m for m in agent._ctx.messages if m.role == "user"]
+    assert len(user_msgs) == 2  # 两轮 user 累积

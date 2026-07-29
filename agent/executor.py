@@ -216,21 +216,18 @@ class ReActExecutor(Executor):
     # ── 三阶段:prepare ─────────────────────────────────────────
 
     async def _prepare(self, ctx: Context) -> None:
-        """调用前准备 -- 加载记忆 + 检索知识 + 初始化工作区 messages。
+        """调用前准备 -- 检索知识 + 追加本轮 user 到 ctx.messages。
 
-        memory.load / knowledge.search 任一失败均 catch 降级(日志 warning),
-        不阻断执行流(spec 6.2 / 降级矩阵)。
+        memory.load 已由 DefaultAgent 首次 chat 时调用(懒加载),此处不重复。
+        ctx.messages 跨轮累积,本轮只 append user(不重置)。
+        knowledge.search 每轮调(与当前用户输入相关),失败降级不阻断。
         """
-        try:
-            await self._memory.load(ctx)
-        except Exception as e:
-            logger.warning("memory.load failed, degrade: %s", e)
         if self._knowledge:
             try:
                 await self._knowledge.search(ctx)
             except Exception as e:
                 logger.warning("knowledge.search failed, degrade: %s", e)
-        ctx.messages = [Message(role="user", content=ctx.user_input)]
+        ctx.messages.append(Message(role="user", content=ctx.user_input))
 
     # ── LLM 消息拼装 ───────────────────────────────────────────
 

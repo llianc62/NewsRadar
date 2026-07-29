@@ -435,7 +435,7 @@ class TestReActExecutor:
 
     @pytest.mark.asyncio
     async def test_run_calls_memory_hooks(self, mock_hub_with_tools):
-        """验证 ReActExecutor 也调用了 memory.load/save。"""
+        """验证 ReActExecutor 调用 memory.save(memory.load 已移至 DefaultAgent)。"""
         from agent.memory import MemoryModule
 
         memory = AsyncMock(spec=MemoryModule)
@@ -446,7 +446,6 @@ class TestReActExecutor:
 
         await executor.run(ctx)
 
-        memory.load.assert_awaited_once_with(ctx)
         memory.save.assert_awaited_once_with(ctx)
 
     @pytest.mark.asyncio
