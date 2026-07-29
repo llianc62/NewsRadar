@@ -373,21 +373,19 @@ class _MockDB:
 
 
 def _make_app_with_fake_agent(fake_agent, monkeypatch=None):
-    """构建带 mock agent 的 FastAPI app。
-
-    默认聊天路径走 _build_chat_agent,patch 为返回 fake_agent(避免真 create_agent)。
-    """
+    """构建带 mock 默认 agent 的 FastAPI app(per-session 路径)。"""
     from web.app import create_app
 
     config = {
         "models": {"quick": {"protocol": "openai", "model": "x", "api_key": "k"}},
         "agent": {"default_model": "quick"},
     }
-    app = create_app(_MockDB(), {}, agent_config=config)
+    app = create_app(_MockDB(), {}, agent_config=config, base_prompt="test")
 
     async def _fake_build(state):
         return fake_agent
 
+    app.state.__dict__["_fake_build"] = _fake_build
     if monkeypatch is not None:
         monkeypatch.setattr("web.agent._build_chat_agent", _fake_build)
     return app
@@ -471,7 +469,7 @@ def test_delete_session_route_calls_destroy(monkeypatch):
     monkeypatch.setattr("web.agent._sessions", {})
     from fastapi.testclient import TestClient
 
-    app = _make_app_with_fake_agent(_FakeAgent([]))
+    app = _make_app_with_fake_agent(_FakeAgent([]), monkeypatch)
     # 预置一个 session
     get_session(99)
     client = TestClient(app)
