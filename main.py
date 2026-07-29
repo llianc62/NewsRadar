@@ -241,6 +241,7 @@ class NewsRadarDaemon:
         # 条件构建 Agent（仅当配置了 models 时）
         agent = None
         mcp_server_proc = None
+        base_prompt = ""
         if self.config.get("models"):
             from agent.factory import (
                 create_agent,
