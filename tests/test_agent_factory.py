@@ -347,3 +347,35 @@ class TestDefaultAgentExecutorIntegration:
         )
         tokens = [t async for t in agent.chat_stream("hi", session_id="s1")]
         assert "".join(tokens).startswith("hello")
+
+
+# ── create_agent memory_type (Task 3) ───────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_agent_memory_type_null():
+    """memory_type='null' -> NullMemory(即使传 db)。"""
+    from agent.factory import create_agent
+    from agent.memory import NullMemory
+    agent = await create_agent(
+        {"default": {"protocol": "openai", "model": "x", "api_key": "k"}},
+        memory_type="null",
+        register_mcp=False,
+        db=object(),
+    )
+    assert isinstance(agent.memory, NullMemory)
+
+
+@pytest.mark.asyncio
+async def test_create_agent_memory_type_long(monkeypatch):
+    """memory_type='long' -> LongTermMemory。"""
+    from agent.factory import create_agent
+    from agent.memory import LongTermMemory, PgMemoryStorage
+    # PgMemoryStorage 构造只存 db 引用,不连库
+    agent = await create_agent(
+        {"default": {"protocol": "openai", "model": "x", "api_key": "k"}},
+        memory_type="long",
+        register_mcp=False,
+        db=object(),
+    )
+    assert isinstance(agent.memory, LongTermMemory)

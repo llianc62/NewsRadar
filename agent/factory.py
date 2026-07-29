@@ -153,6 +153,7 @@ async def create_agent(
     register_mcp: bool = True,
     mcp_cfg: dict | None = None,
     db=None,
+    memory_type: str = "short",
 ) -> DefaultAgent:
     """创建配置完整的 DefaultAgent（ReActExecutor + 工具）。
 
@@ -163,6 +164,7 @@ async def create_agent(
         register_mcp: 是否注册 News MCP Server 的工具
         mcp_cfg: ``config["mcp_server"]``，为 None 时不注册 MCP 工具
         db: 可选 PostgreSQL 实例，传入时使用 ShortTermMemory 持久化对话
+        memory_type: 记忆类型 "null"(无记忆)/"short"(ShortTermMemory)/"long"(LongTermMemory)，默认 "short"。无 db 时强制 "null"。
 
     Returns:
         已装配好 ReActExecutor 和 Registry 的 DefaultAgent
@@ -179,9 +181,14 @@ async def create_agent(
     if register_mcp and mcp_cfg:
         await _register_mcp_tools(registry, mcp_cfg)
 
-    # 3. 记忆：有 db 用 ShortTermMemory，否则 NullMemory
-    from .memory import ShortTermMemory, NullMemory
-    memory = ShortTermMemory(db, window_size=20) if db else NullMemory()
+    # 3. 记忆:按 memory_type 选择(无 db 时强制 NullMemory)
+    from .memory import ShortTermMemory, NullMemory, LongTermMemory, PgMemoryStorage
+    if memory_type == "null" or not db:
+        memory = NullMemory()
+    elif memory_type == "long":
+        memory = LongTermMemory(db, PgMemoryStorage(db))
+    else:
+        memory = ShortTermMemory(db, window_size=20)
 
     # 4. 创建 ReActExecutor（构造时注入 brain/memory/tools）
     executor = ReActExecutor(
