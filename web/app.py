@@ -29,7 +29,8 @@ STATIC_DIR = WEB_DIR / "static"
 
 def create_app(db, s3_config: dict, queues=None, crawler=None,
                agent_config=None, agent_instance=None,
-               tool_registry=None, agent_factory=None):
+               tool_registry=None, agent_factory=None,
+               base_prompt: str = ""):
     """Create and configure the FastAPI application.
 
     Args:
@@ -108,6 +109,8 @@ def create_app(db, s3_config: dict, queues=None, crawler=None,
         app.state.tool_registry = tool_registry
     if agent_factory is not None:
         app.state.agent_factory = agent_factory
+    if base_prompt:
+        app.state.base_prompt = base_prompt
 
     # ── Register agent routes (always) ──
     from web.agent import router as agent_router

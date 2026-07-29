@@ -478,3 +478,10 @@ def test_delete_session_route_calls_destroy(monkeypatch):
     resp = client.delete("/api/agent/sessions/99")
     assert resp.json()["ok"] is True
     assert 99 not in web.agent._sessions
+
+
+def test_create_app_stores_base_prompt():
+    """create_app 接收 base_prompt 并挂 app.state。"""
+    from web.app import create_app
+    app = create_app(_MockDB(), {}, agent_config={}, base_prompt="你是助手")
+    assert app.state.base_prompt == "你是助手"

@@ -266,7 +266,7 @@ class NewsRadarDaemon:
                 system_prompt=base_prompt,
                 register_mcp=True,
                 mcp_cfg=mcp_cfg,
-                db=self.db,
+                memory_type="null",
             )
             print(f"[Daemon] Agent built (type={type(agent).__name__}, executor={type(agent.executor).__name__}, memory={type(agent.memory).__name__}, tools={agent.tools.list_tools() if agent.tools else 'None'}).")
 
@@ -288,7 +288,8 @@ class NewsRadarDaemon:
         app = create_app(self.db, s3_config, queues=queues, crawler=crawler,
                           agent_config=self.config, agent_instance=agent,
                           tool_registry=tool_registry,
-                          agent_factory=agent_factory)
+                          agent_factory=agent_factory,
+                          base_prompt=base_prompt)
 
         web_task = asyncio.create_task(self._serve_web(app), name="web")
 
