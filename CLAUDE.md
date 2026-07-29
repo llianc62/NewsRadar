@@ -274,7 +274,7 @@ WebSocket 端点瘦身为纯传输层，对话任务由 `ChatSession` 托管，�
 | `_sessions` | 模块级 `dict[int, ChatSession]`。`get_session(sid)` 命中返回，未命中新建空壳（agent 惰性构建）；`destroy_session(sid)` cancel 任务 + 清 agents + 移出表。 |
 | `_run_chat` | 后台运行 `agent.chat_stream`，token 累积到 `ct.full_reply` 并 `broadcast` 给订阅者。`CancelledError`（用户 stop）-> `stopped=True` + 广播 `done(stopped)`。 |
 | `_forward` | 订阅 `ChatTask` 并转发到 WS：`subscribe` 后立即读 `full_reply`（原子快照，无 await 间隔）保证不重不漏。先发 `resume`（补发 `full_reply`），再循环 `q.get()` 续推剩余 token。 |
-| `_start_chat` | 启动对话任务：防重入（已有进行中任务直接返回）+ 构建/复用 agent（`agent_id` 走 `AgentFactory.build`，默认走 `agent_instance` 或 fallback）+ 绑定 `ct.request_approval` 到 executor。 |
+| `_start_chat` | 启动对话任务：防重入（已有进行中任务直接返回）+ 构建/复用 agent（`agent_id` 走 `AgentFactory.build`，默认构建见下文「Agent 使用场景与隔离约定」）+ 绑定 `ct.request_approval` 到 executor。 |
 
 **重连续推流程：** WS 连接时带 `?session_id=`，若该 session 有进行中/已完成的 `ChatTask`，立即 `_forward` 补发 `resume` + 剩余事件。WS 断开（`WebSocketDisconnect`）仅 cancel `forward_task`，**绝不取消 agent 任务或动 ChatSession**。
 
@@ -370,6 +370,17 @@ agent = await create_agent(
 Daemon 启动时条件构建 Agent（仅当 `config["models"]` 存在时），通过 `app.state.agent_instance` 注入 Web 应用。
 
 `AgentFactory.build(defn)` 从 `AgentDefinition` 构建：`LongTermMemory(db, PgMemoryStorage(db))` + `KnowledgeEngine(namespace=kb.namespace)` + `ReActExecutor(brain, memory, knowledge, tools)`。
+
+### Agent 使用场景与隔离约定（重要）
+
+NewsRadar 有两类 agent 使用场景，严格区分，不可混用：
+
+- **页面级快速问答助手（`app.state.agent_instance`）**：daemon 启动时 `create_agent` 构建一次的全局单例，跨状态、**无记忆**、轻量，用于嵌入页面的简单问答交互。**与 AI 聊天室场景完全无关。**
+- **AI 聊天室 agent**：聊天室每个 session **严格隔离**，各自独立 build agent（无 `agent_id` 时构建聊天室默认 agent，有 `agent_id` 时走 `AgentFactory.build`），**不使用 `agent_instance`**，session 间互不影响。Agent 跟随 session 生命周期（session 不删除则 agent 不清理）。
+
+> ⚠️ **待改造**：当前 `web/agent.py:_start_chat` 默认路径误用 `agent_instance` 单例 + `_build_fallback_agent` fallback，违反上述隔离约定（agent 持有 ctx 后会跨 session 串 ctx）。计划改造为 per-session 独立构建并删除 fallback，详见 [docs/bugs/bug_agent_session_resume_display.md](docs/bugs/bug_agent_session_resume_display.md) 与 agent Context 持久化改造设计。
+
+**`default`/`quick`/`deep` 是 `models` 配置模型选择 key**（不同模型/速度档位），**不是 agent 类型**，不要与 agent 概念混淆。聊天室由 `agent.default_model` 指定默认模型。
 
 ## Web refactoring (`web/`)
 
