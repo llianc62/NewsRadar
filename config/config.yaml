@@ -380,12 +380,3 @@ knowledge:
   embedding_dim: 1536                  # 必须与表 vector(N) 一致（切换需 DROP 重建）
   top_k: 5
   table: knowledge_chunks
-
-# 角色扮演 agent 子系统（Phase 3）- 多角色并行会诊 + 主编聚合。
-# 单选=单一角色直答；多选（>=2）=团队会诊，先并行产出信号再由主编综合。
-# 可用角色：buffett/graham/taleb/wood（投资人）、macro/sentiment/industry/
-# factcheck/blackswan（专家）、editor（主编，多选时自动加入，无需手选）。
-personas:
-  enabled: true                        # 关闭后 /api/agent/personas 返回空，前端隐藏面板
-  default_team: [buffett, macro, sentiment]  # 新会话默认预选的会诊团队
-  disabled: []                         # 禁用的角色名（如 [wood] 暂不开放）

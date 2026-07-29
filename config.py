@@ -250,34 +250,6 @@ def _load_knowledge_config(raw: Dict) -> Dict:
     }
 
 
-def _load_personas_config(raw: Dict) -> Dict:
-    """加载 personas 配置段 - 角色扮演子系统开关 + 默认团队 + 禁用列表。
-
-    config.yaml::
-
-        personas:
-          enabled: true
-          default_team: [buffett, sentiment, macro]  # 默认团队会诊角色
-          disabled: []                                # 禁用角色名
-
-    默认 ``enabled: True``（角色路由始终注册，仅当 models 就绪时才真正可用）。
-    """
-    personas = raw.get("personas", {})
-    env_enabled = _get_env_bool("PERSONAS_ENABLED")
-    default_team = personas.get("default_team") or []
-    if not isinstance(default_team, list):
-        default_team = []
-    disabled = personas.get("disabled") or []
-    if not isinstance(disabled, list):
-        disabled = []
-    return {
-        "enabled": env_enabled if env_enabled is not None
-        else personas.get("enabled", True),
-        "default_team": [str(x) for x in default_team],
-        "disabled": [str(x) for x in disabled],
-    }
-
-
 def _load_mcp_server_config(raw: Dict) -> Dict:
     """加载 MCP 新闻服务配置段。
 
@@ -335,7 +307,6 @@ def load_config(path: str = "config/config.yaml") -> Dict[str, Any]:
         "models": _load_models_config(raw),
         "agent": _load_agent_config(raw),
         "knowledge": _load_knowledge_config(raw),
-        "personas": _load_personas_config(raw),
         "mcp_server": _load_mcp_server_config(raw),
     }
 

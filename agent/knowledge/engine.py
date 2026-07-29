@@ -1,8 +1,9 @@
 """知识库引擎 - 切片 -> embedding -> 存 pgvector -> 语义检索 -> render。
 
 仿 ai-hedge-fund ``FundamentalsSnapshot`` 模式：检索知识、render 成文本
-喂给任意角色。注入点见 ``docs/agent/persona.md`` 与
-``docs/agent/phase3-knowledge.md``（``ctx.knowledge_context`` -> ``## 知识库`` 块）。
+喂给任意 agent。注入点见 ``docs/agent/phase3-knowledge.md``
+（``ctx.memories`` -> ``## 知识库`` 块），角色定义走
+``agent/agents/*.md`` -> CLI -> DB -> ``AgentFactory.build``。
 """
 
 from __future__ import annotations

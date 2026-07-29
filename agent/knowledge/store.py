@@ -46,8 +46,8 @@ class KnowledgeStore(ABC):
 class PgVectorKnowledgeStore(KnowledgeStore):
     """pgvector 实现 - 委托 ``storage/postgres.py`` 的知识库方法。
 
-    包装同步 psycopg2 ``PostgreSQL`` 实例。在异步上下文（PersonaAgent）
-    中调用方应自行 ``asyncio.to_thread`` 包裹（与 ``PgMemoryStorage`` 一致）。
+    包装同步 psycopg2 ``PostgreSQL`` 实例。在异步上下文中调用方应自行
+    ``asyncio.to_thread`` 包裹（与 ``PgMemoryStorage`` 一致）。
     """
 
     def __init__(self, db: Any):
