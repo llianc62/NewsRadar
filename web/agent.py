@@ -212,38 +212,25 @@ async def _forward(ws: WebSocket, ct: ChatTask, session_id: int) -> None:
         ct.unsubscribe(q)
 
 
-async def _build_fallback_agent(
-    app_state, running_mode: str, approval_callback,
-):
-    """app.state.agent_instance 未配置时的防御性 fallback（搬自原 WS endpoint）。
+async def _build_chat_agent(app_state):
+    """聊天室默认 agent -- per-session 独立构建。
 
-    构建 DefaultAgent + 内置工具 + News MCP Server。
+    LongTermMemory + 内置工具 + News MCP Server(SSE) + base_prompt。
+    与 agent_id 路径(AgentFactory.build)并列,均 per-session 隔离。
     """
-    from agent.agent import DefaultAgent
-    from agent.memory import ShortTermMemory
-    from agent.tools.tools import setup_builtin_tools
-
-    registry = setup_builtin_tools()
-    try:
-        from agent.mcp import MCPClient
-        mcp_session = await MCPClient.connect_stdio(
-            "python", "-m", "agent.mcp.news_server",
-        )
-        registry.add_mcp(mcp_session, level_map={
-            "search_news": 2, "get_hot_topics": 1,
-            "get_news_detail": 2, "analyze_sentiment": 1, "get_source_stats": 1,
-        })
-    except Exception as mcp_err:
-        print(f"[Agent] MCP fallback connect failed: {mcp_err}")
+    from agent.factory import create_agent
     config = getattr(app_state, "agent_config", None) or {}
     model_cfg = config.get("models", {})
     db = getattr(app_state, "db", None)
-    return DefaultAgent(
+    base_prompt = getattr(app_state, "base_prompt", "") or ""
+    mcp_cfg = config.get("mcp_server", {})
+    return await create_agent(
         model_cfg,
-        tools=registry,
-        memory=ShortTermMemory(db, window_size=20) if db else None,
-        running_mode=running_mode,
-        approval_callback=approval_callback,
+        system_prompt=base_prompt,
+        register_mcp=True,
+        mcp_cfg=mcp_cfg if mcp_cfg.get("enabled") else None,
+        db=db,
+        memory_type="long",
     )
 
 
@@ -274,16 +261,12 @@ async def _start_chat(
             raise ValueError(f"agent {agent_id!r} 不可用")
         agent = sess.get_agent(f"agent:{agent_id}", lambda: factory.build(defn))
     else:
-        # 默认助手：命中缓存否则用 agent_instance，再否则 fallback 构建
-        if "default" in sess.agents:
-            agent = sess.agents["default"]
+        # 聊天室默认 agent:per-session 独立构建(不用 agent_instance)
+        if "chat" in sess.agents:
+            agent = sess.agents["chat"]
         else:
-            default_agent = getattr(app_state, "agent_instance", None)
-            if default_agent is not None:
-                agent = default_agent
-            else:
-                agent = await _build_fallback_agent(app_state, running_mode, ct.request_approval)
-            sess.agents["default"] = agent
+            agent = await _build_chat_agent(app_state)
+            sess.agents["chat"] = agent
 
     agent.running_mode = running_mode
     agent.executor._approval_callback = ct.request_approval

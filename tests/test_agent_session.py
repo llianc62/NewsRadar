@@ -226,11 +226,14 @@ async def test_forward_done_task_sends_resume_and_done(monkeypatch):
 
 
 class _FakeAppState:
-    """模拟 app.state，持有 agent_instance / agent_factory / db。"""
-    def __init__(self, agent_instance=None, agent_factory=None, db=None):
+    """模拟 app.state，持有 agent_config / db / base_prompt。"""
+    def __init__(self, agent_instance=None, agent_factory=None, db=None,
+                 agent_config=None, base_prompt=""):
         self.agent_instance = agent_instance
         self.agent_factory = agent_factory
         self.db = db
+        self.agent_config = agent_config or {}
+        self.base_prompt = base_prompt
 
 
 @pytest.mark.asyncio
@@ -239,13 +242,18 @@ async def test_start_chat_uses_default_agent_and_caches(monkeypatch):
     monkeypatch.setattr("web.agent._sessions", {})
     sess = get_session(1)
     fake_agent = _FakeAgent(["hi"])
-    state = _FakeAppState(agent_instance=fake_agent)
+
+    async def fake_build(state):
+        return fake_agent
+
+    monkeypatch.setattr("web.agent._build_chat_agent", fake_build)
+    state = _FakeAppState()
     ct = await _start_chat(
         sess, "hello", session_id=1, agent_id="",
         model_name="quick", running_mode="normal", app_state=state,
     )
-    # 第二次取 default 应命中缓存（agent_instance 同一对象）
-    assert sess.agents["default"] is fake_agent
+    # 默认路径 per-session build,缓存到 sess.agents["chat"]
+    assert sess.agents["chat"] is fake_agent
     assert ct.task is not None
     await ct.task  # 跑完
     assert ct.full_reply == "hi"
@@ -297,7 +305,12 @@ async def test_start_chat_reuses_running_task(monkeypatch):
     monkeypatch.setattr("web.agent._sessions", {})
     sess = get_session(3)
     fake_agent = _FakeAgent(["a", "b", "c"])
-    state = _FakeAppState(agent_instance=fake_agent)
+
+    async def fake_build(state):
+        return fake_agent
+
+    monkeypatch.setattr("web.agent._build_chat_agent", fake_build)
+    state = _FakeAppState()
     ct1 = await _start_chat(
         sess, "hi", session_id=3, agent_id="",
         model_name="quick", running_mode="normal", app_state=state,
@@ -307,6 +320,37 @@ async def test_start_chat_reuses_running_task(monkeypatch):
         model_name="quick", running_mode="normal", app_state=state,
     )
     assert ct1 is ct2  # 同一任务
+
+
+@pytest.mark.asyncio
+async def test_start_chat_default_builds_per_session(monkeypatch):
+    """默认路径 per-session build(_build_chat_agent),不用 agent_instance。"""
+    from web.agent import _start_chat, get_session
+    monkeypatch.setattr("web.agent._sessions", {})
+    sess = get_session(1)
+    fake_agent = _FakeAgent(["hi"])
+    built = {"n": 0}
+
+    async def fake_build(state):
+        built["n"] += 1
+        return fake_agent
+
+    monkeypatch.setattr("web.agent._build_chat_agent", fake_build)
+    state = _FakeAppState(agent_config={"models": {"quick": {"protocol": "openai", "model": "x", "api_key": "k"}}}, base_prompt="hi")
+    ct = await _start_chat(
+        sess, "hello", session_id=1, agent_id="",
+        model_name="quick", running_mode="normal", app_state=state,
+    )
+    await ct.task
+    assert built["n"] == 1
+    assert sess.agents["chat"] is fake_agent
+    # 第二次命中缓存(不重复 build)
+    ct2 = await _start_chat(
+        sess, "hi2", session_id=1, agent_id="",
+        model_name="quick", running_mode="normal", app_state=state,
+    )
+    await ct2.task
+    assert built["n"] == 1
 
 
 # ── WS 集成测试（TestClient + mock agent） ──────────────────────────
@@ -328,8 +372,11 @@ class _MockDB:
     def close(self): pass
 
 
-def _make_app_with_fake_agent(fake_agent):
-    """构建带 mock agent_instance 的 FastAPI app。"""
+def _make_app_with_fake_agent(fake_agent, monkeypatch=None):
+    """构建带 mock agent 的 FastAPI app。
+
+    默认聊天路径走 _build_chat_agent,patch 为返回 fake_agent(避免真 create_agent)。
+    """
     from web.app import create_app
 
     config = {
@@ -337,7 +384,12 @@ def _make_app_with_fake_agent(fake_agent):
         "agent": {"default_model": "quick"},
     }
     app = create_app(_MockDB(), {}, agent_config=config)
-    app.state.agent_instance = fake_agent
+
+    async def _fake_build(state):
+        return fake_agent
+
+    if monkeypatch is not None:
+        monkeypatch.setattr("web.agent._build_chat_agent", _fake_build)
     return app
 
 
@@ -363,7 +415,7 @@ def test_ws_disconnect_does_not_cancel_task(monkeypatch):
     from fastapi.testclient import TestClient
 
     fake_agent = _SlowFakeAgent(["a", "b", "c"], delay=0.05)
-    app = _make_app_with_fake_agent(fake_agent)
+    app = _make_app_with_fake_agent(fake_agent, monkeypatch)
     # 用 with TestClient 保持 portal 跨 WS session 存活，否则 WS 断开时
     # portal 关闭会连带 cancel 掉 chat_task
     with TestClient(app) as client:
@@ -389,7 +441,7 @@ def test_ws_reconnect_resumes(monkeypatch):
     from fastapi.testclient import TestClient
 
     fake_agent = _SlowFakeAgent(["x", "y", "z"], delay=0.05)
-    app = _make_app_with_fake_agent(fake_agent)
+    app = _make_app_with_fake_agent(fake_agent, monkeypatch)
     with TestClient(app) as client:
         with client.websocket_connect("/api/agent/ws?session_id=11") as ws:
             ws.send_json({"type": "chat", "session_id": 11, "message": "hi", "model": "quick"})
