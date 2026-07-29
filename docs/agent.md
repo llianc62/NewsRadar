@@ -26,6 +26,5 @@
 | Phase 2 | [agent/phase2-memory.md](agent/phase2-memory.md) | 跨会话记忆（提取/合并/检索） |
 | Phase 3 | [agent/phase3-knowledge.md](agent/phase3-knowledge.md) | 知识库 RAG（pgvector，实施中） |
 | Phase 4 | [agent/phase4-tools.md](agent/phase4-tools.md) | 工具调用 / MCP |
-| 角色扮演 | [agent/persona.md](agent/persona.md) | PersonaAgent + 多角色编排（仿 ai-hedge-fund，设计完成） |
 | 配置 | [agent/configuration.md](agent/configuration.md) | config.yaml + loader 设计 |
 | 集成 | [agent/integration.md](agent/integration.md) | 与现有系统融合 + 数据库表 |

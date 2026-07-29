@@ -14,7 +14,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - [agent/architecture-v1.md](docs/agent/architecture-v1.md) — AI Agent 子系统设计（Phase 1-3 完成）
 - [agent/configuration.md](docs/agent/configuration.md) — 配置参考
 - [agent/phase0-chat.md](docs/agent/phase0-chat.md) — 聊天 Agent 设计
-- [agent/persona.md](docs/agent/persona.md) — 角色扮演 + 多角色会诊
 
 历史开发记录在 `docs/superpowers/`（plans + specs），不主动加载。
 
@@ -264,6 +263,21 @@ MCP 协议实现的新闻查询服务，两种传输模式：
 
 MCP Server 在 `news_server.py` 中使用 FastMCP，全局延迟初始化 DB 连接。
 
+### Session 托管 (`web/agent.py`)
+
+WebSocket 端点瘦身为纯传输层，对话任务由 `ChatSession` 托管，与 WS 连接解耦：
+
+| 组件 | 职责 |
+|------|------|
+| `ChatTask` | 进行中对话任务的运行时：`task`（`asyncio.Task`）+ `full_reply`（已累积文本）+ `subscribe()`/`broadcast()` 订阅通道 + `request_approval()`/`respond_approval()` 审批通道（120s 超时拒绝）。WS 断开只退订，不取消任务。 |
+| `ChatSession` | 单会话运行时：`agents: dict[str, Any]`（多 agent 缓存，切换角色各自构建）+ `chat_task`（进行中任务）。`get_agent(key, build_fn)` 命中缓存否则构建；`destroy()` 取消任务 + 清空缓存。session 不删除则 agent 不清理。 |
+| `_sessions` | 模块级 `dict[int, ChatSession]`。`get_session(sid)` 命中返回，未命中新建空壳（agent 惰性构建）；`destroy_session(sid)` cancel 任务 + 清 agents + 移出表。 |
+| `_run_chat` | 后台运行 `agent.chat_stream`，token 累积到 `ct.full_reply` 并 `broadcast` 给订阅者。`CancelledError`（用户 stop）-> `stopped=True` + 广播 `done(stopped)`。 |
+| `_forward` | 订阅 `ChatTask` 并转发到 WS：`subscribe` 后立即读 `full_reply`（原子快照，无 await 间隔）保证不重不漏。先发 `resume`（补发 `full_reply`），再循环 `q.get()` 续推剩余 token。 |
+| `_start_chat` | 启动对话任务：防重入（已有进行中任务直接返回）+ 构建/复用 agent（`agent_id` 走 `AgentFactory.build`，默认走 `agent_instance` 或 fallback）+ 绑定 `ct.request_approval` 到 executor。 |
+
+**重连续推流程：** WS 连接时带 `?session_id=`，若该 session 有进行中/已完成的 `ChatTask`，立即 `_forward` 补发 `resume` + 剩余事件。WS 断开（`WebSocketDisconnect`）仅 cancel `forward_task`，**绝不取消 agent 任务或动 ChatSession**。
+
 ### Web Agent routes (`web/agent.py`)
 
 | 路由 | 方法 | 说明 |
@@ -273,7 +287,6 @@ MCP Server 在 `news_server.py` 中使用 FastMCP，全局延迟初始化 DB 连
 | `/api/agent/sessions` | POST | 新建会话（设 cookie） |
 | `/api/agent/sessions/{session_id}` | DELETE | 删除会话 |
 | `/api/agent/sessions/{session_id}/messages` | GET | 消息历史 |
-| `/api/agent/personas` | GET | 角色列表（右侧团队面板，含 `enabled`/`default_team`） |
 | `/api/agents` | GET | 列出所有角色定义 |
 | `/api/agents` | POST | 创建角色定义 |
 | `/api/agents/{defn_id}` | GET | 查询角色定义 |
@@ -300,10 +313,9 @@ MCP Server 在 `news_server.py` 中使用 FastMCP，全局延迟初始化 DB 连
 
 | 端点 | 说明 |
 |------|------|
-| `WS /api/ws` | 统一实时聊天通道，支持 `persona` 参数（单角色/团队会诊） |
-| `WS /api/agent/ws` | 角色化聊天通道，支持 `?agent_id=` 查询参数（从 DB 加载 AgentDefinition 构建） |
+| `WS /api/agent/ws` | 统一聊天通道，支持 `?session_id=`（重连续推）与 `?agent_id=`（从 DB 加载 AgentDefinition 构建）查询参数 |
 
-**WebSocket 协议：** `chat` / `stop` / `tool_approval_response` 三种消息类型。`chat` 消息支持 `persona`（字符串或列表）、`model`、`running_mode` 参数。输出事件：`token`（流式文本）、`done`（含 `full_reply`）、`tool_approval_request`（审批请求）、`team_thinking`（团队会诊开始）、`signals`（各角色信号）。
+**WebSocket 协议：** `chat` / `stop` / `tool_approval_response` 三种消息类型。`chat` 消息支持 `model`、`running_mode` 参数。输出事件：`token`（流式文本）、`done`（含 `full_reply`）、`error`（异常）、`tool_approval_request`（审批请求）、`resume`（重连补发已累积的 `full_reply`，之后续推剩余 token）。
 
 ### Agent DB (PostgreSQL)
 
@@ -341,19 +353,6 @@ pgvector 语义检索知识库，作为角色扮演 agent 的专业知识来源�
 - **配置**：`knowledge:` 段（`enabled`/`embedding_*`/`top_k`/`table`）。`enabled: false` 时 KnowledgeEngine=None，角色退化为纯 prompt。
 - **CLI**：`python -m cli knowledge ingest <file> --namespace buffett` / `search` / `list` / `clear`。
 
-### Persona Subsystem (`agent/persona/`) — Phase B/C
-
-角色扮演 + 多角色会诊，仿 ai-hedge-fund `LLMAgent` + `analyst_signals` + portfolio_manager 聚合。详见 [docs/agent/persona.md](docs/agent/persona.md)。
-
-- **PersonaAgent(DefaultAgent)**：基类，override `get_system_prompt()` 人格。**persona 子系统已冻结**（`analysis_context`/`persona_name` 已删除,不再注入 ctx）；`_pre_analyze`/`_render_analysis` 保留但不纳入 executor 数据流。
-- **10 角色**：投资人 `buffett`/`graham`/`taleb`/`wood` + 专家 `macro`/`sentiment`/`industry`/`factcheck`/`blackswan` + 主编 `editor`。`registry.py` 统一注册（`PersonaSpec`，按 `order` 排序）。
-- **硬编码专业逻辑**：`sentiment`/`blackswan`/`industry` 调 `JiebaAnalyzer`（情感/关键词/热度异常），LLM 只叙事（铁律："LLM never touches the trade"）。
-- **PersonaManager**：惰性构建 + 缓存（`asyncio.Lock` 双检），每次 `get()` 应用 `running_mode` + `_approval_callback`（团队会诊的角色调用继承 WS 审批通道）。
-- **PersonaOrchestrator**：单选=单角色直答；多选(>=2)=团队会诊。Phase 1 `asyncio.gather` fan-out 各角色 -> `PersonaSignal`（stance/confidence/reasoning，regex 解析 JSON）；Phase 2 主编 `DirectExecutor` 真流式聚合（`Semaphore(max_concurrent)` 限流，失败降级"分析失败"信号）。
-- **配置**：`personas:` 段（`enabled`/`default_team`/`disabled`）。Daemon 启动时经 `create_persona_orchestrator()` 构建，挂 `app.state.persona_orchestrator` + `persona_manager`。
-- **WebSocket 协议**：chat 消息加 `persona: ["buffett","macro"]`。团队会诊发 `team_thinking`（fan-out 前）-> `signals`（各角色信号，editor 流式前）-> `token`（主编流式）事件。
-- **前端**：右侧团队面板（`persona-panel`），多选 + `default_team` 预选，< 960px 隐藏。
-
 ### Factory
 
 `agent/factory.create_agent()` 一键构建 Agent（ReActExecutor 构造注入 brain/memory/knowledge/tools + 内置工具 + MCP 工具）。`db` 参数驱动持久化（传 db -> `ShortTermMemory(db)`；不传 -> `NullMemory`）：
@@ -371,8 +370,6 @@ agent = await create_agent(
 Daemon 启动时条件构建 Agent（仅当 `config["models"]` 存在时），通过 `app.state.agent_instance` 注入 Web 应用。
 
 `AgentFactory.build(defn)` 从 `AgentDefinition` 构建：`LongTermMemory(db, PgMemoryStorage(db))` + `KnowledgeEngine(namespace=kb.namespace)` + `ReActExecutor(brain, memory, knowledge, tools)`。
-
-角色扮演子系统另有两个工厂：`create_persona()`（单角色）与 `create_persona_orchestrator(config, db)`（团队会诊编排器，内部建 `PersonaManager` + `KnowledgeEngine` + `Analyzer`，失败均降级为 None 不阻断）。
 
 ## Web refactoring (`web/`)
 
@@ -406,7 +403,7 @@ To add a new site parser:
 
 ## Tests
 
-41 test files in `tests/`. Site-specific parser tests use real HTML fixtures in `tests/parser_sites/`. Shared fixtures in `conftest.py` and `conftest_db.py`.
+39 test files in `tests/`. Site-specific parser tests use real HTML fixtures in `tests/parser_sites/`. Shared fixtures in `conftest.py` and `conftest_db.py`.
 
 ### Agent test files
 
@@ -417,11 +414,11 @@ To add a new site parser:
 | `test_agent_memory.py` | NullMemory / ShortTermMemory / LongTermMemory / PgMemoryStorage |
 | `test_agent_memory_integration.py` | PG 记忆持久化集成测试 |
 | `test_agent_routes.py` | Web agent 路由（页面 / sessions / messages API） |
+| `test_agent_session.py` | ChatTask 订阅/广播/审批、ChatSession agent 缓存/destroy、_forward 重连续推、_start_chat 防重入 |
+| `test_agent_data.py` | AgentDefinition / AgentKnowledge dataclass 序列化 |
+| `test_agent_factory.py` | AgentFactory.build 从 AgentDefinition 构建完整 agent |
 | `test_agent_db.py` | Agent DB 操作（create/get/delete session, save/get messages） |
 | `test_knowledge_engine.py` | KnowledgeEngine 单元（mock embedding + store）+ pgvector 集成 |
-| `test_persona_agent.py` | PersonaAgent 基类、知识/分析注入、各角色人格声音 |
-| `test_persona_manager.py` | PersonaManager 惰性构建/缓存/running_config 传递 |
-| `test_persona_orchestrator.py` | fan-out + 主编聚合 + 信号解析 + 降级 + 端到端 |
 | `test_mcp_news_server.py` | MCP `analyze_sentiment` 路由真分析器 + 兜底词典 |
 
 ### 运行

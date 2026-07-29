@@ -1465,7 +1465,7 @@ ReActExecutor.run(ctx, brain, memory, tools)
 - [ ] 知识库检索质量升级 - hybrid / rerank / query 改写（详见 [knowledge-upgrade-plan.md](knowledge-upgrade-plan.md)，规划中）
 - [ ] `PlanExecutor` - 先规划再执行（未来）
 - [ ] Executor 热切换（不同 session 用不同策略）（未来）
-- [x] 角色扮演 Agent 回答知识库内事实 + 调工具（详见 [persona.md](persona.md)，Phase B/C 完成）
+- [x] 角色统一走 `AgentDefinition`（`agent/agents/*.md` -> CLI -> DB -> `AgentFactory.build`）；原 Phase B/C persona 子系统已移除（`PersonaAgent`/`PersonaManager`/`PersonaOrchestrator` 删除，不再有团队会诊 fan-out）
 
 ---
 
