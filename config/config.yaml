@@ -234,14 +234,14 @@ crawler:
         url: "https://rss.eastmoney.com/rss_stock.xml"
         tier: 3
         priority: 52
-        enabled: true
+        enabled: false
         max_age_days: 1
       - id: "eastmoney-partener"
         name: "东方财富"
         url: "https://rss.eastmoney.com/rss_partener.xml"
         tier: 3
         priority: 50
-        enabled: true
+        enabled: false
         max_age_days: 1
       - id: "jiemian-finance"
         name: "界面财经"
