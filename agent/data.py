@@ -18,8 +18,8 @@ class Message:
     reasoning_content: str | None = None
     model_used: str | None = None                # 新增:模型版本
     # tool 专用
-    tool_call_id: str | None = None
     name: str | None = None
+    tool_call_id: str | None = None
     tool_result: "ToolResult | None" = None      # 新增:执行详情(归 tool 消息)
     # 通用
     timestamp: float = 0.0

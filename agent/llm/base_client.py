@@ -49,10 +49,20 @@ class BaseClient(BaseChatModel):
     def chat_stream(
         self,
         messages: list,
+        tools: list[dict] | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[AIMessageChunk]:
         """流式调用，逐 chunk 返回 ``AIMessageChunk``。
 
-        调用方需自行从 ``chunk.content`` 提取文本增量。
+        Args:
+            messages: OpenAI 格式的消息 dict 列表（或 LangChain 消息对象列表）。
+            tools: 可选工具 schema 列表（OpenAI format）。**流式同样必须绑定
+                tools**：DeepSeek 等模型在请求不带 tools 时会把工具调用意图
+                写成 DSML 等标记纯文本，而非结构化 ``tool_calls``。
+
+        调用方需自行从 ``chunk.content`` 提取文本增量；工具调用通过聚合
+        chunk（``AIMessageChunk`` 支持 ``+`` 合并）后从 ``agg.tool_calls``
+        还原。
         """
-        return self.astream(messages)
+        bound = self.bind_tools(tools) if tools else self
+        return bound.astream(messages)

@@ -66,11 +66,96 @@ async def test_short_term_load_no_session():
 
 @pytest.mark.asyncio
 async def test_short_term_save(mock_db):
+    """save 只存 assistant(user 由接口层落库),返回新存条数。"""
+    from agent.data import Message
+
     m = ShortTermMemory(mock_db)
     ctx = Context(session_id="1", user_input="q")
-    ctx.messages = [__import__("agent.data", fromlist=["Message"]).Message(role="assistant", content="a")]
-    await m.save(ctx)
-    assert mock_db.save_agent_message.call_count == 2  # user + assistant
+    ctx.messages = [Message(role="assistant", content="a")]
+    n = await m.save(ctx)
+    assert n == 1
+    mock_db.save_agent_message.assert_called_once_with(1, "assistant", "a")
+
+
+@pytest.mark.asyncio
+async def test_short_term_save_incremental_idempotent(mock_db):
+    """增量水位:重复 save 无 delta 即 no-op;新消息追加后只写新增 assistant。
+
+    水位是 memory 的私有实例状态(load 建立基线、save 逐条推进),
+    freeze 与 _finalize 任意重复调用不重复 INSERT。
+    """
+    from agent.data import Message
+
+    m = ShortTermMemory(mock_db)
+    ctx = Context(session_id="1", user_input="q")
+    ctx.messages = [Message(role="user", content="q"),
+                    Message(role="assistant", content="a1")]
+    n = await m.save(ctx)            # _finalize:写 a1(跳过 user)
+    assert n == 1
+    assert await m.save(ctx) == 0    # freeze 重调:无 delta,no-op
+    mock_db.save_agent_message.assert_called_once_with(1, "assistant", "a1")
+
+    # 新一轮消息追加后,只写新增 assistant(跳过 user/tool)
+    ctx.messages += [
+        Message(role="user", content="q2"),
+        Message(role="tool", tool_call_id="c1", content="res", name="t"),
+        Message(role="assistant", content="a2"),
+    ]
+    assert await m.save(ctx) == 1
+    assert mock_db.save_agent_message.call_count == 2
+    mock_db.save_agent_message.assert_called_with(1, "assistant", "a2")
+
+
+@pytest.mark.asyncio
+async def test_short_term_load_initializes_watermark(mock_db):
+    """load 建立水位基线:已加载的历史不被 save 重复写回。"""
+    mock_db.get_agent_messages.return_value = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "a"},
+    ]
+    m = ShortTermMemory(mock_db)
+    ctx = Context(session_id="1")
+    await m.load(ctx)
+    assert m._saved_up_to == 2           # 已加载 = 已在库
+    assert await m.save(ctx) == 0
+    mock_db.save_agent_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_short_term_save_partial_failure_retries_remaining(mock_db):
+    """多条增量中一条失败:水位停在失败处,重试只补剩余。"""
+    from agent.data import Message
+
+    calls = {"n": 0}
+
+    def flaky(sid, role, content, agent_id="0", model_version=""):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("db hiccup")
+
+    mock_db.save_agent_message.side_effect = flaky
+    m = ShortTermMemory(mock_db)
+    ctx = Context(session_id="1")
+    ctx.messages = [
+        Message(role="assistant", content="a1"),
+        Message(role="assistant", content="a2"),
+        Message(role="assistant", content="a3"),
+    ]
+    with pytest.raises(RuntimeError):
+        await m.save(ctx)
+    assert m._saved_up_to == 1            # a1 已写,水位停在 a2
+    assert await m.save(ctx) == 2         # 重试只补 a2/a3
+    assert mock_db.save_agent_message.call_count == 4
+
+
+@pytest.mark.asyncio
+async def test_short_term_save_skips_empty_assistant(mock_db):
+    """final_output 为空(如异常路径)时跳过,不触发 DB 非空校验。"""
+    m = ShortTermMemory(mock_db)
+    ctx = Context(session_id="1", user_input="q")
+    n = await m.save(ctx)
+    assert n == 0
+    mock_db.save_agent_message.assert_not_called()
 
 
 # ── session_id 类型边界（regression: 会话 title 不更新） ─────────
@@ -92,7 +177,7 @@ async def test_short_term_save_converts_str_session_id_to_int(mock_db):
     ctx = Context(session_id="5", user_input="你好")
     ctx.messages = [Message(role="assistant", content="回复")]
     await m.save(ctx)
-    assert mock_db.save_agent_message.call_count == 2
+    assert mock_db.save_agent_message.call_count == 1  # 仅 assistant
     for call in mock_db.save_agent_message.call_args_list:
         sid = call.args[0]
         assert sid == 5
@@ -198,7 +283,11 @@ async def test_long_term_save_extracts_on_long_output_no_entity(mock_db, mock_me
 
 @pytest.mark.asyncio
 async def test_long_term_save_batch_merge_on_interval(mock_db, mock_mem_storage):
-    """save() on extract_interval turn without extraction triggers _batch_merge (summary)."""
+    """save() on extract_interval turn without extraction triggers _batch_merge (summary).
+
+    每轮模拟需追加新消息(增量水位按消息推进),同一批消息重复 save
+    第二次会因无 delta 跳过。
+    """
     from agent.data import Message
 
     m = LongTermMemory(mock_db, mock_mem_storage, extract_interval=2)
@@ -209,10 +298,26 @@ async def test_long_term_save_batch_merge_on_interval(mock_db, mock_mem_storage)
     await m.save(ctx)
     mock_mem_storage.save.assert_not_awaited()
 
-    # Turn 2: no extraction but _turn_count % 2 == 0 -> _batch_merge
+    # Turn 2: append new turn messages, no extraction but _turn_count % 2 == 0 -> _batch_merge
+    ctx.messages += [Message(role="user", content="q2"),
+                     Message(role="assistant", content="短回复2")]
     await m.save(ctx)
     mock_mem_storage.save.assert_awaited_once()
     assert mock_mem_storage.save.call_args.kwargs.get("memory_type") == "summary"
+
+
+@pytest.mark.asyncio
+async def test_long_term_save_no_reextract_when_already_saved(mock_db, mock_mem_storage):
+    """freeze 重调(本轮已存)不重复落库、不重复提炼长期记忆。"""
+    from agent.data import Message
+
+    m = LongTermMemory(mock_db, mock_mem_storage)
+    ctx = Context(session_id="1", user_input="普通问题")
+    ctx.messages = [Message(role="assistant", content="A" * 150)]
+    await m.save(ctx)   # _finalize: 存 assistant + 提炼
+    await m.save(ctx)   # freeze 重调: 幂等跳过,不重复提炼
+    assert mock_db.save_agent_message.call_count == 1
+    assert mock_mem_storage.save.await_count == 1
 
 
 @pytest.mark.asyncio

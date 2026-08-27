@@ -40,6 +40,8 @@ class DeepSeekClient(BaseClient, ChatDeepSeek):
         if thinking:
             extra_body.setdefault("thinking", {"type": thinking})
         kwargs["extra_body"] = extra_body
+        # 自定义 base_url 时 ChatDeepSeek 默认不回传流式 usage,显式开启
+        kwargs.setdefault("stream_usage", True)
         super().__init__(
             api_key=api_key or None,
             base_url=base_url or None,

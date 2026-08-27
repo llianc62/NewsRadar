@@ -22,6 +22,35 @@ from .data import Context, Message, ToolResult
 
 logger = logging.getLogger(__name__)
 
+#: ``max_tool_rounds`` 打满后注入的引导语。摘除 tool schemas 后必须显式告知
+#: 模型"不要再调工具"，否则 DeepSeek 等模型会把工具调用意图写成 DSML 等
+#: 标记纯文本（与请求不带 tools 时同一退化路径）。
+_TOOL_CAP_GUIDANCE = (
+    "工具调用轮次已达上限。请基于已获取的信息直接回答，不要再尝试调用工具。"
+)
+
+
+def _chunk_text(chunk: Any) -> str:
+    """从 ``AIMessageChunk.content`` 提取文本增量。
+
+    content 兼容两种形态：
+    - OpenAI 系（含 DeepSeek）：str，直接返回；
+    - Anthropic 系（含 thinking）：content block 列表，只取 ``type="text"``
+      块的文本；thinking / tool_use 块跳过（否则 block repr 会被当文本拼进回复）。
+    """
+    content = getattr(chunk, "content", None)
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return ""
+
 
 def _tool_calls_to_api(tool_calls: list[dict]) -> list[dict]:
     """将存储格式 ``[{name, args, id}]`` 转为 API 格式 ``[{function: {name, arguments}}]``。
@@ -183,9 +212,11 @@ class ReActExecutor(Executor):
     - ``_build_messages`` 只执行一次，不再每轮重复拼接 user_input
     - 检查 ``stop_reason``，截断时（length）不执行不完整的工具调用
     - 每个工具调用独立 try/except，错误不污染其他工具
-    - 保留 tool schemas 直到 ``max_tool_rounds`` 轮后移除，确保 LLM 始终能正确输出
-      结构化 JSON tool_calls，避免因 schemas 缺失导致 LLM 退化为 XML 文本格式
-    - 真正的流式输出：最后一步使用 ``chat_stream`` 逐 token 输出
+    - 保留 tool schemas 直到 ``max_tool_rounds`` 轮后移除（并注入收尾引导），
+      确保 LLM 始终能正确输出结构化 JSON tool_calls，避免因 schemas 缺失导致
+      LLM 退化为 XML/DSML 文本格式
+    - 真正的流式输出：流式路径每步 ``chat_stream`` 且始终绑定 tool schemas，
+      聚合 chunk 还原 tool_calls，最终回答不再二次生成
     """
 
     def __init__(
@@ -271,10 +302,30 @@ class ReActExecutor(Executor):
 
     # ── 推理循环 (Task 8) ──────────────────────────────────────
 
-    async def _react_step(self, ctx: Context, client, tool_schemas, model_version):
+    @staticmethod
+    def _merge_guidance(llm_messages: list[dict], guidance: str) -> None:
+        """把收尾引导并入头部 system 块(就地修改)。
+
+        不能追加为尾部 system 消息:langchain-anthropic 拒绝非连续的多条
+        system 消息( anthropic 协议请求会直接 400)。无 system 消息时在
+        头部插入一条。
+        """
+        if not guidance:
+            return
+        if llm_messages and llm_messages[0].get("role") == "system":
+            llm_messages[0]["content"] = (
+                f"{llm_messages[0]['content']}\n\n{guidance}"
+            )
+        else:
+            llm_messages.insert(0, {"role": "system", "content": guidance})
+
+    async def _react_step(self, ctx: Context, client, tool_schemas, model_version,
+                          guidance: str = ""):
         """单步 LLM 调用 -- hooks + 重试 + 字段提取 + token 累计。
 
         不修改 ``ctx.messages``(由调用方决定如何 append assistant 消息)。
+        ``guidance`` 非空时并入头部 system 块(不进 ctx.messages)，用于
+        ``max_tool_rounds`` 打满后的收尾引导。
         返回 ``(ai, tool_calls, finish_reason)``。
         """
         for h in self._hooks:
@@ -282,6 +333,7 @@ class ReActExecutor(Executor):
             except Exception as e: logger.warning("before_chat hook: %s", e)
 
         llm_messages = self._build_llm_messages(ctx)
+        self._merge_guidance(llm_messages, guidance)
         ai = await self._call_llm(client, llm_messages, tool_schemas, ctx)
 
         for h in self._hooks:
@@ -308,15 +360,16 @@ class ReActExecutor(Executor):
             model_used=model_version,
         )
 
-    async def _loop(self, ctx: Context, stream: bool) -> None:
+    async def _loop(self, ctx: Context) -> None:
         tool_schemas = self._tools.get_schemas() if self._tools else None
         client = self._brain.get(ctx.model_name or "default")
         model_version = self._brain.get_model_version(ctx.model_name or "default")
         tool_rounds = 0
+        guidance = ""
 
         for step in range(self.max_steps):
             ai, tool_calls, finish_reason = await self._react_step(
-                ctx, client, tool_schemas, model_version,
+                ctx, client, tool_schemas, model_version, guidance=guidance,
             )
             ctx.messages.append(
                 self._make_assistant_msg(ai, tool_calls, model_version)
@@ -335,13 +388,12 @@ class ReActExecutor(Executor):
                 ctx.step_count = step + 1
                 return
 
-            for tc in tool_calls:
-                msg = await self._execute_tool(tc, ctx)
-                ctx.messages.append(msg)
+            await self._execute_tool_calls(tool_calls, ctx)
 
             tool_rounds += 1
             if tool_rounds >= self.max_tool_rounds:
                 tool_schemas = None
+                guidance = _TOOL_CAP_GUIDANCE
         ctx.step_count = self.max_steps
 
     async def _call_llm(self, client, messages, tool_schemas, ctx):
@@ -416,7 +468,7 @@ class ReActExecutor(Executor):
         """
         await self._prepare(ctx)
         try:
-            await self._loop(ctx, stream=False)
+            await self._loop(ctx)
             output = ctx.final_output
         except Exception as e:
             logger.exception("executor run failed")
@@ -431,8 +483,8 @@ class ReActExecutor(Executor):
     async def run_stream(self, ctx: Context) -> AsyncIterator[str]:
         """流式推理 -- ``_prepare`` -> ``_loop_stream`` -> ``_finalize``。
 
-        工具调用步骤非流式,最终文本步用 ``chat_stream`` 逐 token yield。
-        异常兜底同 ``run``:catch 后 ``yield [Executor 错误]`` 文本,
+        每步都流式且绑定 tool schemas(见 ``_loop_stream``)。异常兜底同
+        ``run``:catch 后 ``yield [Executor 错误]`` 文本,
         ``_finalize`` 始终执行。
         """
         await self._prepare(ctx)
@@ -448,35 +500,109 @@ class ReActExecutor(Executor):
         finally:
             await self._finalize(ctx)
 
-    async def _loop_stream(self, ctx: Context) -> AsyncIterator[str]:
-        """流式推理循环 -- 共享 ``_react_step`` 单步逻辑,最终文本步真流式。
+    async def _execute_tool_calls(self, tool_calls: list[dict], ctx: Context) -> None:
+        """依次执行工具调用并 append 结果;用户中断时补占位再抛。
 
-        与 ``_loop`` 的差异:无 tool_calls 的最终步先用非流式 ``chat`` 判定
-        无工具调用,再用 ``chat_stream`` 逐 token yield(assistant 消息以
-        流式累积内容入历史,确保 ``ctx.final_output`` 反映真实输出)。
+        assistant(tool_calls) 消息此时已入历史,若 tool_call 无对应 tool
+        结果消息,下轮 ``_build_llm_messages`` 产生的请求会被
+        OpenAI/DeepSeek 以 400 拒绝,故 CancelledError 时为未回填的
+        tool_call 补中断占位消息。
+        """
+        try:
+            for tc in tool_calls:
+                msg = await self._execute_tool(tc, ctx)
+                ctx.messages.append(msg)
+        except asyncio.CancelledError:
+            answered = {m.tool_call_id for m in ctx.messages if m.role == "tool"}
+            for tc in tool_calls:
+                if tc.get("id", "") not in answered:
+                    ctx.messages.append(Message(
+                        role="tool", tool_call_id=tc.get("id", ""),
+                        content="[Error] 用户中断,工具未执行", name=tc.get("name", ""),
+                    ))
+            raise
+
+    async def _loop_stream(self, ctx: Context) -> AsyncIterator[str]:
+        """真流式推理循环 -- 每步都 ``chat_stream(tools=...)``，聚合 chunk。
+
+        早期实现是两段式：非流式 ``chat``（带 tools）判定无工具调用后，再用
+        ``chat_stream``（**不带 tools**）重新生成最终回答。重新生成时请求缺
+        tools，DeepSeek 等模型会把工具调用意图写成 DSML 等标记纯文本流给用户，
+        而判定调用生成的真正回答被丢弃（还会为最终回答付双倍生成成本）。
+
+        现改为与 ``_loop`` 同构的单层循环：每步流式且始终绑定 tool schemas，
+        ``AIMessageChunk`` 聚合（``+`` 合并）后从 ``agg.tool_calls`` 还原工具
+        调用——无工具调用的步即最终回答，逐 token 已流出，不再二次生成。
         """
         tool_schemas = self._tools.get_schemas() if self._tools else None
         client = self._brain.get(ctx.model_name or "default")
         model_version = self._brain.get_model_version(ctx.model_name or "default")
         tool_rounds = 0
+        guidance = ""
 
         for step in range(self.max_steps):
-            ai, tool_calls, finish_reason = await self._react_step(
-                ctx, client, tool_schemas, model_version,
-            )
+            for h in self._hooks:
+                try: await h.before_chat(ctx)
+                except Exception as e: logger.warning("before_chat hook: %s", e)
+
+            llm_messages = self._build_llm_messages(ctx)
+            self._merge_guidance(llm_messages, guidance)
+
+            agg = None
+            chunks: list[str] = []
+            try:
+                for attempt in range(self._llm_max_retries + 1):
+                    try:
+                        async for chunk in client.chat_stream(
+                            messages=llm_messages, tools=tool_schemas,
+                        ):
+                            token = _chunk_text(chunk)
+                            if token:
+                                chunks.append(token)
+                                # 调用方只可能以 cancel(CancelledError,
+                                # BaseException)中断生成器,不会 athrow 普通
+                                # Exception,故此处 yield 不会被误当流式失败重试
+                                yield token
+                            agg = chunk if agg is None else agg + chunk
+                        break
+                    except Exception:
+                        # 已消费过 chunk 则不能重试(重放会重复输出),直接抛
+                        if agg is not None or attempt >= self._llm_max_retries:
+                            raise
+                        await asyncio.sleep(2 ** attempt)
+            except asyncio.CancelledError:
+                # 用户 stop:已流出的 partial 先入历史,
+                # run_stream 的 finally 会 _finalize 落库(不丢 partial)
+                if chunks:
+                    ctx.messages.append(
+                        self._make_assistant_msg(
+                            agg, [], model_version, content="".join(chunks),
+                        )
+                    )
+                raise
+
+            ai = agg  # AIMessageChunk 是 AIMessage 子类,复用消息构建
+            if ai is None:
+                # 流式响应完全为空:按空最终回答收尾,避免 AttributeError
+                ctx.step_count = step + 1
+                ctx.messages.append(
+                    Message(role="assistant", content=None, model_used=model_version)
+                )
+                return
+            for h in self._hooks:
+                try: await h.after_chat(ctx, ai)
+                except Exception as e: logger.warning("after_chat hook: %s", e)
+
+            tool_calls = list(ai.tool_calls) if ai.tool_calls else []
+            finish_reason = (ai.response_metadata or {}).get("finish_reason", "")
+            usage = _ai_usage_to_dict(ai)
+            if usage:
+                ctx.total_input_tokens += usage.get("prompt_tokens", 0)
+                ctx.total_output_tokens += usage.get("completion_tokens", 0)
 
             if not tool_calls:
-                # 最终文本步:chat_stream 真流式(assistant 消息尚未入历史,
-                # 避免把答案回传给 LLM)
+                # 最终文本步:内容已逐 token 流出,直接入历史
                 ctx.step_count = step + 1
-                chunks: list[str] = []
-                async for chunk in client.chat_stream(
-                    messages=self._build_llm_messages(ctx),
-                ):
-                    token = chunk.content or ""
-                    if token:
-                        chunks.append(token)
-                        yield token
                 ctx.messages.append(
                     self._make_assistant_msg(
                         ai, tool_calls, model_version,
@@ -487,7 +613,10 @@ class ReActExecutor(Executor):
 
             # 有工具调用:append assistant 消息(含 tool_calls)再执行工具
             ctx.messages.append(
-                self._make_assistant_msg(ai, tool_calls, model_version)
+                self._make_assistant_msg(
+                    ai, tool_calls, model_version,
+                    content="".join(chunks) or None,
+                )
             )
 
             if finish_reason in ("length", "max_tokens"):
@@ -497,17 +626,14 @@ class ReActExecutor(Executor):
                         content="[Error] 工具调用被截断", name=tc.get("name", ""),
                     ))
                 ctx.step_count = step + 1
-                if ai.content:
-                    yield ai.content
                 return
 
-            for tc in tool_calls:
-                msg = await self._execute_tool(tc, ctx)
-                ctx.messages.append(msg)
+            await self._execute_tool_calls(tool_calls, ctx)
 
             tool_rounds += 1
             if tool_rounds >= self.max_tool_rounds:
                 tool_schemas = None
+                guidance = _TOOL_CAP_GUIDANCE
         ctx.step_count = self.max_steps
         fallback = (ctx.messages[-1].content or "已达最大步数") if ctx.messages else "已达最大步数"
         yield fallback
@@ -579,9 +705,12 @@ class ReActExecutor(Executor):
 
 
 class DirectExecutor(ReActExecutor):
-    """简单直调执行器 -- 单次 chat,无工具循环。共享 _prepare/_finalize。"""
+    """简单直调执行器 -- 单次 chat,无工具循环。共享 _prepare/_finalize。
 
-    async def _loop(self, ctx: Context, stream: bool) -> None:
+    流式路径继承 ``ReActExecutor.run_stream``(无 tools 时即单次直答)。
+    """
+
+    async def _loop(self, ctx: Context) -> None:
         client = self._brain.get(ctx.model_name or "default")
         model_version = self._brain.get_model_version(ctx.model_name or "default")
         for h in self._hooks:
@@ -589,19 +718,11 @@ class DirectExecutor(ReActExecutor):
             except Exception as e: logger.warning("before_chat hook: %s", e)
 
         llm_messages = self._build_llm_messages(ctx)
-        if stream:
-            chunks: list[str] = []
-            async for chunk in client.chat_stream(messages=llm_messages):
-                tok = chunk.content or ""
-                chunks.append(tok)
-                # yield 由 _loop_stream 处理,这里只收集
-            content = "".join(chunks)
-        else:
-            ai = await self._call_llm(client, llm_messages, None, ctx)
-            content = ai.content or ""
-            for h in self._hooks:
-                try: await h.after_chat(ctx, ai)
-                except Exception as e: logger.warning("after_chat hook: %s", e)
+        ai = await self._call_llm(client, llm_messages, None, ctx)
+        content = ai.content or ""
+        for h in self._hooks:
+            try: await h.after_chat(ctx, ai)
+            except Exception as e: logger.warning("after_chat hook: %s", e)
 
         ctx.messages.append(Message(role="assistant", content=content or None, model_used=model_version))
         ctx.step_count = 1

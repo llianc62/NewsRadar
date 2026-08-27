@@ -17,6 +17,9 @@ class OpenAIClient(BaseClient, ChatOpenAI):
     """
 
     def __init__(self, api_key: str = "", base_url: str = "", model: str = "", **kwargs):
+        # 自定义 base_url 时 ChatOpenAI 默认不回传流式 usage,显式开启,
+        # 否则流式路径的 token 计数恒为 0
+        kwargs.setdefault("stream_usage", True)
         super().__init__(
             api_key=api_key,
             base_url=base_url or None,

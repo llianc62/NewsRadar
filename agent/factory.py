@@ -43,7 +43,7 @@ class AgentFactory:
     连接起来。解析工具、知识库等依赖，一键构建可运行的 Agent。
 
     Args:
-        models_config: 模型配置 dict（``config["models"]``）。
+        models_config: 模型配置 dict（``config["agent"]["models"]``）。
         db: ``PostgreSQL`` 实例，用于知识库查询与 LongTermMemory 存储。
         registry: 全局工具注册表（``Registry``），所有可用工具。
         top_k: 知识库检索返回片段数，默认 5。
@@ -158,7 +158,7 @@ async def create_agent(
     """创建配置完整的 DefaultAgent（ReActExecutor + 工具）。
 
     Args:
-        config: 模型配置 dict（即 config.yaml 的 models 段）
+        config: 模型配置 dict（即 config.yaml 的 agent.models 段）
         system_prompt: 系统提示词
         max_steps: ReAct 循环最大步数
         register_mcp: 是否注册 News MCP Server 的工具

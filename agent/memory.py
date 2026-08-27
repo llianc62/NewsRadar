@@ -35,17 +35,24 @@ class MemoryModule(ABC):
 class NullMemory(MemoryModule):
     """空记忆 -- 什么都不做,显式关闭记忆。"""
     async def load(self, ctx): pass
-    async def save(self, ctx): pass
+    async def save(self, ctx) -> int: return 0
 
 
 class ShortTermMemory(MemoryModule):
-    """短期记忆 -- load 历史对话(agent_messages 表)。"""
+    """短期记忆 -- load 历史对话(agent_messages 表),save 增量落库。
+
+    增量水位 ``_saved_up_to`` 为本模块私有状态,语义"当前服务中的
+    ctx.messages 前 N 条已持久化":load 建立基线(入口复位、尾部对齐),
+    save 逐条推进。重复调用无 delta 即 no-op,freeze 与 _finalize
+    任意并存不重复 INSERT;单条失败时水位停在失败处,重试只补剩余。
+    """
 
     def __init__(self, db, window_size: int = 20):
         if window_size < 1:
             raise ValueError("window_size must be >= 1")
         self._db = db
         self._window_size = window_size
+        self._saved_up_to = 0
 
     @staticmethod
     def _parse_session_id(session_id: str) -> int | None:
@@ -66,6 +73,7 @@ class ShortTermMemory(MemoryModule):
         return sid if sid >= 1 else None
 
     async def load(self, ctx):
+        self._saved_up_to = 0  # 入口复位:ctx 即将整体重建,旧水位作废
         if not ctx.session_id or not self._db:
             return
         sid = self._parse_session_id(ctx.session_id)
@@ -77,19 +85,29 @@ class ShortTermMemory(MemoryModule):
         ctx.messages = [
             Message(role=m["role"], content=m["content"]) for m in msgs
         ]
+        self._saved_up_to = len(ctx.messages)  # 已加载 = 已在库,建立基线
 
-    async def save(self, ctx):
+    async def save(self, ctx) -> int:
+        """增量落库:持久化 ``messages[_saved_up_to:]`` 中的新 assistant 回复。
+
+        user 由接口层落库、tool 消息与纯 tool_call(无内容)assistant
+        不入库,但水位照常推进(已核对)。返回新写入条数(0 = 无 delta)。
+        """
         if not ctx.session_id or not self._db:
-            return
+            return 0
         sid = self._parse_session_id(ctx.session_id)
         if sid is None:
-            return
-        await asyncio.to_thread(
-            self._db.save_agent_message, sid, "user", ctx.user_input
-        )
-        await asyncio.to_thread(
-            self._db.save_agent_message, sid, "assistant", ctx.final_output
-        )
+            return 0
+        written = 0
+        for i in range(self._saved_up_to, len(ctx.messages)):
+            m = ctx.messages[i]
+            if m.role == "assistant" and m.content and m.content.strip():
+                await asyncio.to_thread(
+                    self._db.save_agent_message, sid, "assistant", m.content
+                )
+                written += 1
+            self._saved_up_to = i + 1
+        return written
 
 
 # ── Storage 层（LongTermMemory 专用） ──────────────────────────
@@ -269,13 +287,15 @@ class LongTermMemory(ShortTermMemory):
                 content=self._format_memories(mems), order=10,
             ))
 
-    async def save(self, ctx):
-        await super().save(ctx)
-        self._turn_count += 1
-        if self._should_extract(ctx):
-            await self._extract_and_store(ctx)
-        elif self._turn_count % self._extract_interval == 0:
-            await self._batch_merge(ctx)
+    async def save(self, ctx) -> int:
+        n = await super().save(ctx)
+        if n > 0:  # 仅实际落库的轮次才计轮/提炼(freeze 重调不重复提取)
+            self._turn_count += 1
+            if self._should_extract(ctx):
+                await self._extract_and_store(ctx)
+            elif self._turn_count % self._extract_interval == 0:
+                await self._batch_merge(ctx)
+        return n
 
     def _build_search_query(self, user_input: str) -> str:
         """提取检索关键词。
