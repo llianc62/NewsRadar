@@ -13,6 +13,7 @@ is :attr:`OutputStyle.SQLITE` or :attr:`OutputStyle.POSTGRESQL`.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import random
@@ -133,6 +134,15 @@ class Crawler:
         self._playwright_executors: dict[str, ThreadPoolExecutor] = {}
         self._playwright_browsers: dict[str, tuple[Any, Any]] = {}
 
+        # Crawl4AI - async browser for WAF-protected sites (replaces Playwright
+        # for WAF domain HTML download).  Runs in a dedicated background event
+        # loop thread; the AsyncWebCrawler instance is reused across calls.
+        self._crawl4ai_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._crawl4ai_loop_thread: Optional[threading.Thread] = None
+        self._crawl4ai_crawler: Any = None
+        self._crawl4ai_lock = threading.Lock()
+        self._crawl4ai_arun_lock = threading.Lock()
+
     # ── HTTP session ─────────────────────────────────────────────────
 
     @staticmethod
@@ -252,9 +262,10 @@ class Crawler:
 
         # ── Download HTML ──────────────────────────────────────────
         if self._needs_playwright(url):
-            html, error = self._download_with_playwright(url, self.timeout)
+            # html, error = self._download_with_playwright(url, self.timeout)
+            html = self._download_with_crawl4ai(url, self.timeout)
             if html is None:
-                raise Exception(f"Playwright 页面下载失败: {error}")
+                raise Exception("crawl4ai 页面下载失败")
         else:
             try:
                 resp = self.session().get(url, timeout=self.timeout)
@@ -606,6 +617,124 @@ class Crawler:
             return None, f"playwright: {error}"
         return None, "Playwright: max retries exceeded"
 
+    # ═══════════════════════════════════════════════════════════════════
+    # Crawl4AI - WAF site HTML download (replaces Playwright for WAF domains)
+    # ═══════════════════════════════════════════════════════════════════
+
+    _WAF_CHALLENGE_SIGNS = (
+        "aliyun_waf_aa", "aliyunCaptcha", "滑动验证",
+        "Access Verification", "slide to complete",
+    )
+
+    def _looks_like_waf_challenge(self, html: Optional[str]) -> bool:
+        """检测 HTML 是否是 WAF 验证码挑战页(而非真实正文)。
+
+        crawl4ai 概率性被 WAF 拦截,拿到的可能是滑块验证页面。
+        命中则视为抓取失败,触发重试。
+        """
+        if not html:
+            return False
+        # 只查前 5000 字符 - WAF 挑战页特征在头部
+        head = html[:5000]
+        return any(sign in head for sign in self._WAF_CHALLENGE_SIGNS)
+
+    def _ensure_crawl4ai(self) -> None:
+        """Lazily start the background event loop + AsyncWebCrawler.
+
+        Thread-safe via double-checked locking - safe to call concurrently
+        from multiple worker threads.  The loop runs in a dedicated daemon
+        thread; the crawler is reused across all subsequent ``arun()`` calls.
+        """
+        if self._crawl4ai_crawler is not None:
+            return
+        with self._crawl4ai_lock:
+            if self._crawl4ai_crawler is not None:
+                return
+            from crawl4ai import AsyncWebCrawler, BrowserConfig
+
+            loop = asyncio.new_event_loop()
+            self._crawl4ai_loop = loop
+            ready = threading.Event()
+
+            def _run_loop() -> None:
+                asyncio.set_event_loop(loop)
+                crawler = AsyncWebCrawler(config=BrowserConfig(
+                    browser_type="undetected",
+                    headless=True,
+                    extra_args=[
+                        "--disable-blink-features=AutomationControlled",
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                    ],
+                ))
+                loop.run_until_complete(crawler.start())
+                self._crawl4ai_crawler = crawler
+                ready.set()
+                loop.run_forever()
+
+            self._crawl4ai_loop_thread = threading.Thread(
+                target=_run_loop, daemon=True,
+            )
+            self._crawl4ai_loop_thread.start()
+            # Wait for the crawler to finish starting before returning.
+            ready.wait(timeout=120)
+
+    def _download_with_crawl4ai(
+        self,
+        url: str,
+        timeout: int,
+    ) -> Optional[str]:
+        """Download HTML via crawl4ai (undetected + magic + simulate_user).
+
+        Replaces ``_download_with_playwright`` for WAF-protected domains.
+        Runs the async ``arun()`` in the background event loop and blocks
+        the caller until it completes.
+
+        Returns the page HTML string, or ``None`` if all retries fail or
+        a WAF challenge page is detected.
+        """
+        self._ensure_crawl4ai()
+        from crawl4ai import CrawlerRunConfig
+
+        config = CrawlerRunConfig(
+            magic=True,
+            simulate_user=True,
+            override_navigator=True,
+            page_timeout=timeout * 1_000,
+        )
+
+        for attempt in range(self.max_retry):
+            try:
+                # Serialize arun() calls - AsyncWebCrawler is not thread-safe
+                # by default (thread_safe=False), so concurrent arun on a
+                # single crawler instance can corrupt state.
+                with self._crawl4ai_arun_lock:
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._crawl4ai_crawler.arun(url=url, config=config),
+                        self._crawl4ai_loop,
+                    )
+                    result = future.result(timeout=timeout + 30)
+            except Exception as e:
+                print(f"[Crawler] crawl4ai error for {url} "
+                      f"(attempt {attempt + 1}/{self.max_retry}): {e}")
+                continue
+
+            if not result.success:
+                print(f"[Crawler] crawl4ai failed for {url}: "
+                      f"{result.error_message}")
+                continue
+
+            html = result.html
+            if html and not self._looks_like_waf_challenge(html):
+                return html
+
+            print(f"[Crawler] crawl4ai WAF challenge for {url}, "
+                  f"retrying ({attempt + 1}/{self.max_retry})...")
+
+        return None
+
     def _download_and_parse(self, item: Dict[str, Any]) -> bool:
         """Download HTML for a single item, parse to Markdown (no images).
 
@@ -622,10 +751,11 @@ class Crawler:
             return False
 
         if self._needs_playwright(url):
-            html, error = self._download_with_playwright(url, self.timeout)
+            # WAF 域名直接走 crawl4ai(替换 Playwright)
+            html = self._download_with_crawl4ai(url, self.timeout)
             if html is None:
-                print(f"[Crawler] Playwright error for {url}: {error}")
-                self._record_content_fetch_failure(item, error)
+                self._record_content_fetch_failure(
+                    item, "crawl4ai fetch failed")
                 return False
         else:
             resp, error = http_get_with_retry(
@@ -1466,6 +1596,30 @@ class Crawler:
         if self._sqlite is not None:
             self._sqlite.cleanup()
             self._sqlite = None
+        self._close_crawl4ai()
+
+    def _close_crawl4ai(self) -> None:
+        """Shut down the crawl4ai background loop + crawler."""
+        if (self._crawl4ai_crawler is not None
+                and self._crawl4ai_loop is not None):
+            try:
+                fut = asyncio.run_coroutine_threadsafe(
+                    self._crawl4ai_crawler.close(), self._crawl4ai_loop,
+                )
+                fut.result(timeout=30)
+            except Exception as e:
+                print(f"[Crawler] crawl4ai close error: {e}")
+        if self._crawl4ai_loop is not None:
+            try:
+                self._crawl4ai_loop.call_soon_threadsafe(
+                    self._crawl4ai_loop.stop)
+            except Exception:
+                pass
+        if self._crawl4ai_loop_thread is not None:
+            self._crawl4ai_loop_thread.join(timeout=10)
+        self._crawl4ai_crawler = None
+        self._crawl4ai_loop = None
+        self._crawl4ai_loop_thread = None
 
 
 
