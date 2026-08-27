@@ -11,6 +11,7 @@ Web 层在 Phase 0 重构中从单文件拆分为多文件结构，按职责分�
 | `web/app.py` | FastAPI 工厂函数 `create_app()` — 组装 lifespan、static、state、router |
 | `web/news.py` | 新闻相关路由（概览 / 详情 / 触发 / 通知 / 情感 / refetch） |
 | `web/agent.py` | Agent 聊天页面 + 会话管理 REST + WebSocket 实时通道 |
+| `web/settings.py` | 设置面板路由：HTML 页面（/settings*）+ 系统设置/新闻源/模型 JSON API（/api/settings*, /api/models*） |
 | `web/background.py` | `BackgroundTaskRunner` — 通用后台任务执行器 |
 | `web/notification.py` | `NotificationState` — 线程安全内存通知系统 + SSE 分发 |
 | `web/config.py` | Jinja2 模板渲染配置 |
@@ -59,9 +60,9 @@ Web 层在 Phase 0 重构中从单文件拆分为多文件结构，按职责分�
 | `GET` | `/agent` | Agent 聊天页面（HTML） |
 | `GET` | `/api/agent/sessions` | 会话列表（分页） |
 | `POST` | `/api/agent/sessions` | 新建会话（设 httponly cookie） |
-| `DELETE` | `/api/agent/sessions/{id}` | 删除会话 |
-| `GET` | `/api/agent/sessions/{id}/messages` | 消息历史 |
-| `WS` | `/api/ws` | 实时聊天 WebSocket |
+| `DELETE` | `/api/agent/sessions/{session_id}` | 删除会话 |
+| `GET` | `/api/agent/sessions/{session_id}/messages` | 消息历史（兜底/调试端点，前端显示走 WS snapshot） |
+| `WS` | `/api/agent/ws` | 实时聊天 WebSocket（`?session_id=` 连接即发 snapshot） |
 
 ### WebSocket 协议
 
@@ -69,13 +70,18 @@ Web 层在 Phase 0 重构中从单文件拆分为多文件结构，按职责分�
 
 | 类型 | 方向 | 说明 |
 |------|------|------|
-| `chat` | client → server | 发送用户消息，含 `session_id`、`message` |
+| `chat` | client → server | 发送用户消息，含 `session_id`、`message`、`model`、`running_mode` |
+| `switch` | client → server | 点击触发的显式切换智能体（轮间），含 `session_id`、`agent_id`（空 = 默认助手） |
 | `stop` | client → server | 取消正在生成的回答 |
 | `tool_approval_response` | client → server | 用户对工具调用的审批结果 |
+| `snapshot` | server → client | 连接/重连的会话快照：`messages`（就近读 agent、兜底 DB）+ `partial`（运行中任务已累积回复）+ `running` + `agent`（当前执行体 key） |
 | `token` | server → client | 流式输出片段（`content` 字段） |
-| `done` | server → client | 生成完成（含 `full_reply`） |
+| `done` | server → client | 生成完成（含 `full_reply`、`stopped`） |
+| `switch_ack` | server → client | 切换完成确认 |
 | `tool_approval_request` | server → client | 请求用户审批工具调用 |
 | `error` | server → client | 错误信息 |
+
+**快照与续推**：`_forward` 对运行中任务先 `subscribe()` 再同步读 `buffer`（两步间无 await），订阅前的 token 全在 `partial` 快照、之后全在队列，不重不漏。已完成任务不 replay（快照已含最终回复）。WS 断开只取消转发协程，绝不取消生成任务。
 
 ## 内容渲染
 
@@ -102,7 +108,7 @@ Web 层在 Phase 0 重构中从单文件拆分为多文件结构，按职责分�
 
 ## 应用工厂
 
-`create_app(db, s3_config, queues, crawler, agent_config, agent_instance)`：
+`create_app(db, s3_config, queues, crawler, agent_config, tool_registry, agent_factory, base_prompt)`：
 
 ```python
 app = create_app(
@@ -110,11 +116,13 @@ app = create_app(
     queues={"crawl": crawl_queue, "sync": sync_queue},
     crawler=crawler,
     agent_config=config,           # 完整 config dict
-    agent_instance=agent,          # 预构建的 DefaultAgent
+    tool_registry=tool_registry,   # 内置工具注册中心
+    agent_factory=agent_factory,   # AgentDefinition -> agent 构建器
+    base_prompt=base_prompt,       # agent/Agent.md 系统提示词
 )
 ```
 
-Agent 路由始终注册（页面显示空状态提示）。Agent 实例仅在配置了 `models` 段时由 daemon 预构建注入，否则页面提示"模型未配置"。
+Agent 路由始终注册。聊天室 agent 由 `_build_chat_agent` per-session 惰性构建，依赖 `agent_config` / `base_prompt` / MCP Server。
 
 ## 关键文件
 
@@ -123,6 +131,7 @@ Agent 路由始终注册（页面显示空状态提示）。Agent 实例仅在�
 | `web/app.py` | FastAPI 应用工厂 |
 | `web/news.py` | 新闻 + 通知路由 |
 | `web/agent.py` | Agent 路由 + WebSocket |
+| `web/settings.py` | 设置面板路由（HTML 页面 + /api/settings、/api/models JSON API） |
 | `web/background.py` | 通用后台任务执行器 |
 | `web/notification.py` | 内存通知系统 |
 | `web/config.py` | 模板渲染配置 |

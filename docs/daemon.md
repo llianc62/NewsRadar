@@ -23,7 +23,7 @@ Manual trigger ──put(callback)──▶  (callback 用于 SSE 通知)
 2. 连接 PostgreSQL + init_schema（含幂等迁移）
 3. 注册信号处理器（SIGINT/SIGTERM → set shutdown event）
 4. 启动 FastAPI web server（uvicorn，非阻塞）
-5. 条件构建 Agent（仅当 config["models"] 存在时）
+5. 构建 Agent（agent.models 必填，缺失时 load_config 报错）
 6. 启动后台 Workers + Timers
 7. await shutdown（等待 web 故障或关闭信号）
 ```
@@ -34,19 +34,19 @@ Manual trigger ──put(callback)──▶  (callback 用于 SSE 通知)
 
 ## Agent 集成
 
-Daemon 在启动序列第 5 步条件构建 Agent：
+Daemon 启动时启动 MCP Server（SSE 模式，供聊天室 agent 连接）并构建 `AgentFactory` + `tool_registry` + `base_prompt`，通过 `create_app()` 注入 Web 应用：
 
 ```python
-if self.config.get("models"):
-    from agent.factory import create_agent
-    agent = await create_agent(
-        self.config["models"],
-        system_prompt="你是 NewsRadar 新闻助手",
-        register_mcp=True,
-    )
+await self._start_mcp_server(mcp_cfg)          # 聊天室 agent 依赖 MCP
+tool_registry = setup_builtin_tools()
+agent_factory = AgentFactory(self.config["agent"]["models"], self.db,
+                             tool_registry, base_prompt=base_prompt)
+app = create_app(self.db, s3_config, queues=queues, crawler=crawler,
+                 agent_config=self.config, tool_registry=tool_registry,
+                 agent_factory=agent_factory, base_prompt=base_prompt)
 ```
 
-Agent 实例通过 `create_app(agent_instance=agent)` 注入 Web 应用，WebSocket 端点直接使用该实例。Agent 路由始终注册（页面显示空状态提示）。
+聊天室 agent 由 `web/agent.py:_build_chat_agent` 在首个请求时 per-session 惰性构建（`create_agent(register_mcp=True)`），不持有全局单例。Agent 路由始终注册。
 
 ## 可配参数
 
@@ -54,7 +54,7 @@ Agent 实例通过 `create_app(agent_instance=agent)` 注入 Web 应用，WebSoc
 |------|--------|------|
 | `crawler.crawl_circle` | 60 | 抓取间隔（分钟） |
 | `crawler.sync_circle` | 60 | 云端同步间隔（分钟） |
-| `models` | — | Agent 模型配置（可选，存在时启用 Agent） |
+| `agent.models` | — | Agent 模型配置（可选，存在时启用 Agent） |
 
 ## 关闭
 
@@ -68,7 +68,7 @@ Agent 实例通过 `create_app(agent_instance=agent)` 注入 Web 应用，WebSoc
 
 | 文件 | 用途 |
 |------|------|
-| `main.py` | Daemon 入口 — Queue Channel 事件循环 + Agent 条件构建 |
+| `main.py` | Daemon 入口 — Queue Channel 事件循环 + Agent 构建 |
 | `agent/factory.py` | Agent 工厂函数 |
 | `config.py` | 配置加载 — YAML + 环境变量合并 |
 | `config.yaml` | 默认配置文件 |

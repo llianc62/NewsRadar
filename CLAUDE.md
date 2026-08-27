@@ -39,6 +39,7 @@ cli/
 # 1. 安装依赖 (Python >= 3.12)
 uv sync
 uv pip install pytest  # pytest 不在 pyproject.toml 中
+crawl4ai-setup  # 装 patchright 浏览器(WAF 站点抓取)
 
 # 2. 启动基础设施 (PostgreSQL 16 + MinIO)
 docker compose up -d
@@ -154,7 +155,7 @@ All fetchers return `list[dict]` — flat list of standardised item dicts. Failu
 - image 重试必须在 content 重试 + persist 之后执行（需要文章已在 DB 中才能 UPDATE 图片路径）
 
 ### Key modules
-- `news/crawler.py` — `Crawler` class. Public API: `fetch()`, `fetch_all()`, `enrich_content()`, `sync_from_cloud()`, `retry_failed_tasks()`
+- `news/crawler.py` — `Crawler` class. Public API: `fetch()`, `fetch_all()`, `enrich_content()`, `sync_from_cloud()`, `retry_failed_tasks()`. WAF 站点(huxiu/xueqiu/juejin)用 crawl4ai(undetected+magic+simulate_user)下载 HTML 绕过阿里云滑块,拿到 HTML 后走现有 parser;非 WAF 站点走 requests
 - `news/models.py` — `NewsItem` / `NewsData` dataclasses. `NewsItem.ranks` = `[[rank, total], ...]` JSONB; `heat_score` = 0-100
 - `news/fetcher/` — `Fetcher` ABC + `NewsnowFetcher` + `RssFetcher`
 - `news/parser/` — HtmlParser + Registry + 12 site-specific parsers. Three-tier extraction: custom hook → readability → HTML-strip fallback
@@ -245,6 +246,7 @@ DefaultAgent (编排器,构造时注入组件给 executor)
 
 - **@tool decorator** (`agent/tools/base.py`): 自动从类型注解 + Google-style docstring 生成 OpenAI format JSON Schema。支持 sync/async、默认值、可选参数。
 - **Executor 三阶段** (`agent/executor.py`): `_prepare`(memory.load + knowledge.search + 组装 messages) -> `_loop`(LLM 推理 + 工具执行循环) -> `_finalize`(memory.save)。`run(ctx)` 只收数据,组件构造注入。DirectExecutor 继承 ReActExecutor 共享骨架,只 override `_loop`(单次 chat)。
+- **流式必须绑 tools** (`agent/executor.py` `_loop_stream`): 流式路径每步 `chat_stream(tools=...)` 且始终绑定 tool schemas,`AIMessageChunk` 聚合(`+`)还原 tool_calls。**请求缺 tools 时 DeepSeek 会把工具调用意图写成 DSML 标记纯文本流给用户**(session 44 事故);`max_tool_rounds` 打满后摘 schemas 的同时注入收尾引导(临时 system 消息,不进 ctx.messages)同理。`_chunk_text` 兼容 OpenAI str content 与 Anthropic block 列表(thinking/text/tool_use)。
 - **ExecutorHook**: 生命周期 hook(`before_chat`/`after_chat`/`before_tool`/`after_tool`/`on_error`),子类按需 override,默认 no-op。`approval_callback`/`_normalize_tool_result` 内置策略,不混入 hook。
 - **鲁棒性**: LLM 调用重试(`llm_max_retries` + 退避)、单工具异常隔离(记 `ToolResult.error` 继续循环)、memory/knowledge 失败降级、整体 try/except 兜底(错误文本不进 messages,返回调用方)。executor 永不向调用方抛未捕获异常。
 - **ToolResult**: 结构化记录(name/args/result/error/timing/retries/success),归 tool 消息 `tool_result` 字段(不存 ctx),供 troubleshooting + memory 消费。
@@ -265,18 +267,21 @@ MCP Server 在 `news_server.py` 中使用 FastMCP，全局延迟初始化 DB 连
 
 ### Session 托管 (`web/agent.py`)
 
-WebSocket 端点瘦身为纯传输层，对话任务由 `ChatSession` 托管，与 WS 连接解耦：
+WebSocket 端点瘦身为纯传输层，对话任务由 `ChatSession` 托管，与 WS 连接解耦。三角色：`ChatSession`(会话，跨轮) > `ChatTask`(轮) > `asyncio.Task`；Agent 与 ChatTask 平行→session 同时管"谁在执行"(agent,保活)与"跑到哪了"(ChatTask,随轮生灭)。
 
 | 组件 | 职责 |
 |------|------|
-| `ChatTask` | 进行中对话任务的运行时：`task`（`asyncio.Task`）+ `full_reply`（已累积文本）+ `subscribe()`/`broadcast()` 订阅通道 + `request_approval()`/`respond_approval()` 审批通道（120s 超时拒绝）。WS 断开只退订，不取消任务。 |
-| `ChatSession` | 单会话运行时：`agents: dict[str, Any]`（多 agent 缓存，切换角色各自构建）+ `chat_task`（进行中任务）。`get_agent(key, build_fn)` 命中缓存否则构建；`destroy()` 取消任务 + 清空缓存。session 不删除则 agent 不清理。 |
-| `_sessions` | 模块级 `dict[int, ChatSession]`。`get_session(sid)` 命中返回，未命中新建空壳（agent 惰性构建）；`destroy_session(sid)` cancel 任务 + 清 agents + 移出表。 |
-| `_run_chat` | 后台运行 `agent.chat_stream`，token 累积到 `ct.full_reply` 并 `broadcast` 给订阅者。`CancelledError`（用户 stop）-> `stopped=True` + 广播 `done(stopped)`。 |
-| `_forward` | 订阅 `ChatTask` 并转发到 WS：`subscribe` 后立即读 `full_reply`（原子快照，无 await 间隔）保证不重不漏。先发 `resume`（补发 `full_reply`），再循环 `q.get()` 续推剩余 token。 |
-| `_start_chat` | 启动对话任务：防重入（已有进行中任务直接返回）+ 构建/复用 agent（`agent_id` 走 `AgentFactory.build`，默认构建见下文「Agent 使用场景与隔离约定」）+ 绑定 `ct.request_approval` 到 executor。 |
+| `ChatTask` | 单轮任务运行时：`task`(驱动协程句柄) + `buffer`(本轮 partial,先累积后广播,轮结束作废;完成态权威在 agent ctx/DB) + `subscribe()`/`broadcast()` 订阅通道 + `request_approval()`/`respond_approval()` 审批通道(120s 超时拒绝)。WS 断开只退订,不取消任务。 |
+| `ChatSession` | 会话运行时：`agents`(多 agent 缓存) + `current_agent`/`current_key`(当前执行体) + `chat_task`(本轮任务,防重入:同时最多一轮) + `db`。`history_messages()` 就近读 `current_agent.get_conversation()`,None/异常/空兜底 DB;`destroy()` 取消任务 + 清空缓存。 |
+| `_sessions` | 模块级 `dict[int, ChatSession]`。`get_session(sid, db)` 命中返回,未命中新建空壳(agent 惰性构建);`destroy_session(sid)` cancel 任务 + 清 agents + 移出表。 |
+| `_drive` | 泵 `agent.chat_stream`:`buffer += token`(先) + `broadcast`(后,同一同步步骤→保证快照不重不漏)。`CancelledError`(用户 stop)→广播 `done(stopped)`;assistant 落库由 agent 内部 `_finalize`。 |
+| `_forward` | 转发事件到 WS。`snapshot=True`(连接/重连):running 时先 `subscribe()` 再同步读 `buffer`(两步间无 await,原子快照)→发 `snapshot{messages, partial, running, agent}`→续推队列至 done/error;已完成任务不 replay(快照已含最终回复)。`snapshot=False`(新 chat)仅续推队列。 |
+| `_start_chat` | 启动对话任务:防重入 + 复用/惰性构建 `current_agent`(无则构建默认 agent 并 `activate`)+ **接口层落库 user**(接收即存,不进 agent)+ 绑定审批通道。chat 路径零 agent 判断。 |
+| `_switch_agent` | 显式切换(WS `switch` 消息,点击触发,只在轮间):freeze 旧→build/复用→activate 新(reload 全量历史,切回缓存 agent 不再 ctx 陈旧)→换 `current_agent`。生成中拒绝。 |
 
-**重连续推流程：** WS 连接时带 `?session_id=`，若该 session 有进行中/已完成的 `ChatTask`，立即 `_forward` 补发 `resume` + 剩余事件。WS 断开（`WebSocketDisconnect`）仅 cancel `forward_task`，**绝不取消 agent 任务或动 ChatSession**。
+**写权限契约：** user 消息由接口层(`_start_chat`)接收即落库;assistant 回复 + 长期记忆由 agent 的 `memory.save`(`_finalize`,增量水位幂等)落库;读取开放(显示走 snapshot 就近读 agent、兜底 DB)。stop 中断时 executor 先把已流出 partial append 进 ctx 再 `_finalize`,不丢。
+
+**重连续推流程：** WS 连接带 `?session_id=` 即发 `snapshot`(历史 + 运行中任务的 partial + 当前 agent key),运行中任务续推 token。WS 断开(`WebSocketDisconnect`)仅 cancel `forward_task`,**绝不取消 agent 任务或动 ChatSession**。
 
 ### Web Agent routes (`web/agent.py`)
 
@@ -297,25 +302,32 @@ WebSocket 端点瘦身为纯传输层，对话任务由 `ChatSession` 托管，�
 | `/api/agent/knowledge/{knowledge_id}` | DELETE | 删除知识库（含切片） |
 | `/api/agent/knowledge/{knowledge_id}/ingest` | POST | 上传文档到知识库（multipart） |
 | `/api/tools` | GET | 列出所有可用工具 |
-| `/api/settings` | GET | 系统配置（只读） |
-| `/api/settings/sources` | GET | 列出新闻源（可过滤 source_type） |
-| `/api/settings/sources` | POST | 新建新闻源 |
-| `/api/settings/sources/{source_id}` | PUT | 更新新闻源 |
-| `/api/settings/sources/{source_id}` | DELETE | 删除新闻源 |
-| `/api/settings/sources/{source_id}/test` | POST | 测试 RSS 连通性 |
-| `/api/settings/sources/seed` | POST | 从 config.yaml 种子数据到表 |
-| `/api/models` | GET | 列出模型配置（JSON 文件持久化） |
-| `/api/models` | POST | 添加模型 |
-| `/api/models/{model_name}` | PUT | 更新模型 |
-| `/api/models/{model_name}` | DELETE | 删除模型 |
 
 **WebSocket 端点：**
 
 | 端点 | 说明 |
 |------|------|
-| `WS /api/agent/ws` | 统一聊天通道，支持 `?session_id=`（重连续推）与 `?agent_id=`（从 DB 加载 AgentDefinition 构建）查询参数 |
+| `WS /api/agent/ws` | 统一聊天通道,`?session_id=` 连接即发 snapshot(历史 + 运行中任务续推) |
 
-**WebSocket 协议：** `chat` / `stop` / `tool_approval_response` 三种消息类型。`chat` 消息支持 `model`、`running_mode` 参数。输出事件：`token`（流式文本）、`done`（含 `full_reply`）、`error`（异常）、`tool_approval_request`（审批请求）、`resume`（重连补发已累积的 `full_reply`，之后续推剩余 token）。
+**WebSocket 协议：** 输入 `chat` / `switch` / `stop` / `tool_approval_response` 四种消息类型。`chat` 消息支持 `model`、`running_mode` 参数;`switch` 为点击触发的显式智能体切换(轮间,含 `agent_id`,空 = 默认助手)。输出事件:`snapshot`(连接快照:`messages`/`partial`/`running`/`agent`)、`token`(流式文本)、`done`(含 `full_reply`、`stopped`)、`switch_ack`、`error`(异常)、`tool_approval_request`(审批请求)。前端流式 markdown 用 rAF 节流增量渲染,历史渲染不再走 REST `loadMessages`(messages 端点保留作兜底/调试)。
+
+### Web Settings routes (`web/settings.py`)
+
+设置面板：HTML 页面（`/settings*`）+ 系统设置/新闻源/模型的 JSON API（只读，数据来自 `app.state.agent_config` 即 config.yaml）。写操作（POST/PUT/DELETE）当前为只读模式占位，已禁用。
+
+| 路由 | 方法 | 说明 |
+|------|------|------|
+| `/api/settings` | GET | 系统配置（只读） |
+| `/api/settings/sources` | GET | 列出新闻源（可过滤 source_type） |
+| `/api/settings/sources` | POST | 新建新闻源（占位，已禁用） |
+| `/api/settings/sources/{source_id}` | PUT | 更新新闻源（占位，已禁用） |
+| `/api/settings/sources/{source_id}` | DELETE | 删除新闻源（占位，已禁用） |
+| `/api/settings/sources/{source_id}/test` | POST | 测试 RSS 连通性 |
+| `/api/settings/sources/seed` | POST | 从 config.yaml 种子（占位，已禁用） |
+| `/api/models` | GET | 列出模型配置（隐藏 api_key） |
+| `/api/models` | POST | 添加模型（占位，已禁用） |
+| `/api/models/{model_name}` | PUT | 更新模型（占位，已禁用） |
+| `/api/models/{model_name}` | DELETE | 删除模型（占位，已禁用） |
 
 ### Agent DB (PostgreSQL)
 
@@ -332,7 +344,7 @@ WebSocket 端点瘦身为纯传输层，对话任务由 `ChatSession` 托管，�
 | 记忆类型 | 存储 | load 行为 | save 行为 |
 |---------|------|---------|---------|
 | NullMemory | 无 | no-op | no-op |
-| ShortTermMemory | PG (`agent_messages`) | load 历史对话 -> `ctx.history_messages` | 存 user/assistant(`ctx.final_output`) |
+| ShortTermMemory | PG (`agent_messages`) | load 历史对话 -> `ctx.messages` | 增量存 assistant(`messages[_saved_up_to:]`,水位为 memory 私有状态:load 建基线、save 逐条推进;user 由接口层落库) |
 | LongTermMemory | PG (`agent_messages` + `agent_memories`) | 继承 ShortTerm + 检索 `agent_memories` -> `ctx.memories`(MemoryBlock) | 继承 ShortTerm + 提炼关键信息 -> `agent_memories` |
 
 `ShortTermMemory` 持 db(构造注入),`web/agent.py` 不再自己加载 history,统一靠 `memory.load`。`PgMemoryStorage` 通过 `asyncio.to_thread` 桥接同步 psycopg2 到异步接口。CJK 搜索拆单字 ILIKE，ASCII 搜索用 PG `to_tsvector`。
@@ -359,7 +371,7 @@ pgvector 语义检索知识库，作为角色扮演 agent 的专业知识来源�
 
 ```python
 agent = await create_agent(
-    config["models"],
+    config["agent"]["models"],
     system_prompt="你是 NewsRadar 新闻助手",
     register_mcp=True,
     mcp_cfg=config["mcp_server"],
@@ -367,20 +379,17 @@ agent = await create_agent(
 )
 ```
 
-Daemon 启动时条件构建 Agent（仅当 `config["models"]` 存在时），通过 `app.state.agent_instance` 注入 Web 应用。
+Daemon 启动时启动 MCP Server 并构建 `AgentFactory`（`agent.models` 必填，缺失时 load_config 报错），通过 `app.state.agent_factory` / `app.state.base_prompt` 注入 Web 应用。聊天室 agent 由 `_build_chat_agent` 在首个请求时 per-session 惰性构建。
 
 `AgentFactory.build(defn)` 从 `AgentDefinition` 构建：`LongTermMemory(db, PgMemoryStorage(db))` + `KnowledgeEngine(namespace=kb.namespace)` + `ReActExecutor(brain, memory, knowledge, tools)`。
 
 ### Agent 使用场景与隔离约定（重要）
 
-NewsRadar 有两类 agent 使用场景，严格区分，不可混用：
+NewsRadar 的 agent 仅用于 **AI 聊天室**场景：每个 session **严格隔离**，各自独立 build agent（无 `agent_id` 时由 `_build_chat_agent` 构建聊天室默认 agent，有 `agent_id` 时走 `AgentFactory.build`），session 间互不影响。切换智能体走 WS `switch` 消息（`_switch_agent`：freeze 旧→activate 新），不再经 WS query param。Agent 跟随 session 生命周期（session 不删除则 agent 不清理）。
 
-- **页面级快速问答助手（`app.state.agent_instance`）**：daemon 启动时 `create_agent` 构建一次的全局单例，跨状态、**无记忆**、轻量，用于嵌入页面的简单问答交互。**与 AI 聊天室场景完全无关。**
-- **AI 聊天室 agent**：聊天室每个 session **严格隔离**，各自独立 build agent（无 `agent_id` 时构建聊天室默认 agent，有 `agent_id` 时走 `AgentFactory.build`），**不使用 `agent_instance`**，session 间互不影响。Agent 跟随 session 生命周期（session 不删除则 agent 不清理）。
+不再有页面级全局 agent 单例——原 `app.state.agent_instance` 预留位已移除（无后续实现需求）。
 
-> ⚠️ **待改造**：当前 `web/agent.py:_start_chat` 默认路径误用 `agent_instance` 单例 + `_build_fallback_agent` fallback，违反上述隔离约定（agent 持有 ctx 后会跨 session 串 ctx）。计划改造为 per-session 独立构建并删除 fallback，详见 [docs/bugs/bug_agent_session_resume_display.md](docs/bugs/bug_agent_session_resume_display.md) 与 agent Context 持久化改造设计。
-
-**`default`/`quick`/`deep` 是 `models` 配置模型选择 key**（不同模型/速度档位），**不是 agent 类型**，不要与 agent 概念混淆。聊天室由 `agent.default_model` 指定默认模型。
+**`default`/`quick`/`deep` 是 `agent.models` 配置的模型选择 key**（不同模型/速度档位），**不是 agent 类型**，不要与 agent 概念混淆。聊天室由 `agent.default_model` 指定默认模型。
 
 ## Web refactoring (`web/`)
 
@@ -391,7 +400,7 @@ Web 模块从单个 `web/app.py` 拆分为多文件结构：
 | `app.py` | FastAPI 工厂函数 `create_app()`，组装 lifespan / static / state / routers |
 | `news.py` | 新闻相关路由（hot-news / detail / trigger / refetch / SSE / sentiment） |
 | `agent.py` | Agent 聊天路由 + WebSocket |
-| `settings.py` | 设置页面路由（/settings, /settings/agents, /settings/knowledge, /settings/sources, /settings/models） |
+| `settings.py` | 设置面板路由：HTML 页面（/settings*）+ 系统设置/新闻源/模型 JSON API（/api/settings*, /api/models*） |
 | `background.py` | `BackgroundTaskRunner` — 通用后台任务执行器（ThreadPoolExecutor） |
 | `notification.py` | `NotificationState` — 内存通知系统 + SSE 分发 |
 | `config.py` | 模板渲染配置（Jinja2） |
@@ -425,7 +434,7 @@ To add a new site parser:
 | `test_agent_memory.py` | NullMemory / ShortTermMemory / LongTermMemory / PgMemoryStorage |
 | `test_agent_memory_integration.py` | PG 记忆持久化集成测试 |
 | `test_agent_routes.py` | Web agent 路由（页面 / sessions / messages API） |
-| `test_agent_session.py` | ChatTask 订阅/广播/审批、ChatSession agent 缓存/destroy、_forward 重连续推、_start_chat 防重入 |
+| `test_agent_session.py` | ChatTask 订阅/广播/审批、history_messages 就近+兜底、_drive 三种收尾、_forward snapshot 语义、_start_chat user 落库/防重入、_switch_agent freeze/activate、WS 集成 |
 | `test_agent_data.py` | AgentDefinition / AgentKnowledge dataclass 序列化 |
 | `test_agent_factory.py` | AgentFactory.build 从 AgentDefinition 构建完整 agent |
 | `test_agent_db.py` | Agent DB 操作（create/get/delete session, save/get messages） |
@@ -477,18 +486,19 @@ hub._clients["default"] = mock_client  # 注入 mock
 
 `PG_*`, `CLOUD_S3_*` (SQLite transfer), `RESOURCE_S3_*` (images/MinIO), `EMAIL_*`, `AI_API_*` (LLM，预留给 AgentAnalyzer), `WEB_HOST/PORT`, `CONFIG_PATH`.
 
-Agent 依赖 `config.yaml` 的 `models` 段，通过环境变量 `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` 注入 API key：
+Agent 依赖 `config.yaml` 的 `agent.models` 段，通过环境变量 `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` 注入 API key：
 
 ```yaml
-models:
-  default:
-    protocol: openai            # openai | anthropic
-    model: gpt-4o-mini
-    api_key: ${OPENAI_API_KEY}
-  quick:
-    protocol: openai
-    model: gpt-4o-mini
-    api_key: ${OPENAI_API_KEY}
+agent:
+  models:
+    default:
+      protocol: openai            # openai | anthropic
+      model: gpt-4o-mini
+      api_key: ${OPENAI_API_KEY}
+    quick:
+      protocol: openai
+      model: gpt-4o-mini
+      api_key: ${OPENAI_API_KEY}
 ```
 
-Daemon 仅在 `config["models"]` 存在时构建 Agent。Agent 路由始终注册（页面返回空状态提示）。
+Daemon 启动时构建 Agent（`agent.models` 必填）。Agent 路由始终注册。

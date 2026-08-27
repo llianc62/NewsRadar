@@ -31,26 +31,21 @@
 ## 3. main.py 改动
 
 ```python
-# main.py 中 create_app() 之前，条件构建 Agent
-agent = None
-if self.config.get("models"):
-    from agent.factory import create_agent
-    agent = await create_agent(
-        self.config["models"],
-        system_prompt="你是 NewsRadar 新闻助手",
-        register_mcp=True,
-    )
-
-# 通过 agent_instance 注入 Web 应用
+# main.py 中 create_app() 之前：启动 MCP Server + 构建 AgentFactory
+await self._start_mcp_server(mcp_cfg)          # 聊天室 agent 依赖 MCP
+tool_registry = setup_builtin_tools()
+agent_factory = AgentFactory(self.config["agent"]["models"], self.db,
+                             tool_registry, base_prompt=base_prompt)
 app = create_app(db, s3_config, queues=queues, crawler=crawler,
-                  agent_config=self.config, agent_instance=agent)
+                 agent_config=self.config, tool_registry=tool_registry,
+                 agent_factory=agent_factory, base_prompt=base_prompt)
 ```
 
-Agent 路由在 `create_app()` 中**始终**注册（`web/agent.py`），但 WebSocket 端点在没有模型配置时会返回"模型未配置"错误。
+Agent 路由在 `create_app()` 中**始终**注册（`web/agent.py`）。聊天室 agent 由 `_build_chat_agent` per-session 惰性构建，在没有模型配置时 WebSocket 端点返回"模型未配置"错误。
 
 ### 角色编排接线（Phase B/C）
 
-当 `config["personas"]` 非空时，额外构建 `PersonaOrchestrator` 挂 `app.state.persona_orchestrator`；`PersonaRegistry` 挂 `app.state.persona_registry` 供前端 `/api/agent/personas` 拉取。WebSocket chat 消息扩展 `persona`（单角色）/ `personas`（团队会诊）字段，`web/agent.py` 优先路由到 orchestrator/registry，降级单 `agent_instance`。详见 [persona.md](persona.md)。
+当 `config["personas"]` 非空时，额外构建 `PersonaOrchestrator` 挂 `app.state.persona_orchestrator`；`PersonaRegistry` 挂 `app.state.persona_registry` 供前端 `/api/agent/personas` 拉取。WebSocket chat 消息扩展 `persona`（单角色）/ `personas`（团队会诊）字段，`web/agent.py` 优先路由到 orchestrator/registry，降级到默认聊天 agent（`_build_chat_agent`）。详见 [persona.md](persona.md)。
 
 ---
 
