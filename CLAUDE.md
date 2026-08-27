@@ -150,8 +150,10 @@ All fetchers return `list[dict]` — flat list of standardised item dicts. Failu
 
 ### 失败重试系统
 
-- `failed_tasks` 表记录失败的 content_fetch 和 image_download，带 `max_retry` 和 `retry_count`
-- `retry_failed_tasks()` 查询 pending 任务，重试成功则标记 completed，失败则递增 retry_count
+- `failed_tasks` 表记录失败的 content_fetch 和 image_download，带 `max_retry` 和 `retry_times`，context 含 `error` 失败原因
+- `retry_failed_tasks()` 每轮开始先清理超过 `failure_retention_days`（默认 7 天）的过期任务（全状态），再重试 pending 任务，成功标记 completed，失败递增 retry_times（打满转 `failed` 永久排除）
+- 重试批量上限 `retry_batch_size`（默认 200），`ORDER BY created_at DESC` 新任务优先；重试循环 per-task 异常隔离，单条坏任务只跳过不炸整轮
+- `mark_failure_retried` 撞唯一键冲突（同 URL 已有另一条 pending）自动降级标 completed 让位
 - image 重试必须在 content 重试 + persist 之后执行（需要文章已在 DB 中才能 UPDATE 图片路径）
 
 ### Key modules

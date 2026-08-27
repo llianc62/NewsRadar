@@ -91,6 +91,11 @@ class Crawler:
         self.max_workers = cfg.get("max_workers", 8)
         self.timeout = cfg.get("timeout", 30)
         self.max_retry = cfg.get("max_retry", 3)
+        self.failure_retention_days = cfg.get("failure_retention_days", 7)
+
+        # Retry batch size - one retry round processes at most this many
+        # tasks per type, so a huge backlog cannot stall a crawl cycle.
+        self.retry_batch_size = cfg.get("retry_batch_size", 200)
 
         self.parser = parser
 
@@ -1030,6 +1035,7 @@ class Crawler:
             "guid": item.get("guid", ""),
             "mobile_url": item.get("mobile_url", ""),
             "published_at": item.get("published_at", ""),
+            "error": error,
         }
         try:
             pg = self._get_pg_db()
@@ -1070,12 +1076,19 @@ class Crawler:
     def _retry_content_fetch_failures(self) -> List[Dict[str, Any]]:
         """Retry previously failed content_fetch tasks.
 
-        Queries ``failed_tasks`` for pending content_fetch tasks, calls
+        Queries ``failed_tasks`` for pending content_fetch tasks (newest
+        first, capped at ``retry_batch_size``), calls
         ``_download_and_parse`` for each, and returns successfully
         retried items as dicts.
+
+        A single task's exception is isolated - it is logged and the
+        loop moves on, so one bad row cannot abort the whole round
+        (as happened with duplicate-key rows before per-task isolation).
         """
         pg = self._get_pg_db()
-        tasks = pg.get_pending_failures(task_type="content_fetch")
+        tasks = pg.get_pending_failures(
+            task_type="content_fetch", limit=self.retry_batch_size,
+        )
         if not tasks:
             return []
 
@@ -1083,47 +1096,64 @@ class Crawler:
         retried: List[Dict[str, Any]] = []
 
         for task in tasks:
-            ctx = task["context"]
-            url = ctx.get("url", "")
-            if not url:
-                pg.mark_failure_completed(task["id"])
+            try:
+                item = self._retry_one_content_fetch(pg, task)
+            except Exception as e:
+                print(f"[Crawler] Retry task {task.get('id')} error "
+                      f"(skipped, non-fatal): {e}")
                 continue
-
-            # Prevent duplicate download: check if article already has content
-            if pg.article_has_content(url):
-                pg.mark_failure_completed(task["id"])
-                print(f"[Crawler] Article already has content, skip retry: {url}")
-                continue
-
-            # Reconstruct item dict from context
-            item: Dict[str, Any] = {
-                "url": url,
-                "source_id": ctx.get("source_id", ""),
-                "source_type": ctx.get("source_type", ""),
-                "source_name": ctx.get("source_name", ""),
-                "title": ctx.get("title", ""),
-                "rank": ctx.get("rank", 0),
-                "guid": ctx.get("guid", ""),
-                "mobile_url": ctx.get("mobile_url", ""),
-                "published_at": ctx.get("published_at", ""),
-                "summary": "",
-                "author": "",
-                "content": "",
-                "category": "",
-                "tags": [],
-                "ranks": [],
-            }
-
-            success = self._download_and_parse(item)
-            if success:
-                pg.mark_failure_completed(task["id"])
+            if item is not None:
                 retried.append(item)
-                print(f"[Crawler] Retry success (content_fetch): {url}")
-            else:
-                pg.mark_failure_retried(task["id"], error="HTTP failed after retries")
-                print(f"[Crawler] Retry failed (content_fetch): {url}")
 
         return retried
+
+    def _retry_one_content_fetch(
+        self, pg: Any, task: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Retry a single content_fetch task.
+
+        Returns the item dict on success, ``None`` otherwise.
+        """
+        ctx = task["context"]
+        url = ctx.get("url", "")
+        if not url:
+            pg.mark_failure_completed(task["id"])
+            return None
+
+        # Prevent duplicate download: check if article already has content
+        if pg.article_has_content(url):
+            pg.mark_failure_completed(task["id"])
+            print(f"[Crawler] Article already has content, skip retry: {url}")
+            return None
+
+        # Reconstruct item dict from context
+        item: Dict[str, Any] = {
+            "url": url,
+            "source_id": ctx.get("source_id", ""),
+            "source_type": ctx.get("source_type", ""),
+            "source_name": ctx.get("source_name", ""),
+            "title": ctx.get("title", ""),
+            "rank": ctx.get("rank", 0),
+            "guid": ctx.get("guid", ""),
+            "mobile_url": ctx.get("mobile_url", ""),
+            "published_at": ctx.get("published_at", ""),
+            "summary": "",
+            "author": "",
+            "content": "",
+            "category": "",
+            "tags": [],
+            "ranks": [],
+        }
+
+        success = self._download_and_parse(item)
+        if success:
+            pg.mark_failure_completed(task["id"])
+            print(f"[Crawler] Retry success (content_fetch): {url}")
+            return item
+
+        pg.mark_failure_retried(task["id"], error="HTTP failed after retries")
+        print(f"[Crawler] Retry failed (content_fetch): {url}")
+        return None
 
     def _retry_image_download_failures(self) -> Dict[str, int]:
         """Retry previously failed image_download tasks.
@@ -1132,9 +1162,14 @@ class Crawler:
         new image path, and marks the task completed.
 
         Must be called AFTER articles are persisted.
+
+        Per-task exceptions are isolated - one bad task cannot abort
+        the whole round.
         """
         pg = self._get_pg_db()
-        tasks = pg.get_pending_failures(task_type="image_download")
+        tasks = pg.get_pending_failures(
+            task_type="image_download", limit=self.retry_batch_size,
+        )
         if not tasks:
             return {"total": 0, "success": 0}
 
@@ -1146,34 +1181,41 @@ class Crawler:
         success = 0
 
         for task in tasks:
-            ctx = task["context"]
-            url = ctx.get("url", "")
-            target_dir = ctx.get("target_dir", "")
+            try:
+                ctx = task["context"]
+                url = ctx.get("url", "")
+                target_dir = ctx.get("target_dir", "")
 
-            if not url:
-                pg.mark_failure_completed(task["id"])
+                if not url:
+                    pg.mark_failure_completed(task["id"])
+                    continue
+
+                result = processor.download(
+                    {url: {"target_dir": target_dir,
+                           "article_url": ctx.get("article_url", "")}},
+                    storage,
+                )
+                saved_path = result.get(url, "")
+
+                if saved_path:
+                    pg.mark_failure_completed(task["id"])
+                    success += 1
+
+                    # Update article content - replace old URL with new path
+                    article_ids = pg.find_articles_by_image_url(url)
+                    for article_id in article_ids:
+                        pg.update_article_image_url(
+                            article_id, url, saved_path)
+
+                    print(f"[Crawler] Retry success (image_download): {url}")
+                else:
+                    pg.mark_failure_retried(
+                        task["id"], error="Image download failed")
+                    print(f"[Crawler] Retry failed (image_download): {url}")
+            except Exception as e:
+                print(f"[Crawler] Retry task {task.get('id')} error "
+                      f"(skipped, non-fatal): {e}")
                 continue
-
-            result = processor.download(
-                {url: {"target_dir": target_dir,
-                       "article_url": ctx.get("article_url", "")}},
-                storage,
-            )
-            saved_path = result.get(url, "")
-
-            if saved_path:
-                pg.mark_failure_completed(task["id"])
-                success += 1
-
-                # Update article content — replace old URL with new path
-                article_ids = pg.find_articles_by_image_url(url)
-                for article_id in article_ids:
-                    pg.update_article_image_url(article_id, url, saved_path)
-
-                print(f"[Crawler] Retry success (image_download): {url}")
-            else:
-                pg.mark_failure_retried(task["id"], error="Image download failed")
-                print(f"[Crawler] Retry failed (image_download): {url}")
 
         return {"total": total, "success": success}
 
@@ -1192,6 +1234,17 @@ class Crawler:
             "image_retried": 0,
             "image_success": 0,
         }
+
+        # 0. Drop tasks older than the retention window - stale news is
+        # not worth retrying, and the table would grow without bound.
+        try:
+            deleted = self._get_pg_db().cleanup_expired_failures(
+                self.failure_retention_days)
+            if deleted:
+                print(f"[Crawler] Cleaned up {deleted} failed tasks older "
+                      f"than {self.failure_retention_days} days")
+        except Exception as e:
+            print(f"[Crawler] Failure cleanup error (non-fatal): {e}")
 
         # 1. Retry content_fetch failures
         try:

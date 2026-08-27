@@ -5,6 +5,8 @@ crawler:
   timeout: 30
   max_retry: 3
   max_workers: 20
+  failure_retention_days: 7  # failed_tasks 过期清理（天）
+  retry_batch_size: 200     # 每轮重试的失败任务上限（新任务优先）
   crawl_circle: 60        # 抓取新闻周期（分钟）
   sync_circle: 60         # 云端同步周期（分钟）
 

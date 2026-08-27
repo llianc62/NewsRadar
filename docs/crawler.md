@@ -49,9 +49,12 @@
 ## 失败重试
 
 `failed_tasks` 表记录失败的 `content_fetch` / `image_download` 任务。`retry_failed_tasks()` 在每轮 `fetch_all` 后自动执行：
-- 最大重试 3 次
+- 最大重试 3 次（`max_retry`）
 - 成功后标记 `completed`，耗尽标记 `failed`
 - 去重：`(task_type, url) WHERE status = 'pending'` 部分唯一索引
+- 过期清理：每轮重试前删除超过 `failure_retention_days`（默认 7 天）的任务，防止表无限膨胀
+- 批量上限：每轮每类型最多重试 `retry_batch_size`（默认 200）条，`ORDER BY created_at DESC` 新任务优先
+- 异常隔离：单条任务的异常（含唯一键冲突，自动降级标 completed 让位）只跳过该条，不中断整轮重试
 
 ## 关键词提取
 

@@ -339,7 +339,204 @@ class TestMarkFailureRetried:
         assert call_args[1][0] == 42  # task_id is the first param
 
 
-class TestFindArticlesByImageUrl:
+class TestCleanupExpiredFailures:
+    """Tests for PostgreSQL.cleanup_expired_failures."""
+
+    def test_cleanup_deletes_by_retention_days(self, pg_db, mock_conn_cursor):
+        """SQL deletes rows older than the retention window."""
+        mock_conn_cursor.rowcount = 12
+        deleted = pg_db.cleanup_expired_failures(7)
+        assert deleted == 12
+        call_args = mock_conn_cursor.execute.call_args[0]
+        sql = call_args[0]
+        assert "DELETE FROM failed_tasks" in sql
+        assert "created_at < NOW()" in sql
+        assert call_args[1][0] == 7
+
+    def test_cleanup_default_seven_days(self, pg_db, mock_conn_cursor):
+        """Default retention window is 7 days."""
+        mock_conn_cursor.rowcount = 0
+        pg_db.cleanup_expired_failures()
+        call_args = mock_conn_cursor.execute.call_args[0]
+        assert call_args[1][0] == 7
+
+    def test_cleanup_ignores_status(self, pg_db, mock_conn_cursor):
+        """Cleanup applies to all statuses - no status filter in SQL."""
+        mock_conn_cursor.rowcount = 0
+        pg_db.cleanup_expired_failures(3)
+        sql = mock_conn_cursor.execute.call_args[0][0]
+        assert "status" not in sql
+
+
+class TestGetPendingFailuresBatching:
+    """Tests for get_pending_failures ordering and limit."""
+
+    def test_limit_passed_to_sql(self, pg_db, mock_conn_cursor):
+        """limit is appended as LIMIT with the bound parameter."""
+        mock_conn_cursor.fetchall.return_value = []
+        pg_db.get_pending_failures(task_type="content_fetch", limit=200)
+        sql, params = mock_conn_cursor.execute.call_args[0]
+        assert "LIMIT %s" in sql
+        assert params[-1] == 200
+
+    def test_no_limit_without_param(self, pg_db, mock_conn_cursor):
+        """No LIMIT clause when limit is not given."""
+        mock_conn_cursor.fetchall.return_value = []
+        pg_db.get_pending_failures(task_type="content_fetch")
+        sql, _ = mock_conn_cursor.execute.call_args[0]
+        assert "LIMIT" not in sql
+
+    def test_newest_first_ordering(self, pg_db, mock_conn_cursor):
+        """Tasks are ordered newest-first so recent failures retry first."""
+        mock_conn_cursor.fetchall.return_value = []
+        pg_db.get_pending_failures(task_type="content_fetch")
+        sql = mock_conn_cursor.execute.call_args[0][0]
+        assert "ORDER BY created_at DESC" in sql
+
+
+class TestMarkFailureRetriedDowngrade:
+    """mark_failure_retried must survive unique-key violations."""
+
+    def test_unique_violation_downgrades_to_completed(self, pg_db, mock_conn_cursor):
+        """On UniqueViolation (duplicate pending task for same URL),
+        the row yields by being marked completed instead of raising."""
+        import psycopg2.errors
+
+        calls = []
+
+        def execute(sql, params=()):
+            calls.append(sql)
+            if "retry_times = retry_times + 1" in sql:
+                raise psycopg2.errors.UniqueViolation(
+                    "duplicate key value violates unique constraint "
+                    "\"idx_failed_tasks_dedup\"")
+
+        mock_conn_cursor.execute.side_effect = execute
+
+        # Should not raise - downgrades to completed
+        pg_db.mark_failure_retried(42, error="HTTP failed after retries")
+
+        assert any("SET status = 'completed'" in sql for sql in calls)
+        assert any("retry_times = retry_times + 1" in sql for sql in calls)
+
+    def test_other_exceptions_propagate(self, pg_db, mock_conn_cursor):
+        """Non-unique errors still raise for the caller to log."""
+        mock_conn_cursor.execute.side_effect = RuntimeError("db down")
+        with pytest.raises(RuntimeError):
+            pg_db.mark_failure_retried(42)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Crawler retry-loop isolation tests
+# ═══════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def mock_pg():
+    """MagicMock PostgreSQL backend for Crawler retry tests."""
+    return MagicMock()
+
+
+@pytest.fixture
+def retry_crawler(mock_pg):
+    """Crawler wired to a mock pg backend, no real I/O."""
+    from news.crawler import Crawler
+
+    config = {
+        "crawler": {
+            "max_workers": 2, "timeout": 30, "max_retry": 3,
+            "retry_batch_size": 50,
+            "newsnow": {"sources": []}, "rss": {"sources": []},
+        },
+        "storage": {},
+        "app": {"timezone": "UTC"},
+    }
+    crawler = Crawler(config, pg_db=mock_pg)
+    return crawler
+
+
+def _task(task_id, url):
+    return {
+        "id": task_id,
+        "task_type": "content_fetch",
+        "context": {"url": url, "source_id": "test", "title": "t"},
+        "retry_times": 0,
+        "max_retry": 3,
+        "last_retry": None,
+        "status": "pending",
+        "created_at": "2026-08-27 10:00:00",
+        "updated_at": "2026-08-27 10:00:00",
+    }
+
+
+class TestRetryLoopIsolation:
+    """One bad task must not abort the whole retry round."""
+
+    def test_content_retry_continues_past_bad_task(self, retry_crawler, mock_pg):
+        """A task raising during processing is skipped, the next one
+        still runs (regression: duplicate-key rows used to kill the
+        whole loop at the first task)."""
+        tasks = [_task(1, "https://example.com/bad"), _task(2, "https://example.com/good")]
+        mock_pg.get_pending_failures.return_value = tasks
+
+        def has_content(url):
+            if url.endswith("/bad"):
+                raise RuntimeError("boom")
+            return False
+
+        mock_pg.article_has_content.side_effect = has_content
+        retry_crawler._download_and_parse = MagicMock(return_value=True)
+
+        retried = retry_crawler._retry_content_fetch_failures()
+
+        assert len(retried) == 1
+        assert retried[0]["url"] == "https://example.com/good"
+        mock_pg.mark_failure_completed.assert_called_once_with(2)
+
+    def test_content_retry_uses_batch_limit(self, retry_crawler, mock_pg):
+        """get_pending_failures is called with the configured batch size."""
+        mock_pg.get_pending_failures.return_value = []
+        retry_crawler._retry_content_fetch_failures()
+        mock_pg.get_pending_failures.assert_called_once_with(
+            task_type="content_fetch", limit=50,
+        )
+
+    def test_image_retry_continues_past_bad_task(self, retry_crawler, mock_pg):
+        """Image retry loop also isolates per-task exceptions."""
+        tasks = [_task(1, "https://example.com/img1.jpg")]
+        mock_pg.get_pending_failures.return_value = tasks
+        processor = MagicMock()
+        processor.download.side_effect = RuntimeError("boom")
+        retry_crawler._get_image_processor = MagicMock(return_value=processor)
+
+        result = retry_crawler._retry_image_download_failures()
+
+        assert result == {"total": 1, "success": 0}
+
+    def test_retry_failed_tasks_cleans_up_expired_first(self, retry_crawler, mock_pg):
+        """retry_failed_tasks invokes cleanup_expired_failures each cycle."""
+        mock_pg.cleanup_expired_failures.return_value = 5
+        mock_pg.get_pending_failures.return_value = []
+
+        result = retry_crawler.retry_failed_tasks()
+
+        mock_pg.cleanup_expired_failures.assert_called_once_with(7)
+        assert result["content_retried"] == 0
+
+
+class TestRecordFailureContext:
+    """Failure records should carry the error message for debugging."""
+
+    def test_error_recorded_in_context(self, retry_crawler, mock_pg):
+        """_record_content_fetch_failure stores the error string."""
+        mock_pg.record_failure.return_value = 1
+        item = {"url": "https://example.com/x", "source_id": "test"}
+
+        retry_crawler._record_content_fetch_failure(item, "404 Not Found")
+
+        context = mock_pg.record_failure.call_args[0][1]
+        assert context["error"] == "404 Not Found"
+
     """Tests for PostgreSQL.find_articles_by_image_url."""
 
     def test_find_articles_by_image_url_found(self, pg_db, mock_conn_cursor):

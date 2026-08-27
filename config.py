@@ -67,6 +67,8 @@ def _load_crawler_config(raw: Dict) -> Dict:
         "sync_interval_minutes": crawler.get("sync_interval_minutes", 60),
         "max_retry": _get_env_int("CRAWLER_MAX_RETRY")
         or crawler.get("max_retry", 3),
+        "failure_retention_days": crawler.get("failure_retention_days", 7),
+        "retry_batch_size": crawler.get("retry_batch_size", 200),
         "max_workers": crawler.get("max_workers", 8),
         "timeout": crawler.get("timeout", 30),
         "newsnow": _load_newsnow_config(raw),

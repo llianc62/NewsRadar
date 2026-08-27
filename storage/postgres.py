@@ -1714,34 +1714,35 @@ class PostgreSQL:
     def get_pending_failures(
         self,
         task_type: Optional[str] = None,
+        limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Return pending failed tasks where retry_times < max_retry.
 
+        Newest tasks come first so recent failures are retried before
+        older ones; tasks older than the retention window are cleaned
+        up by :meth:`cleanup_expired_failures` instead of retried.
+
         Args:
             task_type: Optional filter.  When ``None``, returns all types.
+            limit: Optional cap on the number of tasks returned.
         """
+        sql = """SELECT id, task_type, context, retry_times, max_retry,
+                        last_retry, status, created_at, updated_at
+                 FROM failed_tasks
+                 WHERE status = 'pending'
+                   AND retry_times < max_retry"""
+        params: list = []
+        if task_type:
+            sql += " AND task_type = %s"
+            params.append(task_type)
+        sql += " ORDER BY created_at DESC"
+        if limit is not None:
+            sql += " LIMIT %s"
+            params.append(limit)
+
         with self.get_conn() as conn:
             with conn.cursor() as cur:
-                if task_type:
-                    cur.execute(
-                        """SELECT id, task_type, context, retry_times, max_retry,
-                                  last_retry, status, created_at, updated_at
-                           FROM failed_tasks
-                           WHERE status = 'pending'
-                             AND retry_times < max_retry
-                             AND task_type = %s
-                           ORDER BY created_at""",
-                        (task_type,),
-                    )
-                else:
-                    cur.execute(
-                        """SELECT id, task_type, context, retry_times, max_retry,
-                                  last_retry, status, created_at, updated_at
-                           FROM failed_tasks
-                           WHERE status = 'pending'
-                             AND retry_times < max_retry
-                           ORDER BY created_at"""
-                    )
+                cur.execute(sql, tuple(params))
                 rows = cur.fetchall()
                 return [
                     {
@@ -1794,23 +1795,51 @@ class PostgreSQL:
 
         If retry_times reaches max_retry after increment, set status to
         ``'failed'`` (permanent).
+
+        A unique violation on ``idx_failed_tasks_dedup`` means another
+        pending task for the same URL already exists - downgrades to
+        ``completed`` so this row yields instead of crashing the retry
+        loop.
+        """
+        try:
+            with self.get_conn() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """UPDATE failed_tasks
+                           SET retry_times = retry_times + 1,
+                               last_retry = NOW(),
+                               updated_at = NOW(),
+                               status = CASE
+                                   WHEN retry_times + 1 >= max_retry
+                                   THEN 'failed'
+                                   ELSE 'pending'
+                               END
+                           WHERE id = %s
+                             AND status = 'pending'""",
+                        (task_id,),
+                    )
+        except psycopg2.errors.UniqueViolation:
+            print(f"[DB] Duplicate pending task for id={task_id}, "
+                  f"marking completed instead")
+            self.mark_failure_completed(task_id)
+
+    def cleanup_expired_failures(self, retention_days: int = 7) -> int:
+        """Delete failed tasks older than *retention_days* (any status).
+
+        Old tasks are stale news - retrying them is pointless, and the
+        ``failed_tasks`` table would otherwise grow without bound.
+
+        Returns:
+            Number of rows deleted.
         """
         with self.get_conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """UPDATE failed_tasks
-                       SET retry_times = retry_times + 1,
-                           last_retry = NOW(),
-                           updated_at = NOW(),
-                           status = CASE
-                               WHEN retry_times + 1 >= max_retry
-                               THEN 'failed'
-                               ELSE 'pending'
-                           END
-                       WHERE id = %s
-                         AND status = 'pending'""",
-                    (task_id,),
+                    """DELETE FROM failed_tasks
+                       WHERE created_at < NOW() - (%s * INTERVAL '1 day')""",
+                    (retention_days,),
                 )
+                return cur.rowcount
 
     def find_articles_by_image_url(self, image_url: str) -> List[int]:
         """Return article IDs whose content contains *image_url*."""
