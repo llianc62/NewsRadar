@@ -33,6 +33,48 @@ class TestHuxiuParserPreprocess:
         assert result == html
 
 
+class TestHuxiuParserCanonical:
+    """article__canonical 是虎嗅文末的"文章标题/文章链接/阅读原文"
+    跳转卡片,不属于正文,应在 _preprocess 中移除。"""
+
+    def test_removes_article_canonical_card(self):
+        html = (
+            '<html><body>'
+            '<div class="article-wrap">'
+            '<div class="article__content"><p>正文第一段。</p></div>'
+            '<div class="article__canonical">'
+            '<p>文章标题：测试文章</p>'
+            '<p>文章链接：https://www.huxiu.com/article/1.html</p>'
+            '<a href="https://www.huxiu.com/article/1.html">阅读原文：测试文章_虎嗅网</a>'
+            '</div>'
+            '</div>'
+            '</body></html>'
+        )
+        parser = HuxiuParser()
+        result = parser._preprocess(html, "")
+        assert "article__canonical" not in result
+        assert "阅读原文" not in result
+        assert "正文第一段。" in result
+
+    def test_canonical_with_extra_classes_removed(self):
+        html = (
+            '<div class="article__canonical extra-class">'
+            '<p>文章标题：测试</p>'
+            '</div>'
+            '<p>正文</p>'
+        )
+        parser = HuxiuParser()
+        result = parser._preprocess(html, "")
+        assert "article__canonical" not in result
+        assert "正文" in result
+
+    def test_html_without_canonical_keeps_body(self):
+        html = '<html><body><div class="article__content"><p>正文</p></div></body></html>'
+        parser = HuxiuParser()
+        result = parser._preprocess(html, "")
+        assert "正文" in result
+
+
 class TestHuxiuParserParse:
     def test_parse_empty_returns_none(self):
         parser = HuxiuParser()

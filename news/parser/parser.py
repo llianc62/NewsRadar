@@ -189,7 +189,13 @@ class HtmlParser:
         """Markdown 后处理：合并浮动图标段落 + 格式化 + 截断 H1 前噪声。"""
         markdown = self._beautify_markdown_formatting(markdown)
 
-        # Trim lines before H1 (page header noise)
+        # Trim lines before H1 (page header noise).
+        #
+        # Guard: only trim when the pre-H1 portion is the minority of the
+        # content.  Page-header noise is a few lines before the article
+        # title; but the first H1 can also appear at the END of the
+        # markdown (e.g. huxiu authors paste a "# 推广文案" line after
+        # the body) - trimming there would destroy the whole article.
         lines = markdown.split("\n")
         in_fence = False
         h1_line_idx: int | None = None
@@ -201,7 +207,10 @@ class HtmlParser:
                 h1_line_idx = i
                 break
         if h1_line_idx is not None and h1_line_idx > 0:
-            markdown = "\n".join(lines[h1_line_idx:])
+            prefix_len = sum(len(l) for l in lines[:h1_line_idx])
+            suffix_len = sum(len(l) for l in lines[h1_line_idx:])
+            if prefix_len < suffix_len:
+                markdown = "\n".join(lines[h1_line_idx:])
 
         return markdown.strip()
 
