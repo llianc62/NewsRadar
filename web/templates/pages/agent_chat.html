@@ -167,10 +167,7 @@
   function connectWS() {
     var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     var url = protocol + '//' + location.host + '/api/agent/ws';
-    var params = [];
-    if (currentAgentId) params.push('agent_id=' + encodeURIComponent(currentAgentId));
-    if (sessionId) params.push('session_id=' + encodeURIComponent(sessionId));
-    if (params.length) url += '?' + params.join('&');
+    if (sessionId) url += '?session_id=' + encodeURIComponent(sessionId);
     ws = new WebSocket(url);
 
     ws.onopen = function() { console.log('[WS] connected'); };
@@ -187,11 +184,12 @@
 
   function handleMessage(data) {
     switch (data.type) {
+      case 'snapshot': handleSnapshot(data); break;
       case 'token': appendToken(data.content); break;
-      case 'resume': resumeMessage(data.full_reply || ''); break;
       case 'done':  finishMessage(data); break;
       case 'error': showError(data.message); break;
       case 'tool_approval_request': showApprovalDialog(data); break;
+      case 'switch_ack': break;   // 卡片状态已在点击时乐观更新
     }
   }
 
@@ -209,19 +207,81 @@
     return currentBubble;
   }
 
-  function resumeMessage(fullReply) {
-    setGenerating(true);
-    var bubble = ensureBubble();
-    var content = bubble.querySelector('.bubble-content');
-    if (fullReply) {
-      content.innerHTML = '<div class="reply-text"></div>';
-      content.querySelector('.reply-text').textContent = fullReply;
+  // ── snapshot: 连接/切换会话时的全量重绘 ──
+  function renderHistory(msgs) {
+    messagesEl.innerHTML = '';
+    msgs.forEach(function(m) {
+      var el = document.createElement('div');
+      if (m.role === 'user') {
+        el.className = 'chat-bubble user';
+        el.innerHTML =
+          '<div class="bubble-avatar">' + USER_SVG + '</div>' +
+          '<div class="bubble-content">' + escapeHtml(m.content) + '</div>';
+      } else {
+        el.className = 'chat-bubble assistant';
+        var html = m.content || '';
+        try { html = marked.parse(html); } catch (e) { /* ignore */ }
+        el.innerHTML =
+          '<div class="bubble-avatar">' + SPARKLE_SVG + '</div>' +
+          '<div class="bubble-content">' + html + '</div>';
+      }
+      messagesEl.appendChild(el);
+    });
+  }
+
+  function handleSnapshot(data) {
+    renderHistory(data.messages || []);
+    currentBubble = null;
+    if (data.running) {
+      setGenerating(true);
+      if (data.partial) {
+        // 运行中任务:以 partial 起一个流式气泡,后续 token 续推
+        var bubble = ensureBubble();
+        var content = bubble.querySelector('.bubble-content');
+        content.innerHTML = '';
+        var reply = document.createElement('div');
+        reply.className = 'reply-text';
+        reply.dataset.raw = data.partial;
+        try { reply.innerHTML = marked.parse(data.partial); } catch (e) {}
+        content.appendChild(reply);
+      } else {
+        showTyping();
+      }
       scrollToBottom();
     } else {
-      // 尚无内容，显示 typing 占位
-      content.innerHTML = '<div class="typing-dots"><span></span><span></span><span></span></div>';
-      scrollToBottom();
+      setGenerating(false);
+      if (!(data.messages || []).length) showEmptyState();
     }
+    // snapshot.agent 为后端 current_key,同步角色选中态
+    if (typeof data.agent === 'string') {
+      currentAgentId = data.agent.startsWith('agent:') ? data.agent.slice(6) : '';
+      refreshAgentCardStates();
+      updateAgentHint();
+    }
+  }
+
+  function showEmptyState() {
+    var empty = document.getElementById('chat-empty');
+    if (empty) return;
+    empty = document.createElement('div');
+    empty.className = 'chat-empty';
+    empty.id = 'chat-empty';
+    empty.innerHTML = '<div class="chat-empty-avatar">' + SPARKLE_SVG + '</div>'
+      + '<div class="chat-empty-title">有什么想了解的？</div>'
+      + '<div class="chat-empty-desc">问我任何关于市场热点、个股动态或行业趋势的问题，我会基于 NewsRadar 的新闻数据为你分析。</div>'
+      + '<div class="chat-suggestions">'
+      + '<button class="chat-suggestion" data-prompt="今天市场有什么热点？">今天市场有什么热点？</button>'
+      + '<button class="chat-suggestion" data-prompt="帮我分析一下当前的舆论情绪">帮我分析一下当前的舆论情绪</button>'
+      + '<button class="chat-suggestion" data-prompt="最近有哪些值得关注的个股动态？">最近有哪些值得关注的个股动态？</button>'
+      + '</div>';
+    messagesEl.appendChild(empty);
+    empty.querySelectorAll('.chat-suggestion').forEach(function(chip) {
+      chip.addEventListener('click', function() {
+        inputEl.value = chip.dataset.prompt;
+        inputEl.focus();
+        inputEl.dispatchEvent(new Event('input'));
+      });
+    });
   }
 
   function showTyping() {
@@ -236,39 +296,54 @@
     scrollToBottom();
   }
 
+  // ── 流式 token:累积 raw + rAF 节流渲染 markdown ──
+  var renderQueued = false;
+
   function appendToken(token) {
     var bubble = ensureBubble();
     var content = bubble.querySelector('.bubble-content');
     var reply = content.querySelector('.reply-text');
-    if (reply) {
-      reply.textContent += token;
-    } else {
+    if (!reply) {
       if (content.querySelector('.typing-dots')) content.innerHTML = '';
-      content.textContent += token;
+      reply = document.createElement('div');
+      reply.className = 'reply-text';
+      reply.dataset.raw = '';
+      content.appendChild(reply);
+      // 首个 token 到达时后端已落库 user 消息(首条会把"新会话"改为摘要),立即刷新侧栏
+      loadSessions();
     }
+    reply.dataset.raw += token;
+    scheduleMarkdownRender(reply);
     scrollToBottom();
+  }
+
+  function scheduleMarkdownRender(reply) {
+    if (renderQueued) return;
+    renderQueued = true;
+    requestAnimationFrame(function() {
+      renderQueued = false;
+      try { reply.innerHTML = marked.parse(reply.dataset.raw || ''); }
+      catch (e) { /* ignore */ }
+    });
   }
 
   function finishMessage(data) {
     if (currentBubble) {
-      var content = currentBubble.querySelector('.bubble-content');
-      var reply = content.querySelector('.reply-text');
+      var reply = currentBubble.querySelector('.reply-text');
       if (reply) {
-        try {
-          reply.innerHTML = marked.parse(reply.textContent);
-        } catch (e) { /* ignore */ }
-      } else if (content.querySelector('.typing-dots')) {
-        currentBubble.remove();
+        if (data && data.full_reply != null) {
+          reply.dataset.raw = data.full_reply;   // done 以服务端为准
+        }
+        try { reply.innerHTML = marked.parse(reply.dataset.raw || ''); }
+        catch (e) { /* ignore */ }
       } else {
-        try {
-          content.innerHTML = marked.parse(content.textContent);
-        } catch (e) { /* ignore */ }
+        var content = currentBubble.querySelector('.bubble-content');
+        if (content.querySelector('.typing-dots')) currentBubble.remove();
       }
     }
     currentBubble = null;
     setGenerating(false);
-    // 刷新会话列表：首轮对话后后端会把 title 从"新会话"更新为消息摘要，
-    // 此处 reload 让左侧列表实时反映新标题（done 事件在 _finalize 落库后发出）。
+    // 刷新会话列表：首轮对话后后端会把 title 从"新会话"更新为消息摘要
     loadSessions();
   }
 
@@ -436,11 +511,14 @@
         return;
       }
       if (sid === sessionId) {
-        // 当前会话被删除 → 新建一个
+        // 当前会话被删除 -> 新建一个(清画布 + 重连,与新建会话同语义)
         sessionId = null;
         messagesEl.innerHTML = '';
         currentBubble = null;
+        setGenerating(false);
         await createSession();
+        showEmptyState();
+        reconnectWS();
       }
       loadSessions();
     } catch (e) {
@@ -454,55 +532,9 @@
     document.querySelectorAll('.session-list-item').forEach(function(item) {
       item.classList.toggle('active', item.dataset.sid === sid);
     });
-    messagesEl.innerHTML = '';
-    var empty = document.createElement('div');
-    empty.className = 'chat-empty';
-    empty.id = 'chat-empty';
-    empty.innerHTML = '<div class="chat-empty-avatar">' + SPARKLE_SVG + '</div>'
-      + '<div class="chat-empty-title">会话已切换</div>'
-      + '<div class="chat-empty-desc">开始新对话</div>';
-    messagesEl.appendChild(empty);
     currentBubble = null;
-    loadMessages(sid);
-    reconnectWS();  // 带新 session_id 重连，触发进行中任务恢复
-  }
-
-  async function loadMessages(sid) {
-    try {
-      var resp = await fetch('/api/agent/sessions/' + sid + '/messages');
-      var data = await resp.json();
-      var empty = document.getElementById('chat-empty');
-      if (data.messages && data.messages.length > 0) {
-        if (empty) empty.remove();
-        data.messages.forEach(function(m) {
-          var el = document.createElement('div');
-          if (m.role === 'user') {
-            el.className = 'chat-bubble user';
-            el.innerHTML =
-              '<div class="bubble-avatar">' + USER_SVG + '</div>' +
-              '<div class="bubble-content">' + escapeHtml(m.content) + '</div>';
-          } else {
-            el.className = 'chat-bubble assistant';
-            var contentHtml = m.content;
-            try {
-              contentHtml = marked.parse(m.content);
-            } catch (e) { /* ignore */ }
-            var agentLabel = '';
-            if (m.agent_id && m.agent_id !== '0') {
-              var name = agentNames[m.agent_id] || '智能体';
-              agentLabel = '<div class="bubble-agent-label">' + escapeHtml(name) + '</div>';
-            }
-            el.innerHTML =
-              '<div class="bubble-avatar">' + SPARKLE_SVG + '</div>' +
-              '<div class="bubble-content">' + agentLabel + contentHtml + '</div>';
-          }
-          messagesEl.appendChild(el);
-        });
-        scrollToBottom();
-      }
-    } catch (e) {
-      console.error('[messages] load error', e);
-    }
+    setGenerating(false);
+    reconnectWS();  // 带新 session_id 连接 -> 后端发 snapshot -> 全量重绘
   }
 
   // ── 智能体列表 ──
@@ -561,12 +593,18 @@
       card.addEventListener('click', function() {
         if (isGenerating) return;
         var aid = card.dataset.agentId;
-        if (currentAgentId !== aid) {
-          currentAgentId = aid;
-          reconnectWS();
-        }
+        if (currentAgentId === aid) return;
+        currentAgentId = aid;
         refreshAgentCardStates();
         updateAgentHint();
+        // 显式 switch(点击触发,轮间):后端 freeze 旧 -> activate 新
+        if (sessionId && ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            type: 'switch',
+            session_id: sessionId,
+            agent_id: aid,
+          }));
+        }
       });
     });
   }
@@ -589,8 +627,7 @@
         // 高亮第一个会话
         var items = document.querySelectorAll('.session-list-item');
         if (items.length) items[0].classList.add('active');
-        // 复用现有会话 → 加载历史消息
-        loadMessages(sessionId);
+        // 复用现有会话(历史由 WS snapshot 渲染)
       } else {
         await createSession();
       }
@@ -664,27 +701,13 @@
   document.getElementById('new-session-btn').addEventListener('click', async function() {
     if (isGenerating) return;
     await createSession();
-    messagesEl.innerHTML = '';
-    var empty = document.createElement('div');
-    empty.className = 'chat-empty';
-    empty.id = 'chat-empty';
-    empty.innerHTML = '<div class="chat-empty-avatar">' + SPARKLE_SVG + '</div>'
-      + '<div class="chat-empty-title">有什么想了解的？</div>'
-      + '<div class="chat-empty-desc">问我任何关于市场热点、个股动态或行业趋势的问题，我会基于 NewsRadar 的新闻数据为你分析。</div>'
-      + '<div class="chat-suggestions">'
-      + '<button class="chat-suggestion" data-prompt="今天市场有什么热点？">今天市场有什么热点？</button>'
-      + '<button class="chat-suggestion" data-prompt="帮我分析一下当前的舆论情绪">帮我分析一下当前的舆论情绪</button>'
-      + '<button class="chat-suggestion" data-prompt="最近有哪些值得关注的个股动态？">最近有哪些值得关注的个股动态？</button>'
-      + '</div>';
-    messagesEl.appendChild(empty);
+    // 清空画布 + 带新 session_id 重连(与 switchSession 同一语义):
+    // 后端发空 snapshot -> 全量重绘 + 重置 agent 选中态,不再残留旧会话内容
     currentBubble = null;
-    document.querySelectorAll('.chat-suggestion').forEach(function(chip) {
-      chip.addEventListener('click', function() {
-        inputEl.value = chip.dataset.prompt;
-        inputEl.focus();
-        inputEl.dispatchEvent(new Event('input'));
-      });
-    });
+    setGenerating(false);
+    messagesEl.innerHTML = '';
+    showEmptyState();
+    reconnectWS();
   });
 
   // ── 工具授权弹窗 ──
