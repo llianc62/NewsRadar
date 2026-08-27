@@ -193,11 +193,15 @@ def _load_analyzer_config(raw: Dict) -> Dict:
     }
 
 
-def _load_models_config(raw: Dict) -> dict:
-    """加载 models 配置段 — key 为别名，value 为 {protocol, model, api_key, base_url}。"""
-    models_raw = raw.get("models", {})
+def _load_models_config(agent_section: Dict) -> dict:
+    """加载 ``agent.models`` 配置段 - key 为别名，value 为 {protocol, model, api_key, base_url}。
+
+    Args:
+        agent_section: ``raw["agent"]`` dict，含 ``models`` 子段。
+    """
+    models_raw = agent_section.get("models", {})
     if not models_raw:
-        raise ValueError("models 段未配置，至少需要一个模型")
+        raise ValueError("agent.models 段未配置，至少需要一个模型")
 
     result = {}
     for name, cfg in models_raw.items():
@@ -222,11 +226,12 @@ def _load_agent_config(raw: dict) -> dict:
         "memory_enabled": agent.get("memory_enabled", True),
         "compression_strategy": agent.get("compression_strategy", "window"),
         "default_model": agent.get("default_model", "quick"),
+        "models": _load_models_config(agent),
     }
 
 
 def _load_knowledge_config(raw: Dict) -> Dict:
-    """加载 knowledge 配置段 - pgvector 知识库（独立于 models 段）。
+    """加载 knowledge 配置段 - pgvector 知识库（独立于 agent.models 段）。
 
     DeepSeek 无 embedding 端点，故 embedding 用独立 base_url/api_key/model。
     默认 ``enabled: False``（需 pgvector 扩展 + embedding API key 才可用）。
@@ -304,7 +309,6 @@ def load_config(path: str = "config/config.yaml") -> Dict[str, Any]:
         "postgresql": _load_postgresql_config(raw),
         "web": _load_web_config(raw),
         "analyzer": _load_analyzer_config(raw),
-        "models": _load_models_config(raw),
         "agent": _load_agent_config(raw),
         "knowledge": _load_knowledge_config(raw),
         "mcp_server": _load_mcp_server_config(raw),

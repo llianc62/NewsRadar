@@ -337,28 +337,29 @@ web:
   host: "0.0.0.0"
   port: 8000
 
-models:
-  default:
-    protocol: openai
-    model: deepseek-v4-flash
-    base_url: "https://api.deepseek.com"
-    api_key: ""
-  quick:
-    protocol: openai
-    model: deepseek-v4-flash
-    base_url: "https://api.deepseek.com"
-    api_key: ""
-  deep:
-    protocol: anthropic
-    model: deepseek-v4-pro
-    base_url: "https://api.deepseek.com/anthropic"
-    api_key: ""
-
 agent:
   window_size: 10
   memory_enabled: true
   compression_strategy: window
   default_model: quick
+  # 模型配置 - key 为别名(default/quick/deep)，value 为 {protocol, model, base_url, api_key}。
+  # env 覆盖：MODELS_<NAME>_MODEL / _BASE_URL / _API_KEY。必填，缺失时 load_config 报错。
+  models:
+    default:
+      protocol: openai
+      model: deepseek-v4-flash
+      base_url: "https://api.deepseek.com"
+      api_key: ""
+    quick:
+      protocol: openai
+      model: deepseek-v4-flash
+      base_url: "https://api.deepseek.com"
+      api_key: ""
+    deep:
+      protocol: anthropic
+      model: deepseek-v4-pro
+      base_url: "https://api.deepseek.com/anthropic"
+      api_key: ""
 
 # MCP 新闻服务 — 独立 HTTP 服务，提供 search_news/get_hot_topics 等工具。
 # Agent 通过 SSE 长连接调用，每个 agent 独立连接，天然支持并发。

@@ -9,25 +9,25 @@ from fastapi.testclient import TestClient
 def config_with_llm():
     """LLM config fixture for agent routes registration."""
     return {
-        "models": {
-            "deep": {
-                "protocol": "anthropic",
-                "model": "claude-sonnet-5",
-                "api_key": "test-key",
-                "base_url": "",
-            },
-            "quick": {
-                "protocol": "openai",
-                "model": "qwen-plus",
-                "api_key": "test-key",
-                "base_url": "",
-            },
-        },
         "agent": {
             "window_size": 10,
             "memory_enabled": True,
             "compression_strategy": "window",
             "default_model": "quick",
+            "models": {
+                "deep": {
+                    "protocol": "anthropic",
+                    "model": "claude-sonnet-5",
+                    "api_key": "test-key",
+                    "base_url": "",
+                },
+                "quick": {
+                    "protocol": "openai",
+                    "model": "qwen-plus",
+                    "api_key": "test-key",
+                    "base_url": "",
+                },
+            },
         },
     }
 
@@ -122,7 +122,7 @@ def agent_crud_client(db, config_with_llm, mock_cursor):
 
     tool_registry = setup_builtin_tools()
     agent_factory = AgentFactory(
-        config_with_llm["models"],
+        config_with_llm["agent"]["models"],
         db,
         tool_registry,
     )

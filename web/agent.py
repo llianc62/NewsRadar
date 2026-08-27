@@ -27,19 +27,22 @@ router = APIRouter()
 # ── WebSocket connection pool ──
 _ws_clients: dict[int, WebSocket] = {}
 
+_sessions: dict[int, ChatSession] = {}
+
 SESSION_COOKIE = "newsradar_session"
 
 
 @dataclasses.dataclass
 class ChatTask:
-    """进行中的对话任务 -- 与 WebSocket 解耦。
+    """单轮对话任务运行时 -- 与 WebSocket 解耦。
 
-    token/done/error 通过 broadcast 推给当前在线的 WS 订阅者；
-    WS 断开只退订，不取消任务。审批也走订阅通道，不绑 WS。
+    ``buffer`` 累积本轮 partial(消费 chat_stream 时先累积后广播,轮结束作废;
+    完成态权威在 agent ctx / DB)。token/done/error 通过 broadcast 推给当前
+    在线的 WS 订阅者;WS 断开只退订,不取消任务。审批也走订阅通道,不绑 WS。
     """
     session_id: int
     task: "asyncio.Task | None" = None
-    full_reply: str = ""
+    buffer: str = ""
     error: str = ""
     done: bool = False
     stopped: bool = False
@@ -94,13 +97,17 @@ class ChatTask:
 
 @dataclasses.dataclass
 class ChatSession:
-    """单会话运行时 -- 托管该会话用过的 agent 与进行中任务。
+    """单会话运行时 -- agent 管理 + 本轮任务 + 历史读取。
 
     Agent 跟随 session 生命周期：session 不删除则 agent 不清理。
-    一个 session 可持有多个 agent（切换角色时各自构建并缓存）。
+    ``current_agent`` 为当前执行体(切换时换人);``chat_task`` 为本轮任务
+    (防重入:同时最多一轮)。``db`` 仅两用:user 落库 + 历史兜底读取。
     """
     session_id: int
+    db: Any = None
     agents: dict[str, Any] = dataclasses.field(default_factory=dict)
+    current_agent: Any = None
+    current_key: str = ""
     chat_task: ChatTask | None = None
 
     def get_agent(self, key: str, build_fn: Callable[[], Any]) -> Any:
@@ -109,21 +116,37 @@ class ChatSession:
             self.agents[key] = build_fn()
         return self.agents[key]
 
+    async def history_messages(self) -> list[dict]:
+        """有序对话记录 -- 就近读取:current_agent 优先,None/异常/空兜底 DB。"""
+        if self.current_agent is not None:
+            try:
+                msgs = self.current_agent.get_conversation()
+                if msgs:
+                    return msgs
+            except Exception:
+                pass  # agent 读取异常 -> 兜底 DB
+        if self.db is None:
+            return []
+        try:
+            rows = await asyncio.to_thread(
+                self.db.get_agent_messages, self.session_id, 50)
+            return [{"role": r["role"], "content": r["content"]} for r in rows]
+        except Exception:
+            return []
+
     def destroy(self) -> None:
         """session 删除时清理：取消进行中任务 + 清空 agent 缓存。"""
         if self.chat_task and not self.chat_task.done and self.chat_task.task:
             self.chat_task.task.cancel()
         self.agents.clear()
+        self.current_agent = None
         self.chat_task = None
 
 
-_sessions: dict[int, ChatSession] = {}
-
-
-def get_session(session_id: int) -> ChatSession:
+def get_session(session_id: int, db: Any = None) -> ChatSession:
     """命中返回，未命中新建空壳 ChatSession（agent 惰性构建）。"""
     if session_id not in _sessions:
-        _sessions[session_id] = ChatSession(session_id=session_id)
+        _sessions[session_id] = ChatSession(session_id=session_id, db=db)
     return _sessions[session_id]
 
 
@@ -143,7 +166,7 @@ def _parse_int_sid(raw: str) -> int | None:
     return sid if sid >= 1 else None
 
 
-async def _run_chat(
+async def _drive(
     sess: ChatSession,
     ct: ChatTask,
     agent,
@@ -151,23 +174,25 @@ async def _run_chat(
     session_id: int,
     model_name: str,
 ) -> None:
-    """后台运行 agent.chat_stream，token 累积到 ct.full_reply 并广播给订阅者。
+    """泵 agent.chat_stream -- buffer 累积 + 广播给订阅者。
 
-    CancelledError（用户 stop）-> stopped=True + broadcast done(stopped) + return 不 re-raise
-    （executor 的 finally _finalize 已执行 memory.save）。
+    先累积后广播(同一同步步骤)保证 _forward 快照不重不漏。
+    assistant 落库由 agent 内部 _finalize;CancelledError(用户 stop)
+    -> stopped=True + broadcast done(stopped) + return 不 re-raise
+    (executor 的 finally 已把流出 partial append 进 ctx 并 _finalize)。
     """
     try:
         async for token in agent.chat_stream(
             message, session_id=str(session_id), model_name=model_name
         ):
-            ct.full_reply += token
+            ct.buffer += token
             ct.broadcast({"type": "token", "content": token})
     except asyncio.CancelledError:
         ct.stopped = True
         ct.done = True
         ct.broadcast({
             "type": "done", "session_id": session_id,
-            "full_reply": ct.full_reply, "stopped": True,
+            "full_reply": ct.buffer, "stopped": True,
         })
         return
     except Exception as e:
@@ -179,28 +204,31 @@ async def _run_chat(
         return
     ct.done = True
     ct.broadcast({
-        "type": "done", "session_id": session_id, "full_reply": ct.full_reply,
+        "type": "done", "session_id": session_id, "full_reply": ct.buffer,
     })
 
 
-async def _forward(ws: WebSocket, ct: ChatTask, session_id: int) -> None:
-    """订阅 ChatTask 并转发到 WebSocket -- 补发 + 实时续推。
+async def _forward(ws: WebSocket, sess: ChatSession, session_id: int,
+                   *, snapshot: bool = False) -> None:
+    """转发事件到 WebSocket -- snapshot=True 时先发会话快照再续推。
 
-    subscribe 后立即读 full_reply（无 await 间隔）保证原子快照：
-    subscribe 之前的 token 在 full_reply，之后的在 queue，不重不漏。
+    不变式:running 时先 subscribe 再同步读 buffer(两步间无 await),
+    订阅前的 token 全在 buffer 快照,之后全在队列,不重不漏。
+    已完成任务不 replay:snapshot(agent/DB)已含最终回复。
     """
-    q = ct.subscribe()
-    replay = ct.full_reply  # 原子快照
+    ct = sess.chat_task
+    running = bool(ct and not ct.done)
+    q = ct.subscribe() if (ct is not None and not ct.done) else None
+    partial = ct.buffer if (snapshot and running) else ""  # subscribe 后同步读,原子快照
     try:
-        if ct.done:
-            if replay:
-                await ws.send_json({"type": "resume", "full_reply": replay})
+        if snapshot:
+            messages = await sess.history_messages()
             await ws.send_json({
-                "type": "done", "session_id": session_id,
-                "full_reply": replay, "stopped": ct.stopped,
+                "type": "snapshot", "session_id": session_id,
+                "messages": messages, "partial": partial,
+                "running": running, "agent": sess.current_key,
             })
-        else:
-            await ws.send_json({"type": "resume", "full_reply": replay})
+        if q is not None:
             while True:
                 item = await q.get()
                 await ws.send_json(item)
@@ -209,7 +237,8 @@ async def _forward(ws: WebSocket, ct: ChatTask, session_id: int) -> None:
     except Exception:
         pass
     finally:
-        ct.unsubscribe(q)
+        if q is not None and ct is not None:
+            ct.unsubscribe(q)
 
 
 async def _build_chat_agent(app_state):
@@ -220,7 +249,7 @@ async def _build_chat_agent(app_state):
     """
     from agent.factory import create_agent
     config = getattr(app_state, "agent_config", None) or {}
-    model_cfg = config.get("models", {})
+    model_cfg = config.get("agent", {}).get("models", {})
     db = getattr(app_state, "db", None)
     base_prompt = getattr(app_state, "base_prompt", "") or ""
     mcp_cfg = config.get("mcp_server", {})
@@ -238,44 +267,79 @@ async def _start_chat(
     sess: ChatSession,
     message: str,
     *,
-    session_id: int,
-    agent_id: str,
     model_name: str,
     running_mode: str,
     app_state,
 ) -> ChatTask:
-    """启动一次对话任务 -- 防重入 + 构建/复用 agent + 绑定 approval 通道。
+    """启动一次对话任务 -- 防重入 + 复用/惰性构建 current_agent + user 落库。
 
     若该 session 已有进行中任务，直接返回它（前端续推）。
+    chat 路径零 agent 判断:直接用 current_agent(无则惰性构建默认 agent 并
+    activate)。user 消息由接口层接收即落库(不进 agent);assistant 归 agent
+    的 _finalize。切换走显式 switch 消息(``_switch_agent``)。
     """
     if sess.chat_task and not sess.chat_task.done:
         return sess.chat_task  # 防重入
 
-    ct = ChatTask(session_id=session_id)
+    if sess.current_agent is None:
+        agent = await _build_chat_agent(app_state)
+        await agent.activate(str(sess.session_id))
+        sess.agents["chat"] = agent
+        sess.current_agent = agent
+        sess.current_key = "chat"
+    else:
+        agent = sess.current_agent
 
-    if agent_id:
+    # 接口层落库 user(接收即存;失败降级不阻断对话)
+    if sess.db is not None:
+        try:
+            await asyncio.to_thread(
+                sess.db.save_agent_message, sess.session_id, "user", message)
+        except Exception as e:
+            print(f"[Agent] user 消息落库失败(降级): {e}")
+
+    agent.running_mode = running_mode
+    ct = ChatTask(session_id=sess.session_id)
+    agent.executor._approval_callback = ct.request_approval
+
+    ct.task = asyncio.create_task(
+        _drive(sess, ct, agent, message, sess.session_id, model_name)
+    )
+    sess.chat_task = ct
+    return ct
+
+
+async def _switch_agent(sess: ChatSession, agent_id: str, app_state) -> str:
+    """切换执行体(点击触发,只在轮间):freeze 旧 -> build/复用 -> activate 新。
+
+    freeze 手动保存旧 agent 状态(幂等,通常 no-op);activate 重载全量
+    历史 -> 切回已缓存 agent 不再 ctx 陈旧。生成中拒绝。
+    """
+    if sess.chat_task and not sess.chat_task.done:
+        raise RuntimeError("生成中,无法切换智能体")
+
+    key = f"agent:{agent_id}" if agent_id else "chat"
+    if sess.current_agent is not None:
+        await sess.current_agent.freeze()
+
+    if key in sess.agents:
+        agent = sess.agents[key]
+    elif agent_id:
         factory = getattr(app_state, "agent_factory", None)
         db = getattr(app_state, "db", None)
         defn = db.get_agent_definition(agent_id) if db else None
         if not defn or not factory:
             raise ValueError(f"agent {agent_id!r} 不可用")
-        agent = sess.get_agent(f"agent:{agent_id}", lambda: factory.build(defn))
+        agent = factory.build(defn)
+        sess.agents[key] = agent
     else:
-        # 聊天室默认 agent:per-session 独立构建(不用 agent_instance)
-        if "chat" in sess.agents:
-            agent = sess.agents["chat"]
-        else:
-            agent = await _build_chat_agent(app_state)
-            sess.agents["chat"] = agent
+        agent = await _build_chat_agent(app_state)
+        sess.agents[key] = agent
 
-    agent.running_mode = running_mode
-    agent.executor._approval_callback = ct.request_approval
-
-    ct.task = asyncio.create_task(
-        _run_chat(sess, ct, agent, message, session_id, model_name)
-    )
-    sess.chat_task = ct
-    return ct
+    await agent.activate(str(sess.session_id))
+    sess.current_agent = agent
+    sess.current_key = key
+    return key
 
 
 # ── REST: 聊天页面 ──
@@ -501,163 +565,6 @@ async def list_tools(request: Request):
     return {"tools": registry.list_tool_defs()}
 
 
-# ── REST: 常规设置 ──────────────────────────────────────────────────
-
-
-@router.get("/api/settings")
-async def get_settings(request: Request):
-    """返回常规设置（只读，来自 config.yaml）。"""
-    cfg = getattr(request.app.state, "agent_config", None) or {}
-    app_cfg = cfg.get("app", {})
-    crawler_cfg = cfg.get("crawler", {})
-    notif_cfg = cfg.get("notification", {})
-
-    return {
-        "timezone": app_cfg.get("timezone", "Asia/Shanghai"),
-        "crawl_circle": crawler_cfg.get("crawl_circle", 60),
-        "sync_circle": crawler_cfg.get("sync_circle", 60),
-        "email": {
-            "from_addr": notif_cfg.get("email", {}).get("from_addr", ""),
-            "to_addr": notif_cfg.get("email", {}).get("to_addr", ""),
-            "frequency_words": notif_cfg.get("frequency_words", ""),
-            "keyword_limit_news": notif_cfg.get("keyword_limit_news", 0),
-        },
-        "blacklist": notif_cfg.get("black_list", []),
-    }
-
-
-# ── REST: 新闻源管理（只读，数据来自 config.yaml） ────────────────────
-
-
-@router.get("/api/settings/sources")
-async def list_sources(request: Request, source_type: str | None = None):
-    """列出新闻源（只读，来自 config.yaml crawler 段）。"""
-    cfg = getattr(request.app.state, "agent_config", None) or {}
-    crawler_cfg = cfg.get("crawler", {})
-
-    sources = []
-    for s in crawler_cfg.get("newsnow", {}).get("sources", []):
-        sources.append({
-            "id": s.get("id", ""),
-            "source_type": "newsnow",
-            "name": s.get("name", ""),
-            "source_id": s.get("id", ""),
-            "url": "",
-            "tier": s.get("tier", 4),
-            "priority": s.get("priority", 0),
-            "enabled": True,
-            "config": {},
-        })
-    for s in crawler_cfg.get("rss", {}).get("sources", []):
-        sources.append({
-            "id": s.get("id", ""),
-            "source_type": "rss",
-            "name": s.get("name", ""),
-            "source_id": s.get("id", ""),
-            "url": s.get("url", ""),
-            "tier": s.get("tier", 4),
-            "priority": s.get("priority", 0),
-            "enabled": s.get("enabled", True),
-            "config": {"max_age_days": s.get("max_age_days", 0)},
-        })
-
-    if source_type:
-        sources = [s for s in sources if s["source_type"] == source_type]
-    return {"sources": sources}
-
-
-@router.post("/api/settings/sources")
-async def create_source(_body: dict, _request: Request):
-    """新建新闻源（只读模式，已禁用）。"""
-    return {"id": None, "source": None}
-
-
-@router.put("/api/settings/sources/{source_id}")
-async def update_source(_source_id: str, _body: dict, _request: Request):
-    """更新新闻源（只读模式，已禁用）。"""
-    return {"ok": True, "source": None}
-
-
-@router.delete("/api/settings/sources/{source_id}")
-async def delete_source(_source_id: str, _request: Request):
-    """删除新闻源（只读模式，已禁用）。"""
-    return {"ok": True}
-
-
-@router.post("/api/settings/sources/{source_id}/test")
-async def test_source_connectivity(source_id: str, request: Request):
-    """测试 RSS 连通性（HTTP GET 到 URL，检查响应）。
-
-    从 config.yaml 查找来源 URL，不依赖数据库。
-    """
-    cfg = getattr(request.app.state, "agent_config", None) or {}
-    crawler_cfg = cfg.get("crawler", {})
-    rss_sources = crawler_cfg.get("rss", {}).get("sources", [])
-    source = next((s for s in rss_sources if s.get("id") == source_id), None)
-    if not source:
-        raise HTTPException(404, "新闻源不存在")
-    url = source.get("url", "")
-    if not url:
-        return {"ok": False, "error": "该新闻源没有配置 URL"}
-    import httpx
-    try:
-        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            resp = await client.get(url)
-            content_type = resp.headers.get("content-type", "")
-            is_xml = "xml" in content_type or resp.text.strip().startswith("<?xml")
-            return {
-                "ok": True,
-                "status_code": resp.status_code,
-                "content_type": content_type,
-                "is_xml": is_xml,
-                "body_preview": resp.text[:500] if resp.status_code < 400 else "",
-            }
-    except Exception as e:
-        return {"ok": False, "error": str(e)[:500]}
-
-
-@router.post("/api/settings/sources/seed")
-async def seed_sources(_request: Request):
-    """从 config.yaml 种子（只读模式，已禁用）。"""
-    return {"ok": True, "inserted": 0}
-
-
-# ── REST: 模型管理（只读，数据来自 config.yaml） ─────────────────────────
-
-
-@router.get("/api/models")
-async def list_models(request: Request):
-    """列出所有模型配置（只读，来自 config.yaml models 段）。"""
-    cfg = getattr(request.app.state, "agent_config", None) or {}
-    models = cfg.get("models", {})
-    items = []
-    for name, m in models.items():
-        item = dict(m)
-        item["name"] = name
-        # 隐藏 api_key，前端不需要看到
-        item.pop("api_key", None)
-        items.append(item)
-    return {"models": items}
-
-
-@router.post("/api/models")
-async def create_model(_body: dict, _request: Request):
-    """添加模型（只读模式，已禁用）。"""
-    return {"ok": True, "model": None}
-
-
-@router.put("/api/models/{model_name}")
-async def update_model(_model_name: str, _body: dict, _request: Request):
-    """更新模型配置（只读模式，已禁用）。"""
-    return {"ok": True, "model": None}
-
-
-@router.delete("/api/models/{model_name}")
-async def delete_model(_model_name: str, _request: Request):
-    """删除模型（只读模式，已禁用）。"""
-    return {"ok": True}
-
-
 # ── WebSocket: 统一聊天通道（支持 agent_id 参数） ──
 
 
@@ -672,16 +579,14 @@ async def agent_websocket_endpoint(ws: WebSocket):
     _ws_clients[client_id] = ws
 
     forward_task: asyncio.Task | None = None
-    current_chat_task: ChatTask | None = None
+    sess: ChatSession | None = None
 
-    # 连接时恢复：若该 session 有任务（进行中或已完成），立即续推/补发
+    # 连接即发 snapshot(历史 + 运行中任务则续推;已完成不 replay)
     session_param = ws.query_params.get("session_id", "")
     sid = _parse_int_sid(session_param) if session_param else None
     if sid is not None:
-        sess = _sessions.get(sid)
-        if sess and sess.chat_task:
-            current_chat_task = sess.chat_task
-            forward_task = asyncio.create_task(_forward(ws, current_chat_task, sid))
+        sess = get_session(sid, db=ws.app.state.db)
+        forward_task = asyncio.create_task(_forward(ws, sess, sid, snapshot=True))
 
     try:
         while True:
@@ -704,22 +609,20 @@ async def agent_websocket_endpoint(ws: WebSocket):
                     continue
                 model_name = data.get("model") or "quick"
                 running_mode = data.get("running_mode") or "normal"
-                agent_id = ws.query_params.get("agent_id", "")
 
                 config = getattr(ws.app.state, "agent_config", None) or {}
-                model_cfg = config.get("models", {})
+                model_cfg = config.get("agent", {}).get("models", {})
                 if not model_cfg:
                     await ws.send_json({"type": "error", "message": "模型未配置"})
                     continue
                 if model_name not in model_cfg:
                     model_name = "quick" if "quick" in model_cfg else next(iter(model_cfg))
 
-                sess = get_session(session_id)
+                sess = get_session(session_id, db=ws.app.state.db)
                 try:
-                    current_chat_task = await _start_chat(
-                        sess, message, session_id=session_id, agent_id=agent_id,
-                        model_name=model_name, running_mode=running_mode,
-                        app_state=ws.app.state,
+                    await _start_chat(
+                        sess, message, model_name=model_name,
+                        running_mode=running_mode, app_state=ws.app.state,
                     )
                 except Exception as e:
                     await ws.send_json({"type": "error", "message": f"启动失败: {e!s}"[:500]})
@@ -727,22 +630,39 @@ async def agent_websocket_endpoint(ws: WebSocket):
 
                 if forward_task and not forward_task.done():
                     forward_task.cancel()
-                forward_task = asyncio.create_task(_forward(ws, current_chat_task, session_id))
+                forward_task = asyncio.create_task(_forward(ws, sess, session_id))
+
+            elif msg_type == "switch":
+                # 点击触发的显式切换(轮间):freeze 旧 -> build/复用 -> activate 新
+                session_id = data.get("session_id", 0)
+                if not isinstance(session_id, int) or session_id < 1:
+                    await ws.send_json({"type": "error", "message": "session_id 必须为正整数"})
+                    continue
+                agent_id = (data.get("agent_id") or "").strip()
+                sess = get_session(session_id, db=ws.app.state.db)
+                try:
+                    key = await _switch_agent(sess, agent_id, ws.app.state)
+                except Exception as e:
+                    await ws.send_json({"type": "error", "message": f"切换失败: {e!s}"[:500]})
+                    continue
+                await ws.send_json({
+                    "type": "switch_ack", "agent_id": agent_id, "agent_key": key,
+                })
 
             elif msg_type == "stop":
-                if current_chat_task and not current_chat_task.done and current_chat_task.task:
-                    current_chat_task.task.cancel()
+                if sess and sess.chat_task and not sess.chat_task.done and sess.chat_task.task:
+                    sess.chat_task.task.cancel()
                 if forward_task and not forward_task.done():
                     forward_task.cancel()
                     try:
                         await forward_task
                     except (asyncio.CancelledError, Exception):
                         pass
-                forward_task = None
+                    forward_task = None
 
             elif msg_type == "tool_approval_response":
-                if current_chat_task:
-                    current_chat_task.respond_approval(
+                if sess and sess.chat_task:
+                    sess.chat_task.respond_approval(
                         data.get("request_id", ""),
                         data.get("approved", False),
                         data.get("reason", ""),

@@ -19,8 +19,9 @@ The daemon runs until interrupted (SIGINT / SIGTERM).
 import sys
 import signal
 import asyncio
-from pathlib import Path
+import uvicorn
 
+from pathlib import Path
 from typing import Any
 from concurrent.futures import ThreadPoolExecutor
 
@@ -28,6 +29,8 @@ from config import load_config
 from storage.postgres import PostgreSQL
 from web.app import create_app
 from news.crawler import Crawler, OutputStyle
+from agent.factory import AgentFactory, start_mcp_server
+from agent.tools.tools import setup_builtin_tools
 
 
 _SHUTDOWN_TIMEOUT = 10  # seconds to wait for async tasks to finish
@@ -238,56 +241,28 @@ class NewsRadarDaemon:
         s3_config = self.config.get("storage", {}).get("resource", {})
         crawler = Crawler(self.config, pg_db=self.db)
 
-        # 条件构建 Agent（仅当配置了 models 时）
-        agent = None
-        mcp_server_proc = None
+        # 读取系统级基座提示词 agent/Agent.md
+        base_prompt_path = Path(__file__).parent / "agent" / "Agent.md"
         base_prompt = ""
-        if self.config.get("models"):
-            from agent.factory import (
-                create_agent,
-                start_mcp_server,
-            )
+        if base_prompt_path.exists():
+            base_prompt = base_prompt_path.read_text(encoding="utf-8").strip()
+            print("[Daemon] Base prompt loaded from agent/Agent.md.")
 
-            # 读取系统级基座提示词 agent/Agent.md
-            base_prompt_path = Path(__file__).parent / "agent" / "Agent.md"
-            base_prompt = ""
-            if base_prompt_path.exists():
-                base_prompt = base_prompt_path.read_text(encoding="utf-8").strip()
-                print("[Daemon] Base prompt loaded from agent/Agent.md.")
+        # 启动 MCP Server（SSE 模式）- 聊天室 per-session agent 连接它
+        mcp_cfg = self.config.get("mcp_server", {})
+        await self._start_mcp_server(mcp_cfg)
 
-            # 启动 MCP Server（SSE 模式）
-            mcp_cfg = self.config.get("mcp_server", {})
-            if mcp_cfg.get("enabled"):
-                self._mcp_server_proc = await start_mcp_server(mcp_cfg)
-                print(f"[Daemon] MCP Server started ({mcp_cfg['transport']} mode, http://{mcp_cfg['host']}:{mcp_cfg['port']}).")
-
-            # 创建主 agent
-            agent = await create_agent(
-                self.config["models"],
-                system_prompt=base_prompt,
-                register_mcp=True,
-                mcp_cfg=mcp_cfg,
-                memory_type="null",
-            )
-            print(f"[Daemon] Agent built (type={type(agent).__name__}, executor={type(agent.executor).__name__}, memory={type(agent.memory).__name__}, tools={agent.tools.list_tools() if agent.tools else 'None'}).")
-
-        # 创建 Web 应用（含条件注册 Agent 路由）
-        tool_registry = None
-        agent_factory = None
-        if self.config.get("models"):
-            from agent.tools.tools import setup_builtin_tools
-            from agent.factory import AgentFactory
-
-            tool_registry = setup_builtin_tools()
-            agent_factory = AgentFactory(
-                self.config["models"],
-                self.db,
-                tool_registry,
-                base_prompt=base_prompt,
-            )
+        # 创建 Web 应用（注册 Agent 路由）
+        tool_registry = setup_builtin_tools()
+        agent_factory = AgentFactory(
+            self.config["agent"]["models"],
+            self.db,
+            tool_registry,
+            base_prompt=base_prompt,
+        )
 
         app = create_app(self.db, s3_config, queues=queues, crawler=crawler,
-                          agent_config=self.config, agent_instance=agent,
+                          agent_config=self.config,
                           tool_registry=tool_registry,
                           agent_factory=agent_factory,
                           base_prompt=base_prompt)
@@ -378,14 +353,7 @@ class NewsRadarDaemon:
         print("[Daemon] Thread pool stopped.")
 
         # 5. Close MCP Server subprocess
-        if self._mcp_server_proc is not None:
-            try:
-                self._mcp_server_proc.terminate()
-                await asyncio.wait_for(self._mcp_server_proc.wait(), timeout=5)
-                print("[Daemon] MCP Server stopped.")
-            except Exception:
-                self._mcp_server_proc.kill()
-                print("[Daemon] MCP Server killed.")
+        await self._stop_mcp_server()
 
         # 6. Close database
         self.db.close()
@@ -395,7 +363,6 @@ class NewsRadarDaemon:
 
     async def _serve_web(self, app) -> None:
         """Run the FastAPI application via uvicorn."""
-        import uvicorn
 
         web_cfg = self.config.get("web", {})
         host = web_cfg.get("host", "0.0.0.0")
@@ -408,6 +375,36 @@ class NewsRadarDaemon:
         self._uvicorn_server = server
         print(f"[Daemon] Web server starting on {host}:{port}")
         await server.serve()
+
+    # ── MCP Server ───────────────────────────────────────────────
+
+    async def _start_mcp_server(self, mcp_cfg: dict) -> None:
+        """启动 MCP Server（SSE 模式）子进程，句柄存入 ``self._mcp_server_proc``。
+
+        未启用（``mcp_cfg["enabled"]`` 为假）时直接返回。
+
+        Args:
+            mcp_cfg: ``config["mcp_server"]``，含 enabled/host/port/transport。
+        """
+        if not mcp_cfg.get("enabled"):
+            return
+        self._mcp_server_proc = await start_mcp_server(mcp_cfg)
+        print(f"[Daemon] MCP Server started ({mcp_cfg['transport']} mode, "
+              f"http://{mcp_cfg['host']}:{mcp_cfg['port']}).")
+
+    async def _stop_mcp_server(self) -> None:
+        """关闭 MCP Server 子进程：先 terminate，超时或异常则 kill。"""
+        if self._mcp_server_proc is None:
+            return
+        try:
+            self._mcp_server_proc.terminate()
+            await asyncio.wait_for(self._mcp_server_proc.wait(), timeout=5)
+            print("[Daemon] MCP Server stopped.")
+        except Exception:
+            self._mcp_server_proc.kill()
+            print("[Daemon] MCP Server killed.")
+        finally:
+            self._mcp_server_proc = None
 
     # ── Utilities ────────────────────────────────────────────────
 

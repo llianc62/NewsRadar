@@ -28,7 +28,7 @@ STATIC_DIR = WEB_DIR / "static"
 
 
 def create_app(db, s3_config: dict, queues=None, crawler=None,
-               agent_config=None, agent_instance=None,
+               agent_config=None,
                tool_registry=None, agent_factory=None,
                base_prompt: str = ""):
     """Create and configure the FastAPI application.
@@ -42,8 +42,6 @@ def create_app(db, s3_config: dict, queues=None, crawler=None,
                 refetch API.
         agent_config: Optional full config dict. When present and contains
                 ``models``, agent routes are registered.
-        agent_instance: Optional pre-built :class:`agent.agent.DefaultAgent`
-                with ReActExecutor + tools.
 
     Returns:
         Configured FastAPI application.
@@ -103,8 +101,6 @@ def create_app(db, s3_config: dict, queues=None, crawler=None,
 
     # ── Agent config & instance on app.state ──
     app.state.agent_config = agent_config or {}
-    if agent_instance is not None:
-        app.state.agent_instance = agent_instance
     if tool_registry is not None:
         app.state.tool_registry = tool_registry
     if agent_factory is not None:

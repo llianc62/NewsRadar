@@ -6,20 +6,13 @@
 import inspect
 
 
-def test_run_inits_base_prompt_before_models_block():
-    """回归:base_prompt 必须在 `if self.config.get("models")` 块前初始化。
+def test_run_starts_mcp_server():
+    """回归:run() 必须启动 MCP Server。
 
-    `create_app(..., base_prompt=base_prompt)` 在方法体级(if 块外)引用,
-    若 base_prompt 仅在 if models 块内绑定,无 models 路径会 NameError。
+    聊天室 per-session agent(_build_chat_agent) 调 create_agent(register_mcp=True)
+    会连接 MCP Server,故 daemon 启动时 MCP 必须已启动,否则首个聊天请求 MCP 连接失败。
     """
     from main import NewsRadarDaemon
     src = inspect.getsource(NewsRadarDaemon.run).splitlines()
-    # 定位第一个 `if self.config.get("models"):` 块
-    models_if_idx = next(
-        i for i, ln in enumerate(src)
-        if "self.config.get(\"models\")" in ln and ln.lstrip().startswith("if")
-    )
-    before = [ln.strip() for ln in src[:models_if_idx]]
-    assert "base_prompt = \"\"" in before, (
-        "base_prompt 必须在 if models 块前初始化,否则无 models 路径 NameError"
-    )
+    assert any("_start_mcp_server" in ln for ln in src), \
+        "run() 必须调用 _start_mcp_server(聊天室 agent 依赖 MCP)"
