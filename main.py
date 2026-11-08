@@ -289,8 +289,8 @@ class NewsRadarDaemon:
             self._bg_tasks.append(timer)
 
         # 6. Manually trigger both on startup (fire immediately)
+        await self._sync_queue.put(None)
         # await self._crawl_queue.put(None)
-        # await self._sync_queue.put(None)
 
         # 7. Create shutdown watcher
         shutdown_task = asyncio.create_task(
