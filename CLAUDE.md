@@ -157,7 +157,7 @@ All fetchers return `list[dict]` — flat list of standardised item dicts. Failu
 - image 重试必须在 content 重试 + persist 之后执行（需要文章已在 DB 中才能 UPDATE 图片路径）
 
 ### Key modules
-- `news/crawler.py` — `Crawler` class. Public API: `fetch()`, `fetch_all()`, `enrich_content()`, `sync_from_cloud()`, `retry_failed_tasks()`. WAF 站点(huxiu/xueqiu/juejin)用 crawl4ai(undetected+magic+simulate_user)下载 HTML 绕过阿里云滑块,拿到 HTML 后走现有 parser;非 WAF 站点走 requests
+- `news/crawler.py` — `Crawler` class. Public API: `fetch()`, `fetch_all()`, `enrich_content()`, `sync_from_cloud()`, `retry_failed_tasks()`. WAF 站点(huxiu/xueqiu/juejin)用 crawl4ai(undetected+magic+simulate_user)下载 HTML 绕过阿里云滑块,拿到 HTML 后走现有 parser;非 WAF 站点走 requests。阿里云 WAF 按**浏览器会话(profile/cookie)**拉黑——同一浏览器内重试必再被挑战或再超时(挂起连接不返回滑块页),故检测到挑战页**或导航超时/抓取失败(success=False)** 后 `_recycle_crawl4ai()` 关停旧浏览器换全新 profile 再重试(同 IP 新浏览器立即放行)
 - `news/models.py` — `NewsItem` / `NewsData` dataclasses. `NewsItem.ranks` = `[[rank, total], ...]` JSONB; `heat_score` = 0-100
 - `news/fetcher/` — `Fetcher` ABC + `NewsnowFetcher` + `RssFetcher`
 - `news/parser/` — HtmlParser + Registry + 12 site-specific parsers. Three-tier extraction: custom hook → readability → HTML-strip fallback

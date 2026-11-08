@@ -686,6 +686,22 @@ class Crawler:
             # Wait for the crawler to finish starting before returning.
             ready.wait(timeout=120)
 
+    def _recycle_crawl4ai(self) -> None:
+        """WAF 挑战后重建浏览器(全新 profile)。
+
+        阿里云 WAF 按浏览器会话(cookie/profile)拉黑:同一浏览器内
+        重试只会再次被挑战,必须换全新浏览器才能恢复(实测同 IP 下
+        新浏览器立即放行)。持 arun 锁关停,避免并发 arun 打在正被
+        关闭的浏览器上。
+        """
+        with self._crawl4ai_arun_lock:
+            with self._crawl4ai_lock:
+                if self._crawl4ai_crawler is None:
+                    return  # 并发线程已回收过
+                self._close_crawl4ai()
+            # 锁外重建 — _ensure_crawl4ai 内部自加 _crawl4ai_lock
+            self._ensure_crawl4ai()
+
     def _download_with_crawl4ai(
         self,
         url: str,
@@ -729,6 +745,11 @@ class Crawler:
             if not result.success:
                 print(f"[Crawler] crawl4ai failed for {url}: "
                       f"{result.error_message}")
+                # 导航超时/取回失败同样可能是 WAF 会话拉黑(挂起连接
+                # 而非返回滑块页,表现为 page.goto 超时)。同浏览器重试
+                # 必再超时,换全新浏览器再重试(末次尝试后无需回收)。
+                if attempt + 1 < self.max_retry:
+                    self._recycle_crawl4ai()
                 continue
 
             html = result.html
@@ -736,7 +757,11 @@ class Crawler:
                 return html
 
             print(f"[Crawler] crawl4ai WAF challenge for {url}, "
-                  f"retrying ({attempt + 1}/{self.max_retry})...")
+                  f"recycling browser ({attempt + 1}/{self.max_retry})...")
+            # WAF 按会话拉黑,同一浏览器内重试必再被挑战 —
+            # 换全新浏览器再重试(末次尝试后无需回收)
+            if attempt + 1 < self.max_retry:
+                self._recycle_crawl4ai()
 
         return None
 
