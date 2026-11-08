@@ -17,6 +17,10 @@ NewsRadar 是一个多源新闻聚合系统，支持热点榜单、RSS/Atom/JSON
 - **Web 面板** — FastAPI + Jinja2 SSR，市场概览、分页卡片流、多维度筛选、全文搜索
 - **双存储** — PostgreSQL（本地）和 SQLite+S3（云端），共享抓取逻辑
 - **云端同步** — daemon 启动时从 S3 拉取 CI 抓取的快照，补下载正文后合并到 PG
+- **AI 聊天 Agent** — ReAct 推理循环 + 多角色定义，支持工具调用、流式回复、WebSocket 审批
+- **记忆系统** — 短期对话记忆（PostgreSQL）+ 长期记忆提炼与检索
+- **知识库检索** — pgvector 语义检索，文档切片入库，作为角色专业知识的来源
+- **MCP Server** — 暴露新闻查询工具（`search_news` / `get_hot_topics` / `get_news_detail` / `analyze_sentiment` / `get_source_stats`），支持 stdio / SSE 两种传输
 
 ## 架构
 
@@ -38,6 +42,10 @@ NewsRadar 是一个多源新闻聚合系统，支持热点榜单、RSS/Atom/JSON
                   关键词匹配 → HTML 报告 → 邮件
 ```
 
+### AI Agent 子系统（独立于抓取管线）
+
+`DefaultAgent` 编排：**Brain**（ModelHub 多模型池）→ **Executor**（ReAct 推理循环）→ **Memory**（短期/长期记忆）+ **Knowledge**（pgvector 检索）+ **Tools**（内置 + MCP 外部工具）。详见 [docs/agent/architecture-v1.md](docs/agent/architecture-v1.md)。
+
 ## 快速开始
 
 ### 环境要求
@@ -51,6 +59,7 @@ NewsRadar 是一个多源新闻聚合系统，支持热点榜单、RSS/Atom/JSON
 # 安装依赖
 uv sync
 uv pip install pytest  # pytest 不在 pyproject.toml 中
+crawl4ai-setup  # 安装 patchright 浏览器（WAF 站点抓取用）
 
 # 启动基础设施（PostgreSQL 16 + MinIO）
 docker compose up -d
@@ -85,6 +94,21 @@ python -m cli grab-one "https://example.com" --output-style postgresql --images
 # 数据库维护
 python -m cli db clear --start "2026-07-02" --end "2026-07-04" --force
 python -m cli db clear --all --force
+
+# 知识库（pgvector，需 knowledge.enabled: true + embedding key）
+python -m cli knowledge ingest path/to/doc.md --namespace buffett   # 导入文档
+python -m cli knowledge search "查询语句" --namespace buffett        # 语义检索
+python -m cli knowledge list --namespace buffett                    # 查看切片数
+python -m cli knowledge clear --namespace buffett --force           # 清空命名空间
+
+# Agent 定义管理
+python -m cli agent create --input agent/agents/buffett.md   # 导入角色定义
+python -m cli agent list                                     # 列出所有定义
+python -m cli agent delete <id> --force                      # 删除定义
+
+# MCP Server（独立模式）
+python -m agent.mcp.news_server                            # stdio（默认）
+python -m agent.mcp.news_server --transport sse --port 8001  # HTTP SSE
 ```
 
 ### 运行测试
@@ -110,6 +134,8 @@ pytest tests/test_parser.py::TestTrimNoise::test_trims_footer_copyright -v
 | `storage.resource` | S3/MinIO 配置（图片/文件），env: `RESOURCE_S3_*` |
 | `postgresql` | PostgreSQL 连接信息，env: `PG_*` |
 | `analyzer` | 分析引擎开关与后端选择（`jieba`） |
+| `agent` | AI Agent 模型配置（`default`/`quick`/`deep` 模型档位），env: `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` |
+| `knowledge` | 知识库开关与 embedding 配置（`enabled`/`embedding_*`/`top_k`） |
 | `web` | FastAPI 监听地址与端口，env: `WEB_*` |
 
 ### 关键环境变量
@@ -142,9 +168,11 @@ PG_HOST / PG_PORT / PG_DATABASE / PG_USER / PG_PASSWORD
 ```
 NewsRadar/
 ├── main.py                  # Daemon 入口（FastAPI + 定时任务）
-├── config.yaml              # 默认配置文件
-├── config/
-│   └── loader.py            # 配置加载（YAML + env 合并）
+├── config.py                # 配置加载（YAML + env 合并，env 优先）
+├── config/                  # 运行时配置与数据
+│   ├── config.yaml          # 默认配置文件
+│   └── frequency_words.txt  # 通知关键词词表
+├── utils.py                 # 时间格式化、URL 规范化
 ├── news/
 │   ├── crawler.py           # Crawler — fetch→enrich→analyze→persist 编排
 │   ├── models.py            # NewsItem / NewsData dataclass
@@ -152,8 +180,8 @@ NewsRadar/
 │   ├── keywords.py          # frequency_words.txt 解析 + 关键词匹配
 │   ├── notifier.py          # HTML 报告 + SMTP 邮件发送
 │   ├── images.py            # ImageProcessor — 并发下载 + 路径替换
-│   ├── utils.py             # 时间格式化、URL 规范化
 │   ├── fetcher/
+│   │   ├── fetcher.py       # Fetcher ABC
 │   │   ├── newsnow.py       # NewsnowFetcher — 热点列表 API
 │   │   └── rss.py           # RssFetcher — RSS/Atom/JSON Feed
 │   ├── parser/
@@ -165,17 +193,36 @@ NewsRadar/
 │       ├── jieba.py         # JiebaAnalyzer — heat + sentiment + keywords
 │       └── agent.py         # AgentAnalyzer 预留桩
 ├── storage/
-│   ├── postgres.py          # PostgreSQL 后端（连接池 + UPSERT + 全文搜索）
+│   ├── postgres.py          # PostgreSQL 后端（连接池 + UPSERT + 全文搜索 + Agent 表）
 │   ├── sqlite.py            # SQLite 后端（按日分库）
 │   ├── s3.py                # S3/MinIO 客户端
-│   └── files.py             # FileStorage ABC（Local + S3 实现）
+│   └── files.py             # FileStorage ABC（Local / S3 实现）
+├── agent/                   # AI Agent 子系统
+│   ├── agent.py             # DefaultAgent 编排器
+│   ├── executor.py          # ReAct / Direct 推理循环
+│   ├── model_hub.py         # ModelHub 多模型池
+│   ├── memory.py            # MemoryModule（短期/长期记忆）
+│   ├── factory.py           # create_agent / AgentFactory
+│   ├── data.py              # AgentDefinition / AgentKnowledge
+│   ├── llm/                 # LLM 客户端（OpenAI / Anthropic / DeepSeek）
+│   ├── tools/               # @tool 装饰器 + Registry + 内置工具
+│   ├── knowledge/           # pgvector 知识库（chunker / embedding / engine / store）
+│   ├── mcp/                 # MCP Server + Client
+│   ├── persona/             # PersonaAgent 角色基类（experts / investors）
+│   └── agents/              # 角色定义 markdown
 ├── web/
-│   ├── app.py               # FastAPI 应用工厂 + 全部路由
+│   ├── app.py               # FastAPI 应用工厂（lifespan / state / routers）
+│   ├── news.py              # 新闻路由（hot-news / detail / trigger / refetch / SSE）
+│   ├── agent.py             # Agent 聊天路由 + WebSocket
+│   ├── settings.py          # 设置面板路由
+│   ├── background.py        # BackgroundTaskRunner 通用后台任务执行器
+│   ├── notification.py      # NotificationState — 内存通知 + SSE
+│   ├── config.py            # Jinja2 模板渲染配置
 │   └── templates/           # Jinja2 模板
-├── cli/                     # CLI 入口（crawl / notify / grab-one / db）
+├── cli/                     # CLI 入口（crawl / notify / grab-one / db / knowledge / agent）
 ├── data/                    # 情感词典 + IDF 语料
-├── tests/                   # 25+ 测试文件
-├── docs/                    # 模块设计文档
+├── tests/                   # 45 个测试文件
+├── docs/                    # 模块设计文档（含 docs/agent/ AI 子系统设计）
 └── .github/workflows/       # CI 工作流（crawler.yml + notifier.yml）
 ```
 
@@ -202,6 +249,9 @@ NewsRadar/
 | [docs/storage.md](docs/storage.md) | PostgreSQL / SQLite+S3 双存储 |
 | [docs/web.md](docs/web.md) | FastAPI 前端 + 通知系统 |
 | [docs/daemon.md](docs/daemon.md) | 后台调度 + 启动序列 |
+| [docs/agent/architecture-v1.md](docs/agent/architecture-v1.md) | AI Agent 子系统（Phase 1-3） |
+| [docs/agent/configuration.md](docs/agent/configuration.md) | Agent 配置参考 |
+| [docs/agent/phase0-chat.md](docs/agent/phase0-chat.md) | 聊天 Agent 设计 |
 
 ## License
 

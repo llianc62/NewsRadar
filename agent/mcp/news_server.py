@@ -19,11 +19,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import datetime
 
 from mcp.server.fastmcp import FastMCP
 
 from news.constants import SENTIMENT_NEGATIVE_THRESHOLD, SENTIMENT_POSITIVE_THRESHOLD
 from storage.postgres import PostgreSQL
+from utils import format_date_today
 
 
 # ======================================================================
@@ -106,29 +108,74 @@ def search_news(query: str, limit: int = 10) -> list[dict]:
 
 
 @mcp.tool()
-def get_hot_topics(tier: str = "T1") -> list[dict]:
-    """获取当前热门话题，按热度等级分类。
+def get_hot_topics(tier: str = "T1", sort_by: str = "heat", date: str = "",
+                   limit: int = 30, offset: int = 0) -> dict:
+    """获取指定日期的热点新闻，按热度或情绪排序，支持分页。
+
+    返回 {"items": [...], "total": N, "next_offset": M}：items 是本批新闻，
+    total 是当日该等级匹配总数，next_offset 是下一批起始偏移（没有更多时为 null）。
 
     Args:
-        tier: 热度等级（T1=最高, T2=高, T3=中, T4=普通，默认 T1）
+        tier: 热度等级（T1=最高, T2=高, T3=中, T4=普通, all=全部等级，默认 T1）
+        sort_by: 排序方式（heat=热度, sentiment=情绪利好在前, time=抓取时间，默认 heat）
+        date: 日期（YYYY-MM-DD，默认今天）
+        limit: 返回条数上限（默认 30，最大 50）
+        offset: 起始偏移量（翻页用，默认 0）
     """
     if _db is None or not _db.is_connected:
         raise RuntimeError("数据库未连接")
 
-    tier_map = {"T1": 1, "T2": 2, "T3": 3, "T4": 4}
-    tier_val = tier_map.get(tier, 1)
+    tier_map = {"T1": 1, "T2": 2, "T3": 3, "T4": 4, "all": None}
+    try:
+        tier_val = tier_map[tier]
+    except KeyError:
+        raise ValueError(f"Unsupported tier: {tier!r} (supported: {', '.join(tier_map)})")
 
-    articles = _db.get_recent_news(tier=tier_val, limit=20, offset=0)
-    return [
+    order_map = {"heat": "heat", "sentiment": "sentiment", "time": "created"}
+    try:
+        order_by = order_map[sort_by]
+    except KeyError:
+        raise ValueError(f"Unsupported sort_by: {sort_by!r} (supported: {', '.join(order_map)})")
+
+    if not date:
+        date = format_date_today()
+    else:
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError(f"Invalid date: {date!r} (expected YYYY-MM-DD)")
+
+    limit = max(1, min(limit, 50))
+    offset = max(0, offset)
+    articles = _db.get_recent_news(
+        tier=tier_val, limit=limit, offset=offset,
+        date_from=date, date_to=date,
+        order_by=order_by,
+    )
+    # RealDictCursor 对 NULL 列返回 None（.get 默认值不生效），统一兜底为空值
+    items = [
         {
             "id": a.get("id"),
-            "title": a.get("title", ""),
-            "source": a.get("source_name", ""),
+            "title": a.get("title") or "",
+            "summary": a.get("summary") or "",
+            "source": a.get("source_name") or "",
+            "tier": a.get("tier"),
+            "tags": a.get("tags") or [],
             "heat_score": a.get("heat_score"),
             "sentiment_score": a.get("sentiment_score"),
+            "url": a.get("url") or "",
+            "published_at": str(a.get("published_at") or ""),
         }
         for a in articles
     ]
+    # 分页元数据：total 用与 get_recent_news 相同的过滤口径统计，
+    # next_offset 由代码计算，agent 只照抄、不自己算，避免漂移。
+    total = _db.get_news_count(
+        tier=tier_val, date_from=date, date_to=date,
+    )
+    next_offset = offset + limit if offset + limit < total else None
+    # total/next_offset 前置：即使 items 超长被展平层截断，分页元数据也不丢
+    return {"total": total, "next_offset": next_offset, "items": items}
 
 
 @mcp.tool()

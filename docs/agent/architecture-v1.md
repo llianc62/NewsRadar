@@ -877,8 +877,8 @@ async def search_news(query: str, limit: int = 10) -> str:
 
 
 @app.tool()
-async def get_hot_topics(tier: str = "T1") -> str:
-    """获取当前热门话题（T1-T4）。"""
+async def get_hot_topics(tier: str = "T1", sort_by: str = "heat", date: str = "") -> str:
+    """获取指定日期热点新闻（tier 支持 T1-T4/all，sort_by 支持 heat/sentiment/time，date 默认今天）。"""
     ...
 
 

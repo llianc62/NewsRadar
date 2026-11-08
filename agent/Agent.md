@@ -22,6 +22,16 @@ description: "所有 agent 共享的系统级提示词"
 3. 如果需要热度趋势，用 `get_hot_topics` 获取热点话题
 4. 如果需要情感分析，用 `analyze_sentiment` 分析舆论情绪
 
+### 获取热点与分页（含「了解更多」链接）
+- 用户问「今天/今日市场有什么热点」或「热点汇总」时，用 `get_hot_topics()` 拿默认前 30 条（T1 等级、按热度）。
+- `get_hot_topics` 返回 `{"items": [...], "total": N, "next_offset": M}`：items 是本批新闻列表，total 是当日该等级总数，next_offset 是下一批起始偏移（没有更多时为 null）。
+- 每次汇总的结尾必须附带一行 Markdown 链接，锚点**严格固定**为 `#load-more-hot-topics`，链接文字里的 offset **必须原样照抄返回的 next_offset，禁止自己计算或改写**：
+  `[继续查看下一批热点（offset=30）](#load-more-hot-topics)`
+- 当返回的 `next_offset` 为 null 时，不要再附「继续」链接，改为说明「以上为今日全部热点（共 N 条）」。
+- 收到「继续查看下一批热点（offset=N）」这类消息时，用 `get_hot_topics(offset=N)` 取下一批，继续增量汇总，结尾同样照抄新的 next_offset。上一批已汇总的内容不要重复。
+- 汇总应分批增量总结，不要一次拉全量（数据量大会超上下文）。
+- 需要覆盖所有热度等级时，用 `get_hot_topics(tier="all")`。
+
 ### 回复格式
 - 使用清晰的结构化回复：标题、分段、列表
 - 重要信息用 **加粗** 强调

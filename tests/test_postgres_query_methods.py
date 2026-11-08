@@ -37,6 +37,25 @@ class TestGetRecentNews:
         assert params[-2] == 10
         assert params[-1] == 30
 
+    def test_order_by_heat(self, db, mock_cursor):
+        """热度排序需带 created_at 决胜键，否则并列分数时分页顺序不确定。"""
+        mock_cursor.fetchall.return_value = []
+        db.get_recent_news(order_by="heat")
+        sql, _ = capture_sql(mock_cursor)
+        assert "ORDER BY heat_score DESC NULLS LAST, created_at DESC NULLS LAST" in sql
+
+    def test_order_by_sentiment(self, db, mock_cursor):
+        """情绪排序同样需要 created_at 决胜键。"""
+        mock_cursor.fetchall.return_value = []
+        db.get_recent_news(order_by="sentiment")
+        sql, _ = capture_sql(mock_cursor)
+        assert "ORDER BY sentiment_score DESC NULLS LAST, created_at DESC NULLS LAST" in sql
+
+    def test_order_by_unknown_raises(self, db, mock_cursor):
+        """ORDER BY 无法参数化，非法值必须白名单拒绝而非拼进 SQL。"""
+        with pytest.raises(ValueError):
+            db.get_recent_news(order_by="; DROP TABLE news_articles")
+
 
 class TestGetNewsCount:
     def test_returns_int(self, db, mock_cursor):

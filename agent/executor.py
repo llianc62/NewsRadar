@@ -88,6 +88,34 @@ def _ai_reasoning_content(ai: Any) -> str:
     return (getattr(ai, "additional_kwargs", None) or {}).get("reasoning_content", "") or ""
 
 
+def _flatten_items(items: list) -> str:
+    """逐条展平新闻/条目列表为纯文本，供 LLM 阅读。
+
+    顶层 list 工具返回（search_news / get_source_stats）与 dict 里嵌套的
+    list（get_hot_topics 的 items）共用此逻辑，保证语义一致。
+    """
+    parts = [f"共 {len(items)} 条结果:\n"]
+    for i, item in enumerate(items, 1):
+        if not isinstance(item, dict):
+            parts.append(f"{i}. {item}")
+            continue
+        title = item.get("title") or item.get("name") or f"条目 {i}"
+        source = item.get("source") or item.get("source_name") or ""
+        desc = item.get("summary") or item.get("description") or ""
+        line = f"{i}. {title}"
+        if source:
+            line += f" ({source})"
+        parts.append(line)
+        if desc:
+            parts.append(f"   {desc[:300]}")
+        for key in ("heat_score", "sentiment_score", "score", "price", "change"):
+            val = item.get(key)
+            if val is not None:
+                parts.append(f"   {key}: {val}")
+        parts.append("")
+    return "\n".join(parts)
+
+
 class PolicyDecision(Enum):
     """工具策略决策结果。"""
     ALLOW = auto()
@@ -644,53 +672,37 @@ class ReActExecutor(Executor):
     def _normalize_tool_result(raw: str) -> str:
         """归一化工具返回结果，确保对 LLM 友好。
 
-        截断超长文本避免撑爆 context；对 JSON 数组/对象做展平，
-        其他情况直接返回原文。
+        先整体解析 + 展平，最后再对纯文本截断——绝不能先截断原始 JSON
+        （会产出非法 JSON、丢失分页元数据如 get_hot_topics 的 next_offset）。
         """
-        MAX_LEN = 4096
-        if len(raw) > MAX_LEN:
-            raw = raw[:MAX_LEN] + f"\n\n[截断: 原始结果过长 ({len(raw)} 字符)，仅保留前 {MAX_LEN} 字符]"
-
         try:
             obj = json.loads(raw)
         except (json.JSONDecodeError, ValueError):
             obj = None
 
-        # JSON 数组 -> 逐条展平（MCP search_news 等返回 list[dict]）
         if isinstance(obj, list):
-            parts = [f"共 {len(obj)} 条结果:\n"]
-            for i, item in enumerate(obj, 1):
-                if not isinstance(item, dict):
-                    parts.append(f"{i}. {item}")
-                    continue
-                title = item.get("title") or item.get("name") or f"条目 {i}"
-                source = item.get("source") or item.get("source_name") or ""
-                desc = item.get("summary") or item.get("description") or ""
-                line = f"{i}. {title}"
-                if source:
-                    line += f" ({source})"
-                parts.append(line)
-                if desc:
-                    parts.append(f"   {desc[:300]}")
-                for key in ("heat_score", "sentiment_score", "score", "price", "change"):
-                    val = item.get(key)
-                    if val is not None:
-                        parts.append(f"   {key}: {val}")
-                parts.append("")
-            return "\n".join(parts)
-
-        # 单个 JSON 对象 -> key: value 展平
-        if isinstance(obj, dict):
+            text = _flatten_items(obj)
+        elif isinstance(obj, dict):
+            # key: value 展平；嵌套 list（get_hot_topics 的 items）逐条展平
             parts = []
             for k, v in obj.items():
-                if isinstance(v, (list, dict)):
-                    v_str = json.dumps(v, ensure_ascii=False)[:200]
+                if isinstance(v, list):
+                    parts.append(f"{k}:\n{_flatten_items(v)}")
+                elif isinstance(v, dict):
+                    parts.append(f"{k}: {json.dumps(v, ensure_ascii=False)[:500]}")
                 else:
-                    v_str = str(v)
-                parts.append(f"{k}: {v_str}")
-            return "\n".join(parts)
+                    parts.append(f"{k}: {v}")
+            text = "\n".join(parts)
+        else:
+            text = raw
 
-        return raw
+        # 展平后再截断（够容纳 get_hot_topics 30 条热点完整展平）
+        MAX_LEN = 16384
+        if len(text) > MAX_LEN:
+            text = text[:MAX_LEN] + (
+                f"\n\n[截断: 结果过长 ({len(text)} 字符)，仅保留前 {MAX_LEN} 字符]"
+            )
+        return text
 
     # ── 消息构建 ──────────────────────────────────────────────
 

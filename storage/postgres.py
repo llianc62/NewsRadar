@@ -121,6 +121,14 @@ DO NOTHING"""
 
 _FALLBACK_INSERT_SQL = f"{_INSERT_PREFIX}"
 
+# get_recent_news 排序白名单 — ORDER BY 无法参数化，只允许查表取值拼接。
+# 每个子句都以 created_at 收尾作决胜键，保证并列分数时分页顺序确定。
+_RECENT_NEWS_ORDER_BY = {
+    "created": "created_at DESC NULLS LAST, heat_score DESC NULLS LAST",
+    "heat": "heat_score DESC NULLS LAST, created_at DESC NULLS LAST",
+    "sentiment": "sentiment_score DESC NULLS LAST, created_at DESC NULLS LAST",
+}
+
 
 def _load_schema() -> str:
     """Read the PostgreSQL schema DDL from schema_postgres.sql."""
@@ -1118,8 +1126,20 @@ class PostgreSQL:
         search: Optional[str] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
+        order_by: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Return recent news articles with optional filters."""
+        """Return recent news articles with optional filters.
+
+        Args:
+            order_by: 排序键（created=抓取时间默认, heat=热度, sentiment=情绪）。
+        """
+        try:
+            order_clause = _RECENT_NEWS_ORDER_BY[order_by or "created"]
+        except KeyError:
+            raise ValueError(
+                f"Unsupported order_by: {order_by!r} "
+                f"(supported: {', '.join(_RECENT_NEWS_ORDER_BY)})"
+            )
         conditions = ["TRUE"]
         params: List[Any] = []
 
@@ -1182,7 +1202,7 @@ class PostgreSQL:
                                published_at, created_at
                         FROM news_articles
                         WHERE {where}
-                        ORDER BY created_at DESC NULLS LAST, heat_score DESC NULLS LAST
+                        ORDER BY {order_clause}
                         LIMIT %s OFFSET %s""",
                     params + [limit, offset],
                 )
