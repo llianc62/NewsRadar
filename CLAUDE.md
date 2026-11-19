@@ -28,6 +28,7 @@ cli/
 ├── notify.py     # python -m cli notify — 关键词匹配 → 邮件
 ├── grab.py       # python -m cli grab-one — 单 URL 测试
 ├── knowledge.py  # python -m cli knowledge - 知识库 ingest/search/list/clear
+├── agent.py      # python -m cli agent - 角色定义 create/list/delete
 └── db.py         # python -m cli db clear — 数据库维护
 ```
 
@@ -36,7 +37,7 @@ cli/
 ## 环境设置
 
 ```bash
-# 1. 安装依赖 (Python >= 3.12)
+# 1. 安装依赖 (Python 3.13 —— 见 .python-version；3.15 无 psycopg2-binary wheel)
 uv sync
 uv pip install pytest  # pytest 不在 pyproject.toml 中
 crawl4ai-setup  # 装 patchright 浏览器(WAF 站点抓取)
@@ -44,12 +45,19 @@ crawl4ai-setup  # 装 patchright 浏览器(WAF 站点抓取)
 # 2. 启动基础设施 (PostgreSQL 16 + MinIO)
 docker compose up -d
 
-# 3. 配置环境变量
+# 3. 配置环境变量（config.py 在 import 时自动加载 .env，不需要 source）
 cp env.example .env
-# 按需编辑 .env，至少填写 EMAIL_* 和 S3 相关变量
+# 按需编辑 .env，至少填写 EMAIL_*、S3、MODELS_*_API_KEY
+
+# 4. Ollama —— 知识库 embedding（knowledge.enabled: true 时必需）
+brew install ollama
+brew services start ollama        # 常驻 :11434
+ollama pull nomic-embed-text      # 768 维，必须与 KNOWLEDGE_EMBEDDING_DIM 一致
 ```
 
-配置优先级：**环境变量 > config.yaml**。可通过 `CONFIG_PATH` 指定配置文件路径。
+Ollama 只在知识库开启时需要：`knowledge.enabled: false` 时角色退化为纯 prompt；也可把 `KNOWLEDGE_EMBEDDING_BASE_URL` 指向其它 OpenAI 兼容 `/v1/embeddings` 服务。
+
+配置优先级：**环境变量 > .env > config.yaml**。`.env` 由 `config.py` 在 import 时 `load_dotenv(override=False)` 加载（main / `python -m cli` / MCP server 全入口生效），shell 里已 export 的变量优先。可通过 `CONFIG_PATH` 指定配置文件路径。
 
 ## Commands
 
@@ -160,7 +168,7 @@ All fetchers return `list[dict]` — flat list of standardised item dicts. Failu
 - `news/crawler.py` — `Crawler` class. Public API: `fetch()`, `fetch_all()`, `enrich_content()`, `sync_from_cloud()`, `retry_failed_tasks()`. WAF 站点(huxiu/xueqiu/juejin)用 crawl4ai(undetected+magic+simulate_user)下载 HTML 绕过阿里云滑块,拿到 HTML 后走现有 parser;非 WAF 站点走 requests。阿里云 WAF 按**浏览器会话(profile/cookie)**拉黑——同一浏览器内重试必再被挑战或再超时(挂起连接不返回滑块页),故检测到挑战页**或导航超时/抓取失败(success=False)** 后 `_recycle_crawl4ai()` 关停旧浏览器换全新 profile 再重试(同 IP 新浏览器立即放行)
 - `news/models.py` — `NewsItem` / `NewsData` dataclasses. `NewsItem.ranks` = `[[rank, total], ...]` JSONB; `heat_score` = 0-100
 - `news/fetcher/` — `Fetcher` ABC + `NewsnowFetcher` + `RssFetcher`
-- `news/parser/` — HtmlParser + Registry + 12 site-specific parsers. Three-tier extraction: custom hook → readability → HTML-strip fallback
+- `news/parser/` — HtmlParser + Registry + 24 个站点解析器（29 条 source_id 注册）。Three-tier extraction: custom hook → readability → HTML-strip fallback
 - `news/analyzer/` — `Analyzer` ABC + `JiebaAnalyzer` (heat + sentiment + keywords) + `AgentAnalyzer` (reserved)
 - `news/images.py` — `ImageProcessor`: concurrent download → `FileStorage` backend
 - `news/notifier.py` — HTML report + SMTP email
@@ -365,6 +373,7 @@ pgvector 语义检索知识库，作为角色扮演 agent 的专业知识来源�
 - **表**：`knowledge_chunks`（`vector(N)` + HNSW `vector_cosine_ops` 索引），namespace 隔离（`investing/buffett`、`macro-economics`…）。DDL 在 `storage/postgres.py:_init_agent_schema()`，需 `pgvector/pgvector:pg16` 镜像。
 - **注入**：`KnowledgeEngine.search(ctx)` 由 executor 在 `_prepare` 调用 -> `ctx.memories.append(MemoryBlock(source="knowledge", order=20))`。`_build_llm_messages` 按 order 拼成 `## 知识库` system 块。KnowledgeEngine 构造时绑定 `namespace`。
 - **配置**：`knowledge:` 段（`enabled`/`embedding_*`/`top_k`/`table`）。`enabled: false` 时 KnowledgeEngine=None，角色退化为纯 prompt。
+- **embedding 后端**：任意 OpenAI 兼容 `/v1/embeddings` 服务。本机走 Ollama：`KNOWLEDGE_EMBEDDING_BASE_URL=http://localhost:11434/v1`、`KNOWLEDGE_EMBEDDING_MODEL=nomic-embed-text`、`KNOWLEDGE_EMBEDDING_DIM=768`（DeepSeek 无 embedding 端点）。**向量维度在 `knowledge_chunks` 建表时固化**，换模型必须同步改 `KNOWLEDGE_EMBEDDING_DIM` 并 DROP 重建该表；Ollama 未运行时不会阻塞启动，只在 ingest/search 时报错。
 - **CLI**：`python -m cli knowledge ingest <file> --namespace buffett` / `search` / `list` / `clear`。
 
 ### Factory
@@ -425,7 +434,7 @@ To add a new site parser:
 
 ## Tests
 
-39 test files in `tests/`. Site-specific parser tests use real HTML fixtures in `tests/parser_sites/`. Shared fixtures in `conftest.py` and `conftest_db.py`.
+46 test files in `tests/`. Site-specific parser tests use real HTML fixtures in `tests/parser_sites/`（20 个站点 fixture 文件）. Shared fixtures in `conftest.py` and `conftest_db.py`.
 
 ### Agent test files
 
@@ -486,21 +495,30 @@ hub._clients["default"] = mock_client  # 注入 mock
 
 ## Key env vars
 
-`PG_*`, `CLOUD_S3_*` (SQLite transfer), `RESOURCE_S3_*` (images/MinIO), `EMAIL_*`, `AI_API_*` (LLM，预留给 AgentAnalyzer), `WEB_HOST/PORT`, `CONFIG_PATH`.
+`PG_*`, `CLOUD_S3_*` (SQLite transfer), `RESOURCE_S3_*` (images/MinIO), `EMAIL_*`, `WEB_HOST/PORT`, `CONFIG_PATH`，以及：
 
-Agent 依赖 `config.yaml` 的 `agent.models` 段，通过环境变量 `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` 注入 API key：
+| 变量族 | 作用 |
+|--------|------|
+| `MODELS_<NAME>_{MODEL,BASE_URL,API_KEY}` | 覆盖 `agent.models.<name>`（`DEFAULT`/`QUICK`/`DEEP` 三档），优先级高于 YAML |
+| `KNOWLEDGE_{ENABLED,EMBEDDING_BASE_URL,EMBEDDING_API_KEY,EMBEDDING_MODEL,EMBEDDING_DIM,TOP_K}` | 知识库开关与 embedding（本机 Ollama：`http://localhost:11434/v1` + `nomic-embed-text` + 768 维） |
+| `AI_API_*` | LLM 通用配置，预留给 `AgentAnalyzer` |
+
+Agent 依赖 `config.yaml` 的 `agent.models` 段（`default`/`quick`/`deep` 是模型档位，不是 agent 类型），api_key 建议留空由环境变量注入：
 
 ```yaml
 agent:
   models:
     default:
       protocol: openai            # openai | anthropic
-      model: gpt-4o-mini
-      api_key: ${OPENAI_API_KEY}
-    quick:
-      protocol: openai
-      model: gpt-4o-mini
-      api_key: ${OPENAI_API_KEY}
+      model: deepseek-v4-flash
+      base_url: "https://api.deepseek.com"
+      api_key: ""                 # 由 MODELS_DEFAULT_API_KEY 注入
+```
+
+```bash
+MODELS_DEFAULT_API_KEY=sk-...
+MODELS_QUICK_API_KEY=sk-...
+MODELS_DEEP_API_KEY=sk-...
 ```
 
 Daemon 启动时构建 Agent（`agent.models` 必填）。Agent 路由始终注册。

@@ -35,3 +35,6 @@ findings.md
 progress.md
 
 .env
+
+# 迁移用的 dump/镜像 tar（本地临时）
+migrate/
