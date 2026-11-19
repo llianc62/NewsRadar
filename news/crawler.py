@@ -57,22 +57,6 @@ MAX_IMAGE_PROCESSOR_WORKERS = 20  # Limit for concurrent image downloads
 
 _WAF_DOMAINS: frozenset[str] = frozenset({"xueqiu.com", "huxiu.com", "juejin.cn"})
 
-
-def _env_proxy_url() -> str | None:
-    """读标准代理环境变量，供 playwright/crawl4ai 显式注入。
-
-    requests/httpx 默认 trust_env 已读这些变量，但浏览器层不读，
-    需在浏览器构造处显式传入。HTTPS 优先，与 requests 语义一致。
-    """
-    return (
-        os.environ.get("HTTPS_PROXY")
-        or os.environ.get("https_proxy")
-        or os.environ.get("HTTP_PROXY")
-        or os.environ.get("http_proxy")
-        or None
-    )
-
-
 # User-Agent pool for Playwright — rotated per request to reduce fingerprinting
 _PLAYWRIGHT_USER_AGENTS: list[str] = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
@@ -519,9 +503,10 @@ class Crawler:
         def _init_worker() -> None:
             from playwright.sync_api import sync_playwright
 
-            launch_kwargs = {
-                "headless": True,
-                "args": [
+            pw = sync_playwright().start()
+            self._playwright_browsers[domain] = (pw, pw.chromium.launch(
+                headless=True,
+                args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
@@ -529,14 +514,7 @@ class Crawler:
                     "--disable-gpu",
                     "--disable-features=IsolateOrigins,site-per-process",
                 ],
-            }
-            proxy_url = _env_proxy_url()
-            if proxy_url:
-                launch_kwargs["proxy"] = {"server": proxy_url}
-            pw = sync_playwright().start()
-            self._playwright_browsers[domain] = (
-                pw, pw.chromium.launch(**launch_kwargs),
-            )
+            ))
 
         self._playwright_executors[domain] = ThreadPoolExecutor(
             max_workers=1, initializer=_init_worker,
@@ -685,7 +663,6 @@ class Crawler:
 
             def _run_loop() -> None:
                 asyncio.set_event_loop(loop)
-                proxy_url = _env_proxy_url()
                 crawler = AsyncWebCrawler(config=BrowserConfig(
                     browser_type="undetected",
                     headless=True,
@@ -696,7 +673,6 @@ class Crawler:
                         "--disable-dev-shm-usage",
                         "--disable-gpu",
                     ],
-                    proxy_config={"server": proxy_url} if proxy_url else None,
                 ))
                 loop.run_until_complete(crawler.start())
                 self._crawl4ai_crawler = crawler
