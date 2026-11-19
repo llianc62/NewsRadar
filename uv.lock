@@ -1773,7 +1773,7 @@ wheels = [
 ]
 
 [[package]]
-name = "newsnow-crawler"
+name = "newsradar"
 version = "2.0.0"
 source = { editable = "." }
 dependencies = [

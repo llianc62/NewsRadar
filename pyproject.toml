@@ -1,5 +1,5 @@
 [project]
-name = "newsnow-crawler"
+name = "newsradar"
 version = "2.0.0"
 description = "NewsRadar — news aggregation, notification, and web dashboard"
 requires-python = ">=3.12"
