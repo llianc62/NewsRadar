@@ -815,37 +815,47 @@ async def test_run_stream_empty_stream_finalizes(mock_brain):
 
 
 @pytest.mark.asyncio
-async def test_run_stream_tool_cap_guidance_merged_into_head_system(mock_brain, mock_tools):
-    """max_tool_rounds 打满后:摘 schemas + 引导并入头部 system 块。
+async def test_run_stream_tool_cap_intercepts_execution(mock_brain, mock_tools):
+    """max_tool_rounds 打满后:schemas 继续绑定 + 超限工具不再执行,回填"已达上限"。
 
-    引导不能作为尾部 system 消息追加 -- langchain-anthropic 拒绝非连续
-    system 消息(anthropic 协议请求直接 400)。且引导不得进 ctx.messages。
+    session 44 / 67 事故回归:旧的"摘 schemas + 注入引导"会让 DeepSeek 在
+    请求缺 tools 时把工具调用意图写成 DSML 纯文本。新逻辑全程保留 schemas,
+    超限后不摘、不再执行,而是回填确定性错误结果,逼模型收尾为普通文本。
     """
     mock_tools.get_schemas.return_value = [{"type": "function", "function": {"name": "f"}}]
-    seen_messages: list[list[dict]] = []
+    schemas_per_call: list = []
+    streams = [
+        make_chunk_stream([tool_call_chunk(name="tool", args="{}", call_id="c0")]),
+        make_chunk_stream([tool_call_chunk(name="tool", args="{}", call_id="c1")]),
+        make_chat_stream(["基于已有信息回答"]),
+    ]
+    it = iter(streams)
 
     async def _stream(*args, **kwargs):
-        seen_messages.append(list(kwargs["messages"]))
-        yield tool_call_chunk(name="loop_tool", args="{}")
+        schemas_per_call.append(kwargs.get("tools"))
+        async for c in next(it)():
+            yield c
 
     mock_brain.chat_stream = _stream
-    mock_tools.execute = AsyncMock(return_value="ok")
+    mock_tools.execute = AsyncMock(return_value="collected")
     ex = ReActExecutor(brain=mock_brain, memory=NullMemory(),
                        tools=mock_tools, max_tool_rounds=1, max_steps=3)
-    ctx = Context(user_input="hi", system_prompt="你是助手")
-    [t async for t in ex.run_stream(ctx)]
+    ctx = Context(user_input="hi")
+    tokens = [t async for t in ex.run_stream(ctx)]
 
-    # 第二次调用起:无 tools(已摘)+ 引导并入首条 system
-    assert seen_messages[0][0]["role"] == "system"
-    assert "工具调用轮次已达上限" not in seen_messages[0][0]["content"]
-    for msgs in seen_messages[1:]:
-        assert "工具调用轮次已达上限" in msgs[0]["content"]
-        # 关键回归:不得出现非连续/尾部 system 消息
-        assert msgs[-1]["role"] != "system"
-        assert [m["role"] for m in msgs].count("system") == 1
-    # 引导不进对话历史
-    assert all("工具调用轮次已达上限" not in (m.content or "")
-               for m in ctx.messages)
+    # 1) 三次 chat_stream 全部带 schemas(从未摘除 → 模型永远走结构化 tool 通道)
+    assert len(schemas_per_call) == 3
+    assert all(s == mock_tools.get_schemas.return_value for s in schemas_per_call)
+    # 2) 只执行了第一轮工具,第二轮起被拦截不执行
+    assert mock_tools.execute.await_count == 1
+    # 3) 被拦截的工具返回"已达上限"结果,而非真实执行
+    tool_msgs = [m for m in ctx.messages if m.role == "tool"]
+    assert len(tool_msgs) == 2
+    assert tool_msgs[0].content == "collected"
+    assert "已达上限" in tool_msgs[1].content
+    # 4) 最终输出为普通文本,不含任何 DSML 标记
+    assert "".join(tokens) == "基于已有信息回答"
+    assert "｜" not in "".join(tokens)
 
 
 @pytest.mark.asyncio

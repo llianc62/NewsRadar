@@ -149,7 +149,7 @@ async def create_agent(
     config: dict,
     *,
     system_prompt: str = "",
-    max_steps: int = 10,
+    max_steps: int = 50,
     register_mcp: bool = True,
     mcp_cfg: dict | None = None,
     db=None,

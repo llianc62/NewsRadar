@@ -22,11 +22,12 @@ from .data import Context, Message, ToolResult
 
 logger = logging.getLogger(__name__)
 
-#: ``max_tool_rounds`` 打满后注入的引导语。摘除 tool schemas 后必须显式告知
-#: 模型"不要再调工具"，否则 DeepSeek 等模型会把工具调用意图写成 DSML 等
-#: 标记纯文本（与请求不带 tools 时同一退化路径）。
-_TOOL_CAP_GUIDANCE = (
-    "工具调用轮次已达上限。请基于已获取的信息直接回答，不要再尝试调用工具。"
+#: ``max_tool_rounds`` 打满后，对仍想调工具的模型回填的工具结果。全程保留
+#: tool schemas（不摘除），超限后不再执行工具、而是返回此错误结果，逼模型
+#: 基于已获取信息收尾——从根上避免"请求缺 tools 时 DeepSeek 把工具调用
+#: 意图写成 DSML 标记纯文本"的退化路径（session 44 / 67 事故）。
+_TOOL_CAP_RESULT = (
+    "工具调用轮次已达上限，此工具未执行。请基于已获取的信息直接回答，不要再尝试调用工具。"
 )
 
 
@@ -240,9 +241,10 @@ class ReActExecutor(Executor):
     - ``_build_messages`` 只执行一次，不再每轮重复拼接 user_input
     - 检查 ``stop_reason``，截断时（length）不执行不完整的工具调用
     - 每个工具调用独立 try/except，错误不污染其他工具
-    - 保留 tool schemas 直到 ``max_tool_rounds`` 轮后移除（并注入收尾引导），
-      确保 LLM 始终能正确输出结构化 JSON tool_calls，避免因 schemas 缺失导致
-      LLM 退化为 XML/DSML 文本格式
+    - 全程绑定 tool schemas（非流式/流式一致），``max_tool_rounds`` 打满后
+      不再执行工具、而是回填"工具调用轮次已达上限"的错误结果，逼模型基于
+      已有信息收尾——模型始终收到结构化 tool_calls，杜绝"缺 tools 时
+      DeepSeek 把工具调用意图写成 XML/DSML 文本"的退化路径
     - 真正的流式输出：流式路径每步 ``chat_stream`` 且始终绑定 tool schemas，
       聚合 chunk 还原 tool_calls，最终回答不再二次生成
     """
@@ -253,8 +255,8 @@ class ReActExecutor(Executor):
         memory: MemoryModule,
         knowledge=None,
         tools=None,
-        max_steps: int = 10,
-        max_tool_rounds: int = 5,
+        max_steps: int = 50,
+        max_tool_rounds: int = 20,
         llm_max_retries: int = 2,
         tool_max_retries: int = 1,
         approval_callback=None,
@@ -330,30 +332,10 @@ class ReActExecutor(Executor):
 
     # ── 推理循环 (Task 8) ──────────────────────────────────────
 
-    @staticmethod
-    def _merge_guidance(llm_messages: list[dict], guidance: str) -> None:
-        """把收尾引导并入头部 system 块(就地修改)。
-
-        不能追加为尾部 system 消息:langchain-anthropic 拒绝非连续的多条
-        system 消息( anthropic 协议请求会直接 400)。无 system 消息时在
-        头部插入一条。
-        """
-        if not guidance:
-            return
-        if llm_messages and llm_messages[0].get("role") == "system":
-            llm_messages[0]["content"] = (
-                f"{llm_messages[0]['content']}\n\n{guidance}"
-            )
-        else:
-            llm_messages.insert(0, {"role": "system", "content": guidance})
-
-    async def _react_step(self, ctx: Context, client, tool_schemas, model_version,
-                          guidance: str = ""):
+    async def _react_step(self, ctx: Context, client, tool_schemas, model_version):
         """单步 LLM 调用 -- hooks + 重试 + 字段提取 + token 累计。
 
         不修改 ``ctx.messages``(由调用方决定如何 append assistant 消息)。
-        ``guidance`` 非空时并入头部 system 块(不进 ctx.messages)，用于
-        ``max_tool_rounds`` 打满后的收尾引导。
         返回 ``(ai, tool_calls, finish_reason)``。
         """
         for h in self._hooks:
@@ -361,7 +343,6 @@ class ReActExecutor(Executor):
             except Exception as e: logger.warning("before_chat hook: %s", e)
 
         llm_messages = self._build_llm_messages(ctx)
-        self._merge_guidance(llm_messages, guidance)
         ai = await self._call_llm(client, llm_messages, tool_schemas, ctx)
 
         for h in self._hooks:
@@ -393,11 +374,10 @@ class ReActExecutor(Executor):
         client = self._brain.get(ctx.model_name or "default")
         model_version = self._brain.get_model_version(ctx.model_name or "default")
         tool_rounds = 0
-        guidance = ""
 
         for step in range(self.max_steps):
             ai, tool_calls, finish_reason = await self._react_step(
-                ctx, client, tool_schemas, model_version, guidance=guidance,
+                ctx, client, tool_schemas, model_version,
             )
             ctx.messages.append(
                 self._make_assistant_msg(ai, tool_calls, model_version)
@@ -416,12 +396,17 @@ class ReActExecutor(Executor):
                 ctx.step_count = step + 1
                 return
 
-            await self._execute_tool_calls(tool_calls, ctx)
-
             tool_rounds += 1
-            if tool_rounds >= self.max_tool_rounds:
-                tool_schemas = None
-                guidance = _TOOL_CAP_GUIDANCE
+            if tool_rounds > self.max_tool_rounds:
+                # 工具轮超限:不执行,回填"已达上限"结果(全程保留 schemas),
+                # 逼模型基于已有信息收尾,而非在缺 tools 时退化写 DSML 文本
+                for tc in tool_calls:
+                    ctx.messages.append(Message(
+                        role="tool", tool_call_id=tc.get("id", ""),
+                        content=_TOOL_CAP_RESULT, name=tc.get("name", ""),
+                    ))
+            else:
+                await self._execute_tool_calls(tool_calls, ctx)
         ctx.step_count = self.max_steps
 
     async def _call_llm(self, client, messages, tool_schemas, ctx):
@@ -566,7 +551,6 @@ class ReActExecutor(Executor):
         client = self._brain.get(ctx.model_name or "default")
         model_version = self._brain.get_model_version(ctx.model_name or "default")
         tool_rounds = 0
-        guidance = ""
 
         for step in range(self.max_steps):
             for h in self._hooks:
@@ -574,7 +558,6 @@ class ReActExecutor(Executor):
                 except Exception as e: logger.warning("before_chat hook: %s", e)
 
             llm_messages = self._build_llm_messages(ctx)
-            self._merge_guidance(llm_messages, guidance)
 
             agg = None
             chunks: list[str] = []
@@ -656,12 +639,16 @@ class ReActExecutor(Executor):
                 ctx.step_count = step + 1
                 return
 
-            await self._execute_tool_calls(tool_calls, ctx)
-
             tool_rounds += 1
-            if tool_rounds >= self.max_tool_rounds:
-                tool_schemas = None
-                guidance = _TOOL_CAP_GUIDANCE
+            if tool_rounds > self.max_tool_rounds:
+                # 工具轮超限:不执行,回填"已达上限"结果(全程保留 schemas)
+                for tc in tool_calls:
+                    ctx.messages.append(Message(
+                        role="tool", tool_call_id=tc.get("id", ""),
+                        content=_TOOL_CAP_RESULT, name=tc.get("name", ""),
+                    ))
+            else:
+                await self._execute_tool_calls(tool_calls, ctx)
         ctx.step_count = self.max_steps
         fallback = (ctx.messages[-1].content or "已达最大步数") if ctx.messages else "已达最大步数"
         yield fallback

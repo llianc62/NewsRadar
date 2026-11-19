@@ -256,7 +256,7 @@ DefaultAgent (编排器,构造时注入组件给 executor)
 
 - **@tool decorator** (`agent/tools/base.py`): 自动从类型注解 + Google-style docstring 生成 OpenAI format JSON Schema。支持 sync/async、默认值、可选参数。
 - **Executor 三阶段** (`agent/executor.py`): `_prepare`(memory.load + knowledge.search + 组装 messages) -> `_loop`(LLM 推理 + 工具执行循环) -> `_finalize`(memory.save)。`run(ctx)` 只收数据,组件构造注入。DirectExecutor 继承 ReActExecutor 共享骨架,只 override `_loop`(单次 chat)。
-- **流式必须绑 tools** (`agent/executor.py` `_loop_stream`): 流式路径每步 `chat_stream(tools=...)` 且始终绑定 tool schemas,`AIMessageChunk` 聚合(`+`)还原 tool_calls。**请求缺 tools 时 DeepSeek 会把工具调用意图写成 DSML 标记纯文本流给用户**(session 44 事故);`max_tool_rounds` 打满后摘 schemas 的同时注入收尾引导(临时 system 消息,不进 ctx.messages)同理。`_chunk_text` 兼容 OpenAI str content 与 Anthropic block 列表(thinking/text/tool_use)。
+- **流式必须绑 tools** (`agent/executor.py` `_loop_stream`): 流式路径每步 `chat_stream(tools=...)` 且始终绑定 tool schemas,`AIMessageChunk` 聚合(`+`)还原 tool_calls。**请求缺 tools 时 DeepSeek 会把工具调用意图写成 DSML 标记纯文本流给用户**(session 44 事故),故全程(含非流式 `_loop`)不摘 schemas;`max_tool_rounds` 打满后不再执行工具,而是给仍想调工具的模型回填一条 `_TOOL_CAP_RESULT`("已达上限,此工具未执行")的 tool 结果,逼它基于已有信息收尾(session 67 事故同根因,旧方案"摘 schemas + 注入收尾引导"已废弃)。`_chunk_text` 兼容 OpenAI str content 与 Anthropic block 列表(thinking/text/tool_use)。
 - **ExecutorHook**: 生命周期 hook(`before_chat`/`after_chat`/`before_tool`/`after_tool`/`on_error`),子类按需 override,默认 no-op。`approval_callback`/`_normalize_tool_result` 内置策略,不混入 hook。
 - **鲁棒性**: LLM 调用重试(`llm_max_retries` + 退避)、单工具异常隔离(记 `ToolResult.error` 继续循环)、memory/knowledge 失败降级、整体 try/except 兜底(错误文本不进 messages,返回调用方)。executor 永不向调用方抛未捕获异常。
 - **ToolResult**: 结构化记录(name/args/result/error/timing/retries/success),归 tool 消息 `tool_result` 字段(不存 ctx),供 troubleshooting + memory 消费。
