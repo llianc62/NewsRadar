@@ -22,6 +22,15 @@ from typing import Any, Dict, Optional
 
 import yaml
 
+# 加载项目根目录的 .env（env.example 的 export 格式），让 main.py / `python -m cli`
+# / MCP server 等所有入口都吃到同一份配置；已在 shell 里 export 的变量优先级更高。
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).parent / ".env", override=False)
+except ImportError:  # python-dotenv 缺失时跳过，仍可用 shell 注入环境变量
+    pass
+
 
 # =========================================================================
 # Environment variable helpers
