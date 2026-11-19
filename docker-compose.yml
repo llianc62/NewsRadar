@@ -22,8 +22,14 @@ services:
     restart: unless-stopped
 
   minio:
-    image: minio/minio:latest
+    # MinIO 社区版已归档：官方镜像从 Docker Hub/Quay 删除，源码停止维护。
+    # 这里用 Silo —— Pigsty 维护的 MinIO fork，S3 API / MINIO_* 环境变量 /
+    # .minio.sys 磁盘格式 / console 端口全部兼容，属于原地替换（无需数据迁移）。
+    # 备选：ifirestone/minio:RELEASE.2026-09-22T19-25-18Z（Chainguard 构建的上游归档代码）。
+    image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z
     container_name: newsradar-minio
+    # 数据卷内的文件由旧镜像以 root 写入，显式用 root 运行以免挂载卷不可写。
+    user: "0:0"
     ports:
       - "9000:9000"   # API
       - "9001:9001"   # Console
