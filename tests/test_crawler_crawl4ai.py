@@ -13,6 +13,13 @@ import pytest
 from news.crawler import Crawler, _env_proxy_url
 
 
+@pytest.fixture(autouse=True)
+def _clean_proxy_env(monkeypatch):
+    """每个测试从干净代理环境起步,避免开发者机器残留 *_proxy 污染断言。"""
+    for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        monkeypatch.delenv(var, raising=False)
+
+
 @pytest.fixture
 def crawler():
     """最小 config 构造 Crawler(不连 DB,不启动浏览器,lazy)。"""
