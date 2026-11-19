@@ -213,9 +213,12 @@ class PostgreSQL:
         else:
             print("[DB] Schema already exists — running migrations.")
 
+        # Agent 表先建：migration 009 会 ALTER agent_messages，全新库上空表
+        # 会让该 migration 抛 UndefinedTable（_init_agent_schema 本身幂等）。
+        self._init_agent_schema()
+
         # Always run migrations (idempotent)
         self._run_migrations()
-        self._init_agent_schema()
 
     def _run_migrations(self) -> None:
         """Idempotent schema migrations."""
