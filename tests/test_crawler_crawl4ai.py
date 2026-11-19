@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from news.crawler import Crawler
+from news.crawler import Crawler, _env_proxy_url
 
 
 @pytest.fixture
@@ -258,3 +258,83 @@ def test_recycle_noop_when_not_initialized(crawler, monkeypatch):
     crawler._recycle_crawl4ai()
     closed.assert_not_called()
     ensured.assert_not_called()
+
+
+# ── _env_proxy_url ──────────────────────────────────────────────────
+
+
+def test_env_proxy_url_reads_https_proxy(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    assert _env_proxy_url() == "http://127.0.0.1:7890"
+
+
+def test_env_proxy_url_reads_lowercase(monkeypatch):
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    monkeypatch.setenv("https_proxy", "http://127.0.0.1:7890")
+    assert _env_proxy_url() == "http://127.0.0.1:7890"
+
+
+def test_env_proxy_url_https_wins_over_http(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7891")
+    assert _env_proxy_url() == "http://127.0.0.1:7890"
+
+
+def test_env_proxy_url_empty_string_is_unset(monkeypatch):
+    monkeypatch.setenv("HTTPS_PROXY", "")
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    assert _env_proxy_url() is None
+
+
+def test_env_proxy_url_unset_returns_none(monkeypatch):
+    for var in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        monkeypatch.delenv(var, raising=False)
+    assert _env_proxy_url() is None
+
+
+def test_env_proxy_url_falls_back_to_http_proxy(monkeypatch):
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7891")
+    assert _env_proxy_url() == "http://127.0.0.1:7891"
+
+
+# ── _ensure_crawl4ai 代理注入 ───────────────────────────────────────
+
+
+def test_ensure_crawl4ai_passes_proxy_to_browser_config(crawler, monkeypatch):
+    """设了代理 env 时,BrowserConfig 应收到 proxy_config dict。"""
+    import sys
+    import types
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
+
+    browser_config_calls = []
+
+    def fake_browser_config(**kwargs):
+        browser_config_calls.append(kwargs)
+        return MagicMock()
+
+    async def _noop():
+        return None
+
+    fake_crawler = MagicMock()
+    fake_crawler.start.side_effect = _noop   # 返回协程对象,供 run_until_complete
+    fake_crawler.close.side_effect = _noop
+
+    def fake_async_web_crawler(config):
+        return fake_crawler
+
+    fake = types.ModuleType("crawl4ai")
+    fake.AsyncWebCrawler = fake_async_web_crawler
+    fake.BrowserConfig = fake_browser_config
+    monkeypatch.setitem(sys.modules, "crawl4ai", fake)
+
+    try:
+        crawler._ensure_crawl4ai()
+        assert browser_config_calls[0]["proxy_config"] == {
+            "server": "http://127.0.0.1:7890",
+        }
+    finally:
+        crawler._close_crawl4ai()
