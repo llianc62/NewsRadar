@@ -502,6 +502,7 @@ hub._clients["default"] = mock_client  # 注入 mock
 | `MODELS_<NAME>_{MODEL,BASE_URL,API_KEY}` | 覆盖 `agent.models.<name>`（`DEFAULT`/`QUICK`/`DEEP` 三档），优先级高于 YAML |
 | `KNOWLEDGE_{ENABLED,EMBEDDING_BASE_URL,EMBEDDING_API_KEY,EMBEDDING_MODEL,EMBEDDING_DIM,TOP_K}` | 知识库开关与 embedding（本机 Ollama：`http://localhost:11434/v1` + `nomic-embed-text` + 768 维） |
 | `AI_API_*` | LLM 通用配置，预留给 `AgentAnalyzer` |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | 抓取出站代理（标准 env 透传；playwright/crawl4ai 浏览器层由代码注入；本地服务须列入 `NO_PROXY`） |
 
 Agent 依赖 `config.yaml` 的 `agent.models` 段（`default`/`quick`/`deep` 是模型档位，不是 agent 类型），api_key 建议留空由环境变量注入：
 

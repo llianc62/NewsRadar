@@ -519,10 +519,9 @@ class Crawler:
         def _init_worker() -> None:
             from playwright.sync_api import sync_playwright
 
-            pw = sync_playwright().start()
-            self._playwright_browsers[domain] = (pw, pw.chromium.launch(
-                headless=True,
-                args=[
+            launch_kwargs = {
+                "headless": True,
+                "args": [
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
@@ -530,7 +529,14 @@ class Crawler:
                     "--disable-gpu",
                     "--disable-features=IsolateOrigins,site-per-process",
                 ],
-            ))
+            }
+            proxy_url = _env_proxy_url()
+            if proxy_url:
+                launch_kwargs["proxy"] = {"server": proxy_url}
+            pw = sync_playwright().start()
+            self._playwright_browsers[domain] = (
+                pw, pw.chromium.launch(**launch_kwargs),
+            )
 
         self._playwright_executors[domain] = ThreadPoolExecutor(
             max_workers=1, initializer=_init_worker,

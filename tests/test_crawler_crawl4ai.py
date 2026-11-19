@@ -338,3 +338,43 @@ def test_ensure_crawl4ai_passes_proxy_to_browser_config(crawler, monkeypatch):
         }
     finally:
         crawler._close_crawl4ai()
+
+
+def test_playwright_launch_gets_proxy_kwargs(crawler, monkeypatch):
+    """设了代理 env 时,chromium.launch 应收到 proxy={"server": ...}。"""
+    import sys
+    import types
+
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7890")
+
+    launch_calls = []
+
+    def fake_launch(**kwargs):
+        launch_calls.append(kwargs)
+        return MagicMock()
+
+    class _FakeChromium:
+        launch = staticmethod(fake_launch)
+
+    class _FakePw:
+        chromium = _FakeChromium()
+
+    class _FakeSyncPlaywright:
+        def start(self):
+            return _FakePw()
+
+    fake = types.ModuleType("playwright.sync_api")
+    fake.sync_playwright = lambda: _FakeSyncPlaywright()
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake)
+
+    try:
+        crawler._get_playwright_executor("huxiu.com")
+    finally:
+        executor = crawler._playwright_executors.pop("huxiu.com", None)
+        if executor is not None:
+            executor.shutdown(wait=False)
+        crawler._playwright_browsers.pop("huxiu.com", None)
+
+    assert launch_calls[0].get("proxy") == {
+        "server": "http://127.0.0.1:7890",
+    }
