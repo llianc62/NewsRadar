@@ -165,7 +165,7 @@ All fetchers return `list[dict]` — flat list of standardised item dicts. Failu
 - image 重试必须在 content 重试 + persist 之后执行（需要文章已在 DB 中才能 UPDATE 图片路径）
 
 ### Key modules
-- `news/crawler.py` — `Crawler` class. Public API: `fetch()`, `fetch_all()`, `enrich_content()`, `sync_from_cloud()`, `retry_failed_tasks()`. WAF 站点(huxiu/xueqiu/juejin)用 crawl4ai(undetected+magic+simulate_user)下载 HTML 绕过阿里云滑块,拿到 HTML 后走现有 parser;非 WAF 站点走 requests。阿里云 WAF 按**浏览器会话(profile/cookie)**拉黑——同一浏览器内重试必再被挑战或再超时(挂起连接不返回滑块页),故检测到挑战页**或导航超时/抓取失败(success=False)** 后 `_recycle_crawl4ai()` 关停旧浏览器换全新 profile 再重试(同 IP 新浏览器立即放行)
+- `news/crawler.py` — `Crawler` class. Public API: `fetch()`, `fetch_all()`, `enrich_content()`, `sync_from_cloud()`, `retry_failed_tasks()`. WAF 站点(huxiu/xueqiu/juejin)用 crawl4ai(undetected+magic+simulate_user)下载 HTML 绕过阿里云滑块,拿到 HTML 后走现有 parser;非 WAF 站点走 requests。阿里云 WAF 按**浏览器会话(profile/cookie)**拉黑——同一浏览器内重试必再被挑战或再超时(挂起连接不返回滑块页),故检测到挑战页**或导航超时/抓取失败(success=False)** 后 `_recycle_crawl4ai()` 关停旧浏览器换全新 profile 再重试(同 IP 新浏览器立即放行)。`_throttle_waf_request()` 每次 arun 前补足 `waf_request_interval`(默认 3s+抖动)拉平同轮 burst;`_download_with_crawl4ai()` 返回 `(html, error)` 把真实失败原因写进 failed_tasks;`_close_crawl4ai()` 超时时兜底停 playwright driver 防 run-driver 进程泄漏。失败任务重试按 `retry_backoff_base_minutes` 指数退避,不再每轮重锤
 - `news/models.py` — `NewsItem` / `NewsData` dataclasses. `NewsItem.ranks` = `[[rank, total], ...]` JSONB; `heat_score` = 0-100
 - `news/fetcher/` — `Fetcher` ABC + `NewsnowFetcher` + `RssFetcher`
 - `news/parser/` — HtmlParser + Registry + 24 个站点解析器（29 条 source_id 注册）。Three-tier extraction: custom hook → readability → HTML-strip fallback

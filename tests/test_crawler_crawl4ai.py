@@ -57,12 +57,10 @@ def test_waf_challenge_negative_empty(crawler):
 # ── _download_and_parse WAF 分支路由 ──────────────────────────────────
 
 
-def test_waf_url_routes_to_crawl4ai_not_playwright(crawler, monkeypatch):
-    """WAF 域名走 crawl4ai,不调 Playwright。"""
-    c4ai = MagicMock(return_value="<html>real content</html>")
-    pw = MagicMock(return_value=(None, "err"))
+def test_waf_url_routes_to_crawl4ai(crawler, monkeypatch):
+    """WAF 域名走 crawl4ai(playwright 分支已删除)。"""
+    c4ai = MagicMock(return_value=("<html>real content</html>", ""))
     monkeypatch.setattr(crawler, "_download_with_crawl4ai", c4ai)
-    monkeypatch.setattr(crawler, "_download_with_playwright", pw)
     monkeypatch.setattr(
         crawler.parser, "parse",
         MagicMock(return_value={"markdown": "md", "title": "t"}),
@@ -71,13 +69,15 @@ def test_waf_url_routes_to_crawl4ai_not_playwright(crawler, monkeypatch):
     item = _make_item()
     assert crawler._download_and_parse(item) is True
     c4ai.assert_called_once()
-    pw.assert_not_called()
     assert item["content"] == "md"
 
 
-def test_crawl4ai_failure_records_failed_tasks(crawler, monkeypatch):
-    """crawl4ai 返回 None -> 记录 failed_tasks,return False。"""
-    monkeypatch.setattr(crawler, "_download_with_crawl4ai", MagicMock(return_value=None))
+def test_crawl4ai_failure_records_real_error(crawler, monkeypatch):
+    """crawl4ai 失败 -> 真实错误透传给 _record_content_fetch_failure。"""
+    monkeypatch.setattr(
+        crawler, "_download_with_crawl4ai",
+        MagicMock(return_value=(None, "WAF challenge detected")),
+    )
     recorded = []
     monkeypatch.setattr(crawler, "_record_content_fetch_failure",
                         lambda item, err: recorded.append((item["url"], err)))
@@ -85,7 +85,7 @@ def test_crawl4ai_failure_records_failed_tasks(crawler, monkeypatch):
     item = _make_item()
     assert crawler._download_and_parse(item) is False
     assert len(recorded) == 1
-    assert "crawl4ai" in recorded[0][1].lower()
+    assert recorded[0][1] == "WAF challenge detected"
 
 
 def test_non_waf_url_uses_requests(crawler, monkeypatch):
@@ -162,10 +162,11 @@ def test_waf_challenge_recycles_browser_then_retries(
     recycle = MagicMock()
     monkeypatch.setattr(crawler, "_recycle_crawl4ai", recycle)
 
-    html = crawler._download_with_crawl4ai(
+    html, error = crawler._download_with_crawl4ai(
         "https://www.huxiu.com/article/1.html", 30)
 
     assert html == "<html><body>正文</body></html>"
+    assert error == ""
     recycle.assert_called_once()
 
 
@@ -192,10 +193,11 @@ def test_nav_timeout_recycles_browser_then_retries(
     recycle = MagicMock()
     monkeypatch.setattr(crawler, "_recycle_crawl4ai", recycle)
 
-    html = crawler._download_with_crawl4ai(
+    html, error = crawler._download_with_crawl4ai(
         "https://www.huxiu.com/article/1.html", 30)
 
     assert html == "<html><body>正文</body></html>"
+    assert error == ""
     recycle.assert_called_once()
 
 
@@ -212,8 +214,10 @@ def test_nav_timeout_all_fail_returns_none(crawler, monkeypatch, fake_loop):
     recycle = MagicMock()
     monkeypatch.setattr(crawler, "_recycle_crawl4ai", recycle)
 
-    assert crawler._download_with_crawl4ai(
-        "https://www.huxiu.com/article/1.html", 30) is None
+    html, error = crawler._download_with_crawl4ai(
+        "https://www.huxiu.com/article/1.html", 30)
+    assert html is None
+    assert "Timeout" in error
     assert recycle.call_count == 2  # max_retry=3,末次失败后不再回收
 
 
@@ -230,8 +234,10 @@ def test_waf_challenge_all_fail_returns_none(crawler, monkeypatch, fake_loop):
     recycle = MagicMock()
     monkeypatch.setattr(crawler, "_recycle_crawl4ai", recycle)
 
-    assert crawler._download_with_crawl4ai(
-        "https://www.huxiu.com/article/1.html", 30) is None
+    html, error = crawler._download_with_crawl4ai(
+        "https://www.huxiu.com/article/1.html", 30)
+    assert html is None
+    assert error == "WAF challenge detected"
     assert recycle.call_count == 2  # max_retry=3,末次挑战后不再回收
 
 
@@ -258,3 +264,93 @@ def test_recycle_noop_when_not_initialized(crawler, monkeypatch):
     crawler._recycle_crawl4ai()
     closed.assert_not_called()
     ensured.assert_not_called()
+
+
+# ── WAF 降频 + 浏览器 driver 回收 ─────────────────────────────────────
+
+
+def test_download_with_crawl4ai_throttles_before_request(
+    crawler, monkeypatch, fake_loop,
+):
+    """每次 arun 前都调用 _throttle_waf_request 拉平突发。"""
+    crawler._crawl4ai_loop = fake_loop
+    monkeypatch.setattr(crawler, "_ensure_crawl4ai", MagicMock())
+    throttle = MagicMock()
+    monkeypatch.setattr(crawler, "_throttle_waf_request", throttle)
+    _install_fake_browser(crawler, [_FakeRunResult("<html><body>ok</body></html>")])
+
+    html, error = crawler._download_with_crawl4ai(
+        "https://www.huxiu.com/article/1.html", 30)
+    assert html == "<html><body>ok</body></html>"
+    assert error == ""
+    throttle.assert_called_once()
+
+
+def test_force_stop_crawl4ai_driver_stops_when_present(crawler, fake_loop):
+    """driver 链存在时 _force_stop_crawl4ai_driver 调 playwright.stop()。"""
+    calls = []
+
+    class _PW:
+        async def stop(self):
+            calls.append("stop")
+
+    class _BM:
+        playwright = _PW()
+
+    class _CS:
+        browser_manager = _BM()
+
+    class _FakeCrawler:
+        crawler_strategy = _CS()
+
+    crawler._force_stop_crawl4ai_driver(_FakeCrawler(), fake_loop)
+    assert calls == ["stop"]
+
+
+def test_force_stop_crawl4ai_driver_noop_when_chain_missing(crawler, fake_loop):
+    """driver 链缺失时静默降级,不抛异常。"""
+    crawler._force_stop_crawl4ai_driver(None, fake_loop)
+    crawler._force_stop_crawl4ai_driver(object(), fake_loop)
+
+
+def test_close_timeout_force_stops_driver(crawler, monkeypatch, fake_loop):
+    """close() 抛异常/超时 -> _close_crawl4ai 兜底调 force_stop。"""
+    fake_crawler = MagicMock()
+    fake_crawler.close.side_effect = RuntimeError("close hung")
+    crawler._crawl4ai_crawler = fake_crawler
+    crawler._crawl4ai_loop = fake_loop
+    force_stop = MagicMock()
+    monkeypatch.setattr(crawler, "_force_stop_crawl4ai_driver", force_stop)
+
+    crawler._close_crawl4ai()
+
+    force_stop.assert_called_once_with(fake_crawler, fake_loop)
+
+
+def test_arun_exception_recycles_browser_then_recovers(
+    crawler, monkeypatch, fake_loop,
+):
+    """arun 抛异常(如浏览器已死)也应回收浏览器,重试后恢复。"""
+    crawler._crawl4ai_loop = fake_loop
+    monkeypatch.setattr(crawler, "_ensure_crawl4ai", MagicMock())
+    recycle = MagicMock()
+    monkeypatch.setattr(crawler, "_recycle_crawl4ai", recycle)
+
+    state = {"n": 0}
+
+    async def flaky_arun(url, config):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise RuntimeError("browser has been closed")
+        return _FakeRunResult("<html><body>正文</body></html>")
+
+    fake = MagicMock()
+    fake.arun = flaky_arun
+    crawler._crawl4ai_crawler = fake
+
+    html, error = crawler._download_with_crawl4ai(
+        "https://www.huxiu.com/article/1.html", 30)
+
+    assert html == "<html><body>正文</body></html>"
+    assert error == ""
+    recycle.assert_called_once()

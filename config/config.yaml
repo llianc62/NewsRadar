@@ -7,6 +7,8 @@ crawler:
   max_workers: 20
   failure_retention_days: 7  # failed_tasks 过期清理（天）
   retry_batch_size: 200     # 每轮重试的失败任务上限（新任务优先）
+  waf_request_interval: 3   # WAF 站浏览器请求最小间隔（秒，+1s 随机抖动）
+  retry_backoff_base_minutes: 60  # 失败重试退避基数（分钟，每次重试翻倍）
   crawl_circle: 60        # 抓取新闻周期（分钟）
   sync_circle: 60         # 云端同步周期（分钟）
 

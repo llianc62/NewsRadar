@@ -1738,8 +1738,15 @@ class PostgreSQL:
         self,
         task_type: Optional[str] = None,
         limit: Optional[int] = None,
+        backoff_base_minutes: int = 60,
     ) -> List[Dict[str, Any]]:
-        """Return pending failed tasks where retry_times < max_retry.
+        """Return pending failed tasks due for retry, with exponential backoff.
+
+        Retries a pending task only once ``backoff_base_minutes * 2^retry_times``
+        minutes have passed since its last attempt (``last_retry``, or
+        ``created_at`` for a freshly recorded failure).  This stops the
+        hourly crawl from re-hammering the same backlog every cycle — the
+        immediate trigger for WAF frequency-based challenges.
 
         Newest tasks come first so recent failures are retried before
         older ones; tasks older than the retention window are cleaned
@@ -1748,13 +1755,17 @@ class PostgreSQL:
         Args:
             task_type: Optional filter.  When ``None``, returns all types.
             limit: Optional cap on the number of tasks returned.
+            backoff_base_minutes: Base backoff in minutes; doubles each retry.
         """
         sql = """SELECT id, task_type, context, retry_times, max_retry,
                         last_retry, status, created_at, updated_at
                  FROM failed_tasks
                  WHERE status = 'pending'
-                   AND retry_times < max_retry"""
-        params: list = []
+                   AND retry_times < max_retry
+                   AND COALESCE(last_retry, created_at)
+                       < NOW() - make_interval(
+                           mins => (%s * POWER(2, retry_times))::int)"""
+        params: list = [backoff_base_minutes]
         if task_type:
             sql += " AND task_type = %s"
             params.append(task_type)

@@ -213,6 +213,23 @@ class TestGetPendingFailures:
         sql = call_args[0]
         assert "retry_times < max_retry" in sql
 
+    def test_get_pending_backoff_gating(self, pg_db, mock_conn_cursor):
+        """退避门控:按 COALESCE(last_retry, created_at) + 指数退避过滤。"""
+        mock_conn_cursor.fetchall.return_value = []
+        pg_db.get_pending_failures(task_type="content_fetch")
+        sql = mock_conn_cursor.execute.call_args[0][0]
+        params = mock_conn_cursor.execute.call_args[0][1]
+        assert "COALESCE(last_retry, created_at)" in sql
+        assert "make_interval" in sql
+        assert params[0] == 60  # 默认退避基数(分钟)
+
+    def test_get_pending_backoff_base_parameterized(self, pg_db, mock_conn_cursor):
+        """退避基数可由调用方传入(默认 60 分钟)。"""
+        mock_conn_cursor.fetchall.return_value = []
+        pg_db.get_pending_failures(backoff_base_minutes=30)
+        params = mock_conn_cursor.execute.call_args[0][1]
+        assert params[0] == 30
+
     def test_get_pending_all_types(self, pg_db, mock_conn_cursor):
         """Without task_type filter, returns all pending types."""
         mock_conn_cursor.fetchall.return_value = [
@@ -498,7 +515,7 @@ class TestRetryLoopIsolation:
         mock_pg.get_pending_failures.return_value = []
         retry_crawler._retry_content_fetch_failures()
         mock_pg.get_pending_failures.assert_called_once_with(
-            task_type="content_fetch", limit=50,
+            task_type="content_fetch", limit=50, backoff_base_minutes=60,
         )
 
     def test_image_retry_continues_past_bad_task(self, retry_crawler, mock_pg):
@@ -641,6 +658,9 @@ def integration_crawler(integration_pg_db):
     from news.crawler import Crawler
 
     config = load_config("config/config.yaml")
+    # Disable retry backoff so a freshly-recorded failure is immediately
+    # retryable — these tests exercise the retry flow, not the timing gate.
+    config.setdefault("crawler", {})["retry_backoff_base_minutes"] = 0
     c = Crawler(config, pg_db=integration_pg_db)
     yield c
     c.close()

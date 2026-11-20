@@ -57,16 +57,6 @@ MAX_IMAGE_PROCESSOR_WORKERS = 20  # Limit for concurrent image downloads
 
 _WAF_DOMAINS: frozenset[str] = frozenset({"xueqiu.com", "huxiu.com", "juejin.cn"})
 
-# User-Agent pool for Playwright — rotated per request to reduce fingerprinting
-_PLAYWRIGHT_USER_AGENTS: list[str] = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:129.0) Gecko/20100101 Firefox/129.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-]
-
 
 class Crawler:
     """News crawler — fetch, enrich, persist.
@@ -96,6 +86,16 @@ class Crawler:
         # Retry batch size - one retry round processes at most this many
         # tasks per type, so a huge backlog cannot stall a crawl cycle.
         self.retry_batch_size = cfg.get("retry_batch_size", 200)
+
+        # Minimum interval (seconds) between WAF browser requests, plus a
+        # random jitter — flattens the per-cycle burst that triggers WAF
+        # frequency based challenges.
+        self.waf_request_interval = cfg.get("waf_request_interval", 3)
+
+        # Base (minutes) for failed-task retry backoff; doubles each retry.
+        # Prevents the hourly cycle from re-hammering the same backlog.
+        self.retry_backoff_base_minutes = cfg.get(
+            "retry_backoff_base_minutes", 60)
 
         self.parser = parser
 
@@ -132,19 +132,13 @@ class Crawler:
         # Analyzer (lazy) — shared analyzer instance
         self._analyzer: Any = None
 
-        # Playwright — per-domain browser for WAF-protected sites.
-        # Each WAF domain gets a dedicated single-thread executor; the
-        # worker thread owns the browser, satisfying sync_playwright's
-        # greenlet thread-affinity.
-        self._playwright_executors: dict[str, ThreadPoolExecutor] = {}
-        self._playwright_browsers: dict[str, tuple[Any, Any]] = {}
-
-        # Crawl4AI - async browser for WAF-protected sites (replaces Playwright
-        # for WAF domain HTML download).  Runs in a dedicated background event
-        # loop thread; the AsyncWebCrawler instance is reused across calls.
+        # Crawl4AI - async browser for WAF-protected sites.  Runs in a
+        # dedicated background event loop thread; the AsyncWebCrawler
+        # instance is reused across calls.
         self._crawl4ai_loop: Optional[asyncio.AbstractEventLoop] = None
         self._crawl4ai_loop_thread: Optional[threading.Thread] = None
         self._crawl4ai_crawler: Any = None
+        self._last_crawl4ai_fetch_ts: float = 0.0
         self._crawl4ai_lock = threading.Lock()
         self._crawl4ai_arun_lock = threading.Lock()
 
@@ -266,11 +260,10 @@ class Crawler:
         }
 
         # ── Download HTML ──────────────────────────────────────────
-        if self._needs_playwright(url):
-            # html, error = self._download_with_playwright(url, self.timeout)
-            html = self._download_with_crawl4ai(url, self.timeout)
+        if self._is_waf_domain(url):
+            html, error = self._download_with_crawl4ai(url, self.timeout)
             if html is None:
-                raise Exception("crawl4ai 页面下载失败")
+                raise Exception(f"crawl4ai 页面下载失败: {error}")
         else:
             try:
                 resp = self.session().get(url, timeout=self.timeout)
@@ -470,160 +463,12 @@ class Crawler:
             host = host[4:]
         return host
 
-    def _needs_playwright(self, url: str) -> bool:
-        """Check whether *url* requires Playwright to bypass WAF."""
+    def _is_waf_domain(self, url: str) -> bool:
+        """Check whether *url* hosts on a WAF-protected domain."""
         return self._get_url_domain(url) in _WAF_DOMAINS
 
-    def _get_playwright_browser(self, domain: str):
-        """Return the headless Chromium browser for *domain*, creating it on
-        first call via the domain executor so the browser lives on the
-        same thread that uses it.
-
-        Returns ``None`` if *domain* is not WAF-protected.
-        """
-        if domain not in _WAF_DOMAINS:
-            return None
-        if domain not in self._playwright_browsers:
-            # Trigger the executor's initializer (creates browser in
-            # the executor's worker thread), then wait for it to finish.
-            self._get_playwright_executor(domain).submit(lambda: None).result()
-        return self._playwright_browsers[domain][1]
-
-    def _get_playwright_executor(self, domain: str) -> ThreadPoolExecutor:
-        """Return the single-thread executor for *domain*, creating it on
-        first call.
-
-        Stores the executor in ``_playwright_executors`` *before* calling
-        ``_get_playwright_browser`` so the recursive call inside
-        ``_get_playwright_browser`` can short-circuit.
-        """
-        if domain in self._playwright_executors:
-            return self._playwright_executors[domain]
-
-        def _init_worker() -> None:
-            from playwright.sync_api import sync_playwright
-
-            pw = sync_playwright().start()
-            self._playwright_browsers[domain] = (pw, pw.chromium.launch(
-                headless=True,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-setuid-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--disable-features=IsolateOrigins,site-per-process",
-                ],
-            ))
-
-        self._playwright_executors[domain] = ThreadPoolExecutor(
-            max_workers=1, initializer=_init_worker,
-        )
-        # Ensure the browser is ready before returning
-        self._get_playwright_browser(domain)
-        return self._playwright_executors[domain]
-
-    def _download_with_playwright(
-        self,
-        url: str,
-        timeout: int,
-    ) -> tuple[str | None, str | None]:
-        """Download HTML via headless Playwright for WAF-protected sites.
-
-        Dispatches to the domain executor internally — safe to call from
-        any thread.
-
-        Returns:
-            ``(html, None)`` on success, ``(None, error_message)`` on failure.
-        """
-        domain = self._get_url_domain(url)
-        # Both calls are idempotent — browser & executor are created
-        # once per domain and reused.
-        browser = self._get_playwright_browser(domain)
-
-        def _do():
-            try:
-                user_agent = random.choice(_PLAYWRIGHT_USER_AGENTS)
-                context = browser.new_context(
-                    user_agent=user_agent,
-                    viewport={"width": 1920, "height": 1080},
-                    locale="zh-CN",
-                )
-                page = context.new_page()
-
-                # ── Request interception ────────────────────────────
-                # Block resource types that are irrelevant for content
-                # extraction: fonts, video/audio, websockets,
-                # stylesheets (rendered DOM still works), and manifests.
-                # Images are deliberately NOT blocked — we need them
-                # for article enrichment.
-                _BLOCKED_RESOURCE_TYPES: set[str] = {
-                    "font", "media", "websocket", "stylesheet", "manifest",
-                }
-
-                def _handle_route(route):
-                    rtype = route.request.resource_type
-                    if rtype in _BLOCKED_RESOURCE_TYPES:
-                        route.abort()
-                    else:
-                        route.continue_()
-
-                page.route("**/*", _handle_route)
-
-                page.add_init_script("""
-                    Object.defineProperty(navigator, 'webdriver', {
-                        get: () => undefined,
-                    });
-                    Object.defineProperty(navigator, 'plugins', {
-                        get: () => [1, 2, 3, 4, 5],
-                    });
-                    Object.defineProperty(navigator, 'languages', {
-                        get: () => ['zh-CN', 'zh', 'en'],
-                    });
-                """)
-                try:
-                    page.goto(url, wait_until="domcontentloaded",
-                              timeout=timeout * 1_000)
-                    try:
-                        page.wait_for_load_state(
-                            "networkidle",
-                            timeout=timeout * 1_000,
-                        )
-                    except Exception:
-                        pass
-                    html = page.content()
-                    return html, None
-                finally:
-                    context.close()
-            except Exception as e:
-                return None, str(e)
-
-        executor = self._get_playwright_executor(domain)
-        for attempt in range(2):
-            html, error = executor.submit(_do).result()
-            if html is not None:
-                return html, None
-
-            err_lower = (error or "").lower()
-
-            # Timeout — WAF challenges can take longer under load
-            if "timeout" in err_lower and attempt == 0:
-                print(f"[Crawler] Playwright timeout for {url}, retrying...")
-                continue
-
-            # Navigation blocked — WAF / CAPTCHA / access denied
-            if any(kw in err_lower for kw in ("blocked", "captcha", "access denied", "403", "cloudflare")):
-                return None, f"blocked: {error}"
-
-            # DNS / connection error — site may be down
-            if any(kw in err_lower for kw in ("dns", "enetunreach", "econnrefused", "econnreset", "etimedout")):
-                return None, f"network: {error}"
-
-            return None, f"playwright: {error}"
-        return None, "Playwright: max retries exceeded"
-
     # ═══════════════════════════════════════════════════════════════════
-    # Crawl4AI - WAF site HTML download (replaces Playwright for WAF domains)
+    # Crawl4AI - WAF site HTML download
     # ═══════════════════════════════════════════════════════════════════
 
     _WAF_CHALLENGE_SIGNS = (
@@ -702,19 +547,39 @@ class Crawler:
             # 锁外重建 — _ensure_crawl4ai 内部自加 _crawl4ai_lock
             self._ensure_crawl4ai()
 
+    def _throttle_waf_request(self) -> None:
+        """Enforce a minimum interval between WAF browser requests.
+
+        WAF 频控按突发识别:同轮数十篇 huxiu 背靠背连抓会触发挑战。
+        在 arun 锁内、每次请求前 sleep 补足最小间隔 + 随机抖动,把突发
+        拉平成约 ``waf_request_interval`` 秒一次的节奏。
+        """
+        interval = self.waf_request_interval
+        if interval <= 0:
+            return
+        now = time.monotonic()
+        # 首次请求不 sleep(尚未有上一次请求作参照),后续按间隔补足 + 抖动。
+        if self._last_crawl4ai_fetch_ts:
+            wait = interval - (now - self._last_crawl4ai_fetch_ts) + random.uniform(0, 1)
+            if wait > 0:
+                time.sleep(wait)
+        self._last_crawl4ai_fetch_ts = time.monotonic()
+
     def _download_with_crawl4ai(
         self,
         url: str,
         timeout: int,
-    ) -> Optional[str]:
+    ) -> tuple[Optional[str], str]:
         """Download HTML via crawl4ai (undetected + magic + simulate_user).
 
-        Replaces ``_download_with_playwright`` for WAF-protected domains.
         Runs the async ``arun()`` in the background event loop and blocks
         the caller until it completes.
 
-        Returns the page HTML string, or ``None`` if all retries fail or
-        a WAF challenge page is detected.
+        Returns:
+            ``(html, "")`` on success, or ``(None, error_message)`` when all
+            retries fail or a WAF challenge page is detected, where
+            ``error_message`` is the real reason (the exception text,
+            ``result.error_message``, or a WAF-challenge marker).
         """
         self._ensure_crawl4ai()
         from crawl4ai import CrawlerRunConfig
@@ -726,23 +591,31 @@ class Crawler:
             page_timeout=timeout * 1_000,
         )
 
+        last_error = "crawl4ai fetch failed"
         for attempt in range(self.max_retry):
             try:
                 # Serialize arun() calls - AsyncWebCrawler is not thread-safe
                 # by default (thread_safe=False), so concurrent arun on a
                 # single crawler instance can corrupt state.
                 with self._crawl4ai_arun_lock:
+                    self._throttle_waf_request()
                     future = asyncio.run_coroutine_threadsafe(
                         self._crawl4ai_crawler.arun(url=url, config=config),
                         self._crawl4ai_loop,
                     )
                     result = future.result(timeout=timeout + 30)
             except Exception as e:
+                last_error = str(e)
                 print(f"[Crawler] crawl4ai error for {url} "
                       f"(attempt {attempt + 1}/{self.max_retry}): {e}")
+                # arun 抛异常(如浏览器进程已死)同样需要换全新浏览器,
+                # 否则下一次重试仍打同一个死浏览器。末次尝试后无需回收。
+                if attempt + 1 < self.max_retry:
+                    self._recycle_crawl4ai()
                 continue
 
             if not result.success:
+                last_error = result.error_message or "crawl4ai fetch failed"
                 print(f"[Crawler] crawl4ai failed for {url}: "
                       f"{result.error_message}")
                 # 导航超时/取回失败同样可能是 WAF 会话拉黑(挂起连接
@@ -754,8 +627,9 @@ class Crawler:
 
             html = result.html
             if html and not self._looks_like_waf_challenge(html):
-                return html
+                return html, ""
 
+            last_error = "WAF challenge detected"
             print(f"[Crawler] crawl4ai WAF challenge for {url}, "
                   f"recycling browser ({attempt + 1}/{self.max_retry})...")
             # WAF 按会话拉黑,同一浏览器内重试必再被挑战 —
@@ -763,7 +637,7 @@ class Crawler:
             if attempt + 1 < self.max_retry:
                 self._recycle_crawl4ai()
 
-        return None
+        return None, last_error
 
     def _download_and_parse(self, item: Dict[str, Any]) -> bool:
         """Download HTML for a single item, parse to Markdown (no images).
@@ -773,19 +647,16 @@ class Crawler:
         extracted from the page.
 
         WAF-protected domains (e.g. xueqiu.com) are routed through
-        headless Playwright; all others use the standard ``requests``
-        session.
+        crawl4ai; all others use the standard ``requests`` session.
         """
         url = item.get("url", "")
         if not url:
             return False
 
-        if self._needs_playwright(url):
-            # WAF 域名直接走 crawl4ai(替换 Playwright)
-            html = self._download_with_crawl4ai(url, self.timeout)
+        if self._is_waf_domain(url):
+            html, error = self._download_with_crawl4ai(url, self.timeout)
             if html is None:
-                self._record_content_fetch_failure(
-                    item, "crawl4ai fetch failed")
+                self._record_content_fetch_failure(item, error)
                 return False
         else:
             resp, error = http_get_with_retry(
@@ -1113,6 +984,7 @@ class Crawler:
         pg = self._get_pg_db()
         tasks = pg.get_pending_failures(
             task_type="content_fetch", limit=self.retry_batch_size,
+            backoff_base_minutes=self.retry_backoff_base_minutes,
         )
         if not tasks:
             return []
@@ -1194,6 +1066,7 @@ class Crawler:
         pg = self._get_pg_db()
         tasks = pg.get_pending_failures(
             task_type="image_download", limit=self.retry_batch_size,
+            backoff_base_minutes=self.retry_backoff_base_minutes,
         )
         if not tasks:
             return {"total": 0, "success": 0}
@@ -1678,19 +1551,25 @@ class Crawler:
 
     def _close_crawl4ai(self) -> None:
         """Shut down the crawl4ai background loop + crawler."""
-        if (self._crawl4ai_crawler is not None
-                and self._crawl4ai_loop is not None):
+        crawler = self._crawl4ai_crawler
+        loop = self._crawl4ai_loop
+        if crawler is not None and loop is not None:
             try:
                 fut = asyncio.run_coroutine_threadsafe(
-                    self._crawl4ai_crawler.close(), self._crawl4ai_loop,
+                    crawler.close(), loop,
                 )
                 fut.result(timeout=30)
             except Exception as e:
                 print(f"[Crawler] crawl4ai close error: {e}")
-        if self._crawl4ai_loop is not None:
+                # close() 在坏浏览器上可能卡在 browser.close()(等待已
+                # 挂起的 CDP 响应)超过 30s。此时若不显式 stop playwright,
+                # 后面的 loop.stop() 会丢弃未完成的 close 协程,其末尾的
+                # playwright.stop() 不执行 → 每次 recycle 泄漏一个
+                # run-driver node 进程。这里兜底强制 stop 回收 driver。
+                self._force_stop_crawl4ai_driver(crawler, loop)
+        if loop is not None:
             try:
-                self._crawl4ai_loop.call_soon_threadsafe(
-                    self._crawl4ai_loop.stop)
+                loop.call_soon_threadsafe(loop.stop)
             except Exception:
                 pass
         if self._crawl4ai_loop_thread is not None:
@@ -1698,6 +1577,27 @@ class Crawler:
         self._crawl4ai_crawler = None
         self._crawl4ai_loop = None
         self._crawl4ai_loop_thread = None
+
+    def _force_stop_crawl4ai_driver(self, crawler: Any, loop: Any) -> None:
+        """Best-effort: stop the crawl4ai playwright driver after close() hung.
+
+        Reaches crawl4ai's internal playwright instance (0.9.x layout:
+        ``crawler.crawler_strategy.browser_manager.playwright``) and calls
+        ``stop()`` to reap the underlying ``run-driver`` node process.
+        Degrades silently if the chain moved or ``stop`` is unavailable.
+        """
+        pw = None
+        try:
+            pw = crawler.crawler_strategy.browser_manager.playwright
+        except Exception:
+            pw = None
+        if pw is None or not hasattr(pw, "stop"):
+            return
+        try:
+            fut = asyncio.run_coroutine_threadsafe(pw.stop(), loop)
+            fut.result(timeout=10)
+        except Exception as e:
+            print(f"[Crawler] crawl4ai driver force-stop error: {e}")
 
 
 
